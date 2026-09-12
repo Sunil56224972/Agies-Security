@@ -131,4 +131,15 @@ Executed automated audit across all 7 criteria in sequence with live terminal ou
 Searched `fastapi` in the global topbar search, immediately displaying matching security alert records.
 ![Global Search Fastapi](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/task8_global_search_1789242040665.png)
 
+---
+
+## 5. Complete Multi-Minute Demo Video Walkthrough
+
+The end-to-end interactive session across all 7 views, tool executions, defense probes, and hackathon judging scenarios was recorded into a browser video artifact:
+
+- **Video Artifact Path:** [aegis_demo_walkthrough_1789242736350.webp](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/aegis_demo_walkthrough_1789242736350.webp)
+- **Final Executive Dashboard View:**
+![Final Dashboard Overview](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/final_dashboard_overview_1789243410616.png)
+
+
 
