@@ -1,0 +1,17 @@
+{
+  "name": "jedi-agentic-ai",
+  "version": "2.0.0",
+  "description": "JEDI Agentic AI Code Training Platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "groq-sdk": "^0.5.0",
+    "pg": "^8.13.0"
+  }
+}

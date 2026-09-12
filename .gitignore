@@ -1,0 +1,8 @@
+node_modules/
+.env
+.playwright-mcp/
+.system_generated/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
