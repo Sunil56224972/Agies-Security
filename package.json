@@ -1,12 +1,13 @@
 {
-  "name": "jedi-agentic-ai",
+  "name": "aegis-security",
   "version": "2.0.0",
-  "description": "JEDI Agentic AI Code Training Platform",
+  "description": "Aegis Security — Enterprise Incident Detection, Investigation & Response Platform (Track 5: Cybersecurity - Problem Statement 9)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
+  "license": "MIT",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

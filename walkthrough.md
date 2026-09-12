@@ -35,27 +35,27 @@ All artificial "pure AI" tropes (sci-fi cyan/purple/neon green glowing boxes, "D
 
 ### Executive Incident Dashboard
 Clean metric cards, structured response lifecycle, and live verified incident assessments table.
-![Enterprise Incident Dashboard](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/enterprise_dashboard_clean.png)
+![Enterprise Incident Dashboard](screenshots/enterprise_dashboard_clean.png)
 
 ### Threat Alert Ingestion Feed
 Filterable alert queue with neutral IP data, severity indicators, and raw ingress payload inspection.
-![Threat Alert Queue](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/enterprise_alerts_clean.png)
+![Threat Alert Queue](screenshots/enterprise_alerts_clean.png)
 
 ### Incident Investigation Studio
 Live reasoning pipeline with checklist progress, tool execution registry, and markdown incident assessment report.
-![Investigation Studio](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/enterprise_investigation_clean.png)
+![Investigation Studio](screenshots/enterprise_investigation_clean.png)
 
 ### Active Containment & Perimeter Defense
 Production firewall rule table showing target IPs, drop counters, toggle states, and live defense probe execution.
-![Active Containment Rules](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/enterprise_containment_clean.png)
+![Active Containment Rules](screenshots/enterprise_containment_clean.png)
 
 ### Asset Inventory & Threat Intelligence (CMDB & CVE KB)
 Monitored infrastructure inventory with host ports and synthetic CVE knowledge base with live search filter.
-![Asset CMDB & CVE Matrix](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/enterprise_assets_clean.png)
+![Asset CMDB & CVE Matrix](screenshots/enterprise_assets_clean.png)
 
 ### Global Telemetry Search Dropdown
 Instant search indexing across alerts, rules, and network assets with keyboard and click navigation.
-![Global Telemetry Search](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/enterprise_search_clean.png)
+![Global Telemetry Search](screenshots/enterprise_search_clean.png)
 
 ---
 
@@ -65,12 +65,12 @@ Every criterion outlined in the **Common Agentic Requirements** specification ha
 
 ### Compliance Quick-Launcher on Executive Dashboard
 A persistent compliance ribbon at the top of the Incident Dashboard provides instant visibility into all 7 criteria with 1-click test scenarios for live judging.
-![Dashboard Judging Banner](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/dashboard_banner_1789240725957.png)
+![Dashboard Judging Banner](screenshots/dashboard_banner_1789240725957.png)
 
 ### Agentic Evaluation Matrix & Real-Time Audit Cockpit
 A dedicated cockpit (`view-evaluator`) provides interactive execution cards and a live terminal streaming actual database rows, network telemetry, and kernel probe results.
-![Agentic Evaluation Matrix Top](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/agentic_matrix_top_1789240873187.png)
-![Agentic Evaluation Matrix Scrolled](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/agentic_matrix_scrolled_1789240888067.png)
+![Agentic Evaluation Matrix Top](screenshots/agentic_matrix_top_1789240873187.png)
+![Agentic Evaluation Matrix Scrolled](screenshots/agentic_matrix_scrolled_1789240888067.png)
 
 ---
 
@@ -100,36 +100,36 @@ A complete automated browser audit was executed across all 7 views and global se
 
 #### Tab 1: Incident Dashboard — Live Defense Probe
 Triggered live Netfilter probe, dynamically incrementing dropped packet count from 4,358 to 4,728 and rendering a slide-in confirmation toast.
-![Dashboard Defense Probe](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab1_dashboard_probe_1789241140101.png)
+![Dashboard Defense Probe](screenshots/tab1_dashboard_probe_1789241140101.png)
 
 #### Tab 2: Alert Feed — Ingest Test Event Modal
 Ingested real event (`Simulated Exploit Test` from `198.51.100.77`), verified insertion into `soc_alerts` table in Neon PostgreSQL, and validated automatic triage launch.
-![Alert Ingested](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab2_alert_ingested_1789241294860.png)
+![Alert Ingested](screenshots/tab2_alert_ingested_1789241294860.png)
 
 #### Tab 3: Investigation Studio — Multi-Turn Autonomous ReAct Loop
 Executed autonomous investigation for `ALERT-2026-9001` across 10 reasoning turns, invoking real tools, parsing access logs, enforcing containment, and generating an executive assessment report.
-![Investigation Studio Execution](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab3_investigation_studio_1789241351462.png)
+![Investigation Studio Execution](screenshots/tab3_investigation_studio_1789241351462.png)
 
 #### Tab 4: Containment Rules — Rule Toggle & Manual Deployment
 Tested live status toggle on active rule `FW-297509` and deployed a new manual block rule for IP `203.0.113.88` with justification *"Adversary scanner probe"*.
-![Containment Rules Table](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab4_containment_rules_1789241711204.png)
-![Manual Rule Added](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab4_rule_added_1789241801283.png)
+![Containment Rules Table](screenshots/tab4_containment_rules_1789241711204.png)
+![Manual Rule Added](screenshots/tab4_rule_added_1789241801283.png)
 
 #### Tab 5: Asset Inventory & CVEs — Live Telemetry & Filter Search
 Filtered assets and CVE knowledge base for keyword `log4j`, matching target asset `10.0.4.15` and `CVE-2021-44228`.
-![Asset CMDB & CVE Search](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab5_assets_log4j_1789241875421.png)
+![Asset CMDB & CVE Search](screenshots/tab5_assets_log4j_1789241875421.png)
 
 #### Tab 6: Platform Settings — Configuration Persistence
 Updated *Max Investigation Reasoning Depth* to `18` and set defense threshold to *Auto-Enforce on Any Verified Threat*, persisting updates to the backend.
-![Platform Settings Saved](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab6_settings_saved_1789241943676.png)
+![Platform Settings Saved](screenshots/tab6_settings_saved_1789241943676.png)
 
 #### Tab 7: Agentic Evaluation Matrix — Automated Compliance Check
 Executed automated audit across all 7 criteria in sequence with live terminal output.
-![Agentic Compliance Check](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/tab7_agentic_evaluator_1789242005141.png)
+![Agentic Compliance Check](screenshots/tab7_agentic_evaluator_1789242005141.png)
 
 #### Global Search — Real-Time Telemetry Index
 Searched `fastapi` in the global topbar search, immediately displaying matching security alert records.
-![Global Search Fastapi](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/task8_global_search_1789242040665.png)
+![Global Search Fastapi](screenshots/task8_global_search_1789242040665.png)
 
 ---
 
@@ -137,9 +137,9 @@ Searched `fastapi` in the global topbar search, immediately displaying matching 
 
 The end-to-end interactive session across all 7 views, tool executions, defense probes, and hackathon judging scenarios was recorded into a browser video artifact:
 
-- **Video Artifact Path:** [aegis_demo_walkthrough_1789242736350.webp](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/aegis_demo_walkthrough_1789242736350.webp)
+- **Video Artifact Path:** [aegis_demo_walkthrough_1789242736350.webp](demo_video/aegis_official_workflow_4min.webp)
 - **Final Executive Dashboard View:**
-![Final Dashboard Overview](file:///C:/Users/sunil/.gemini/antigravity-ide/brain/a69e33cb-4d34-4f7e-a791-498b5da46fe7/final_dashboard_overview_1789243410616.png)
+![Final Dashboard Overview](screenshots/final_dashboard_overview_1789243410616.png)
 
 
 

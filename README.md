@@ -161,31 +161,31 @@ The user interface follows a B2B security architecture styled after **CrowdStrik
 
 ### 1. Executive Incident Dashboard (`#view-dashboard`)
 Real-time sensor telemetry KPIs, Mean Time to Detect (MTTD < 1.4s), Mean Time to Respond (MTTR < 3.2s), response lifecycle progress bar, verified assessments table, and 1-click defense probe launcher.
-![Executive Incident Dashboard](docs/images/dashboard.png)
+![Executive Incident Dashboard](screenshots/enterprise_dashboard_clean.png)
 
 ### 2. Threat Alert Ingestion Feed (`#view-alerts`)
 Filterable intrusion alert queue with severity chips (`CRITICAL`, `HIGH`, `ALL`), inline raw payload inspection drawer, and manual test event ingestion modal.
-![Threat Alert Feed](docs/images/alerts.png)
+![Threat Alert Feed](screenshots/enterprise_alerts_clean.png)
 
 ### 3. Incident Investigation Studio (`#view-agent`)
 Autonomous reasoning pipeline displaying a live execution checklist across all 8 security tools, step-by-step tool latency registry, and markdown incident assessment report with analyst override capabilities.
-![Investigation Studio](docs/images/investigation_studio.png)
+![Investigation Studio](screenshots/enterprise_investigation_clean.png)
 
 ### 4. Active Containment Rules & Netfilter Defense (`#view-firewall`)
 Production perimeter firewall table with rule toggles (`ACTIVE` $\leftrightarrow$ `DISABLED`), manual rule deployment form, and live defense verification probes.
-![Active Containment Rules](docs/images/containment_rules.png)
+![Active Containment Rules](screenshots/enterprise_containment_clean.png)
 
 ### 5. Asset Inventory (CMDB) & CVE Knowledge Base (`#view-architecture`)
 Monitored infrastructure inventory with running services, open ports (80, 443, 5000, 8080), WAF status, and live-searchable CVE intelligence matrix.
-![Asset CMDB and CVE Intelligence](docs/images/assets_cve.png)
+![Asset CMDB and CVE Intelligence](screenshots/enterprise_assets_clean.png)
 
 ### 6. Agentic Evaluation Matrix & Hackathon Judging Cockpit (`#view-evaluator`)
 Dedicated compliance cockpit validating all 7 Common Agentic Requirements with live terminal streaming, objective defense verifiers, and demonstrable changed-condition scenarios.
-![Agentic Evaluation Matrix](docs/images/agentic_evaluator.png)
+![Agentic Evaluation Matrix](screenshots/agentic_matrix_top_1789240873187.png)
 
 ### 7. Real-Time Perimeter Defense Verification
 Objective evaluator probe dynamically incrementing drop counters and validating kernel Netfilter drop rules in Neon PostgreSQL.
-![Perimeter Defense Probe](docs/images/defense_probe.png)
+![Perimeter Defense Probe](screenshots/tab1_dashboard_probe_1789241140101.png)
 
 ---
 
@@ -284,5 +284,6 @@ Open `http://localhost:3000` in any modern web browser:
 ---
 
 ## License & Security
+Distributed under the [MIT License](LICENSE).  
 Built for hackathon demonstration under **Track 5: Cybersecurity (Problem Statement 9)**.  
 All attack payloads and containment actions are executed within an isolated, sandboxed emulation environment.
