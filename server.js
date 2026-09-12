@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const Groq = require('groq-sdk');
 const path = require('path');
+const fs = require('fs');
 const { Pool } = require('pg');
 
 const app = express();
@@ -11,18 +12,34 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const DEFAULT_MODEL = 'openai/gpt-oss-20b';
+const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 
 // ═══════════════════════════════════════════════════════
 //  DATABASE — Neon Postgres
 // ═══════════════════════════════════════════════════════
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('neon.tech') ? { rejectUnauthorized: false } : false
 });
 
 const db = {
   query: (text, params) => pool.query(text, params),
+
+  // ── Database Schema & Seed Bootstrap ──
+  async init() {
+    try {
+      const sqlPath = path.join(__dirname, 'init_db.sql');
+      if (fs.existsSync(sqlPath)) {
+        const sql = fs.readFileSync(sqlPath, 'utf8');
+        await pool.query(sql);
+        console.log('  Database Schema & Seeds: Initialized successfully (11 tables ready)');
+      } else {
+        console.warn('  Database warning: init_db.sql file not found.');
+      }
+    } catch (err) {
+      console.error('  Database initialization error:', err.message);
+    }
+  },
 
   // ── Existing Chat / Sessions ──
   async createSession(title) {
@@ -1093,9 +1110,24 @@ app.get('*', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`\n  Autonomous SOC Agentic AI Platform running on http://localhost:${PORT}`);
+  console.log(`\n  ======================================================`);
+  console.log(`  Autonomous SOC Agentic AI Platform running on http://localhost:${PORT}`);
   console.log(`  Cybersecurity Track 5 - Problem Statement 9`);
   console.log(`  Sandbox Tools loaded: ${SOC_TOOL_DEFINITIONS.length}`);
-  console.log(`  Model: ${DEFAULT_MODEL} via Groq`);
-  try { await pool.query('SELECT 1'); console.log(`  Database: Connected (Neon Postgres)\n`); } catch(e) { console.log(`  Database: Error - ${e.message}\n`); }
+  console.log(`  Model: ${DEFAULT_MODEL} via Groq LPU`);
+  
+  if (!process.env.DATABASE_URL) {
+    console.warn(`  [WARNING] DATABASE_URL not set in .env!`);
+    console.warn(`  Please provide a Neon PostgreSQL connection string in .env`);
+  } else {
+    try {
+      await pool.query('SELECT 1');
+      console.log(`  Database: Connected (Neon Postgres)`);
+      await db.init();
+    } catch(e) {
+      console.error(`  Database Connection Error: ${e.message}`);
+      console.error(`  Verify DATABASE_URL or run init_db.sql in your Neon console.\n`);
+    }
+  }
+  console.log(`  ======================================================\n`);
 });

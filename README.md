@@ -236,8 +236,8 @@ Built specifically for live hackathon evaluation and technical review:
 
 ### Prerequisites
 - Node.js 18+ (tested on Node v20/v22/v25)
+- Groq Cloud API Key (`groq-sdk` ^1.6.0)
 - Neon Serverless PostgreSQL database connection string
-- Groq Cloud API Key
 
 ### 1. Clone & Install Dependencies
 ```bash
@@ -253,18 +253,30 @@ cp .env.example .env
 ```
 Edit `.env` with your credentials:
 ```ini
+# Groq LPU Inference API Key (https://console.groq.com)
 GROQ_API_KEY=gsk_your_groq_api_key_here
+
+# Groq Model Identifier (default: llama-3.3-70b-versatile)
+GROQ_MODEL=llama-3.3-70b-versatile
+
+# Application Port
 PORT=3000
-DATABASE_URL=postgresql://neondb_owner:your_password@ep-your-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+
+# Neon Serverless PostgreSQL Database Connection String
+DATABASE_URL=postgresql://neondb_owner:your_password@ep-your-instance.aws.neon.tech/neondb?sslmode=require
 ```
 
-### 3. Start the Platform
+### 3. Database Bootstrap (Automatic & Manual)
+- **Automatic on Startup (Recommended):** On boot, `server.js` automatically executes `CREATE TABLE IF NOT EXISTS` for all 11 tables and seeds default CMDB assets, CVE knowledge base entries, and baseline NIDS alerts if tables are empty.
+- **Manual Seed SQL:** You can also run [`init_db.sql`](init_db.sql) directly inside the Neon SQL Console to review the full DDL schema and seed dataset.
+
+### 4. Start the Platform
 ```bash
 npm start
 ```
-The server will boot, initialize database tables if not already present, connect to Neon PostgreSQL, and bind to `http://localhost:3000`.
+The server will boot, run `db.init()`, establish the Neon PostgreSQL pool, and bind to `http://localhost:3000`.
 
-### 4. Verify in Browser
+### 5. Verify in Browser
 Open `http://localhost:3000` in any modern web browser:
 - Navigate to **Incident Dashboard** to observe live telemetry.
 - Go to **Agentic Evaluation Matrix** and click **Run Automated Compliance Check** to verify all 7 requirements.
