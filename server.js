@@ -12,7 +12,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama3-70b-8192';
 
 // ═══════════════════════════════════════════════════════
 //  DATABASE — Neon Postgres
