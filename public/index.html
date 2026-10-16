@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aegis - Incident Response Console</title>
   <meta name="description" content="Alert triage, evidence correlation and containment for a small SOC team.">
-  <meta name="theme-color" content="#0f5257">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 5 7v8c0 7 4.8 11.6 11 14 6.2-2.4 11-7 11-14V7z' fill='%230f5257'/%3E%3Cpath d='m11 16 4 4 7-8' stroke='%23f3f0e8' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#15181d">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 5 7v8c0 7 4.8 11.6 11 14 6.2-2.4 11-7 11-14V7z' fill='%2315181d'/%3E%3Cpath d='m11 16 4 4 7-8' stroke='%23ffffff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/layout.css">
   <link rel="stylesheet" href="/css/components.css">
@@ -27,30 +27,29 @@
   <div class="shell" id="shell">
     <aside class="rail" id="rail" aria-label="Primary">
       <a class="brand" href="#/overview">
-        <svg class="brand__mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
-          <path class="fill" d="M16 3 5 7v8c0 7 4.8 11.6 11 14 6.2-2.4 11-7 11-14V7z" stroke="none"/>
-          <path class="stroke" d="M16 3 5 7v8c0 7 4.8 11.6 11 14 6.2-2.4 11-7 11-14V7z"/>
-          <path d="m11.5 16 3.2 3.2L21 12.6"/>
+        <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+          <path d="M12 2.5 4 5.5v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10v-6z"/>
+          <path d="M12 2.5v19"/>
         </svg>
-        <span><span class="brand__name">Aegis</span><span class="brand__sub">Response console</span></span>
+        <span class="brand__name">Aegis</span><span class="brand__env" id="brand-env">local</span>
       </a>
 
       <nav class="nav">
-        <div class="nav__label">Operate</div>
+        <div class="nav__label">Response</div>
         <a class="nav__item" href="#/overview" data-route="overview"><i data-icon="grid"></i>Overview</a>
         <a class="nav__item" href="#/alerts" data-route="alerts"><i data-icon="bell"></i>Alerts<span class="nav__count" id="nav-open"></span></a>
         <a class="nav__item" href="#/investigate" data-route="investigate"><i data-icon="scan"></i>Investigate</a>
         <a class="nav__item" href="#/containment" data-route="containment"><i data-icon="shield"></i>Containment</a>
-        <div class="nav__label">Know</div>
-        <a class="nav__item" href="#/assets" data-route="assets"><i data-icon="server"></i>Assets &amp; exposure</a>
-        <a class="nav__item" href="#/telemetry" data-route="telemetry"><i data-icon="terminal"></i>Host telemetry</a>
+        <div class="nav__label">Reference</div>
+        <a class="nav__item" href="#/assets" data-route="assets"><i data-icon="server"></i>Assets</a>
+        <a class="nav__item" href="#/telemetry" data-route="telemetry"><i data-icon="terminal"></i>Telemetry</a>
         <a class="nav__item" href="#/settings" data-route="settings"><i data-icon="sliders"></i>Settings</a>
       </nav>
 
       <div class="rail__foot">
         <div class="sysline" id="sysline">
           <div class="sysline__row"><span class="live-dot live-dot--off" id="sys-dot"></span>Storage<b id="sys-store">...</b></div>
-          <div class="sysline__row"><i data-icon="cpu" style="width:13px;height:13px;color:var(--ink-3)"></i>Engine<b id="sys-engine">...</b></div>
+          <div class="sysline__row"><span class="live-dot live-dot--off" style="visibility:hidden"></span>Engine<b id="sys-engine">...</b></div>
         </div>
         <div class="analyst">
           <span class="avatar" id="analyst-initials">OA</span>
@@ -66,7 +65,7 @@
         <div class="topbar__spacer"></div>
         <span class="clock" id="clock" title="UTC"></span>
         <button class="search-trigger" id="search-btn" aria-label="Search">
-          <i data-icon="search"></i><span>Search alerts, IPs, hosts, CVEs</span><span class="kbd">/</span>
+          <i data-icon="search"></i><span>Search</span><span class="kbd">/</span>
         </button>
         <button class="icon-btn theme-btn" id="theme-btn" aria-label="Toggle theme"><i class="sun" data-icon="sun"></i><i class="moon" data-icon="moon"></i></button>
       </header>

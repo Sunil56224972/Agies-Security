@@ -16,19 +16,18 @@ export async function render({ el, navigate, query }) {
   el.innerHTML = `
     <div class="page-head">
       <div class="page-head__text">
-        <div class="eyebrow">${icon('bell')}Detection queue</div>
         <h1 class="page-title">Alerts</h1>
-        <p class="page-sub">Everything the network sensors flagged, plus anything submitted by hand. Open an alert for the raw payload, or send it straight to an investigation.</p>
+        <p class="page-sub">Sensor detections and manual submissions.</p>
       </div>
-      <div class="page-actions"><button class="btn btn--primary" id="al-new">${icon('plus')}Submit alert</button></div>
+      <div class="page-actions"><button class="btn btn--primary" id="al-new">New alert</button></div>
     </div>
     <section class="panel reveal">
       <div class="toolbar">
-        <div class="input-icon">${icon('search')}<input class="input" id="al-q" placeholder="Filter by signature, IP or id" value="${esc(f.q)}"></div>
+        <div class="input-icon">${icon('search')}<input class="input" id="al-q" placeholder="Filter: signature, IP, id" value="${esc(f.q)}"></div>
         <div class="seg" id="al-sev" role="tablist"></div>
         <div class="toolbar__end">
           <select class="select" id="al-status" style="width:160px">${STATUSES.map(([v, t]) => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
-          <select class="select" id="al-sort" style="width:140px"><option value="severity">By severity</option><option value="newest">Newest first</option></select>
+          <select class="select" id="al-sort" style="width:140px"><option value="severity">Severity</option><option value="newest">Newest</option></select>
         </div>
       </div>
       <div id="al-table"><div style="padding:18px" class="stack">${'<div class="skeleton" style="height:38px"></div>'.repeat(5)}</div></div>
@@ -71,11 +70,11 @@ function paint() {
           <td class="hide-sm">${flow(a.source_ip, a.dest_ip, a.dest_port)}</td>
           <td>${pill(a.status)}</td>
           <td class="num hide-sm small muted" title="${stamp(a.detected_at)}">${ago(a.detected_at)}</td>
-          <td><button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Investigate">${icon('play')}<span class="hide-sm">Investigate</span></button></td>
+          <td><button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Run investigation">Run</button></td>
         </tr>`).join('')}</tbody>
     </table></div>
-    <div class="small muted" style="padding:10px 16px;border-top:1px solid var(--line)">${rows.length} of ${all.length} alerts</div>`
-    : emptyState(all.length ? 'No alerts match these filters' : 'No alerts yet', all.length ? 'Loosen the filters or clear the search.' : 'Submit one by hand to see the pipeline work.', 'inbox');
+    <div class="table-foot">${rows.length} of ${all.length}</div>`
+    : emptyState(all.length ? 'No matches' : 'No alerts', all.length ? 'Try a different filter.' : 'Create one with New alert.', 'inbox');
 
   $$('tr[data-id]', el).forEach((r) => { r.onclick = (e) => { if (!e.target.closest('[data-run]')) openAlert(r.dataset.id, navigate); }; });
   $$('[data-run]', el).forEach((b) => { b.onclick = (e) => { e.stopPropagation(); navigate(`investigate/${b.dataset.run}?run=1`); }; });

@@ -14,9 +14,8 @@ export async function render({ el, params, query, navigate, refresh }) {
   el.innerHTML = `
     <div class="page-head">
       <div class="page-head__text">
-        <div class="eyebrow">${icon('scan')}Investigation workspace</div>
-        <h1 class="page-title">Work the <em>case</em></h1>
-        <p class="page-sub">Each run pulls the payload, checks it against the asset inventory and CVE data, reads host telemetry, then decides. Every step is recorded and can be overruled.</p>
+        <h1 class="page-title">Investigations</h1>
+        <p class="page-sub">Payload, asset, CVE and host checks per alert. Every step is logged.</p>
       </div>
     </div>
     <div class="workspace">
@@ -25,7 +24,7 @@ export async function render({ el, params, query, navigate, refresh }) {
           <div class="seg panel__meta" id="q-filter"><button data-f="open" class="is-on">Open</button><button data-f="all">All</button></div></div>
         <div class="queue__list" id="q-list"><div class="stack" style="padding:14px">${'<div class="skeleton" style="height:52px"></div>'.repeat(4)}</div></div>
       </aside>
-      <section class="panel case reveal" id="case">${emptyState('Pick an alert', 'Select something from the queue to open its case file.', 'scan')}</section>
+      <section class="panel case reveal" id="case">${emptyState('No alert selected', 'Choose one from the queue.', 'scan')}</section>
     </div>`;
   $$('#q-filter button', el).forEach((b) => {
     b.onclick = () => { ctx.filter = b.dataset.f; $$('#q-filter button', el).forEach((x) => x.classList.toggle('is-on', x === b)); paintQueue(); };
@@ -59,7 +58,7 @@ function paintQueue() {
       <div class="queue__row">${sev(a.severity)}<span class="small muted">${ago(a.detected_at)}</span></div>
       <div class="queue__sig">${esc(a.signature)}</div>
       <div class="queue__row"><span class="mono small muted">${esc(a.alert_id)}</span>${pill(a.status)}</div>
-    </div>`).join('')}</div>` : emptyState('Nothing open', 'Switch to All to revisit closed cases.', 'shieldCheck');
+    </div>`).join('')}</div>` : emptyState('Nothing open', 'Switch to All for closed cases.', 'shieldCheck');
   $$('.queue__item', list).forEach((it) => {
     const go = () => {
       if (ctx.running) { toast('Investigation in progress', 'Wait for the current run to finish.'); return; }
@@ -88,29 +87,29 @@ async function openCase(id, autoRun = false, quiet = false) {
   box.innerHTML = `
     <div class="case-head">
       <div class="case-head__main">
-        <div class="eyebrow"><span class="mono">${esc(a.alert_id)}</span> &middot; ${esc(a.category)} &middot; ${ago(a.detected_at)}</div>
+        <div class="small muted"><span class="mono">${esc(a.alert_id)}</span> &middot; ${esc(a.category)} &middot; ${ago(a.detected_at)}</div>
         <h2 class="case-head__title">${esc(a.signature)}</h2>
         <div class="row wrap">${sev(a.severity)}<span id="case-status">${pill(a.status)}</span>${flow(a.source_ip, a.dest_ip, a.dest_port)}${asset ? `<span class="tag">${esc(asset.hostname)}</span>` : '<span class="tag tag--warn">not in CMDB</span>'}</div>
       </div>
       <div class="case-head__actions">
         ${llm ? `<div class="seg" id="engine-seg" title="Investigation engine"><button data-e="playbook" class="${engine !== 'llm' ? 'is-on' : ''}">Playbook</button><button data-e="llm" class="${engine === 'llm' ? 'is-on' : ''}">LLM</button></div>` : ''}
-        <button class="btn btn--primary btn--lg" id="run-btn" ${a.status === 'INVESTIGATING' ? 'disabled' : ''}>${icon('play')}${inv ? 'Run again' : 'Run investigation'}</button>
+        <button class="btn btn--primary btn--lg" id="run-btn" ${a.status === 'INVESTIGATING' ? 'disabled' : ''}>${inv ? 'Re-run' : 'Run investigation'}</button>
       </div>
     </div>
-    <div class="phases" id="phases">${PHASES.map(([k, t], i) => `<div class="phase" data-phase="${k}"><span class="phase__n">${i + 1}</span>${t}</div>`).join('')}</div>
+    <div class="phases" id="phases">${PHASES.map(([k, t], i) => `<div class="phase" data-phase="${k}"><span class="phase__n">${String(i + 1).padStart(2, '0')}</span>${t}</div>`).join('')}</div>
     <div class="case-body">
       <div style="min-width:0">
-        <div id="run-area">${inv ? '' : `<div class="empty">${icon('play')}<b>Not investigated yet</b><span class="small">Run the investigation to collect evidence and reach a verdict.</span></div>`}</div>
+        <div id="run-area">${inv ? '' : `<div class="empty"><b>Not run yet</b><span class="small">No evidence collected for this alert.</span></div>`}</div>
       </div>
       <aside class="case-side">
-        <div><h3 class="section-title">Captured payload</h3><pre class="code" style="max-height:200px">${markPayload(a.raw_payload)}</pre></div>
+        <div><h3 class="section-title">Payload</h3><pre class="code" style="max-height:200px">${markPayload(a.raw_payload)}</pre></div>
         ${asset ? `<div><h3 class="section-title">Target host</h3><dl class="dl" style="grid-template-columns:90px 1fr">
           <dt>Host</dt><dd>${esc(asset.hostname)}</dd><dt>OS</dt><dd>${esc(asset.os_version)}</dd>
           <dt>Owner</dt><dd>${esc(asset.owner || '-')}</dd><dt>Criticality</dt><dd>${sev(asset.criticality)}</dd>
           <dt>WAF</dt><dd>${asset.waf_enabled ? 'In front' : '<span style="color:var(--crit)">None</span>'}</dd></dl></div>` : ''}
-        <div><h3 class="section-title">Case history</h3><div id="history">${investigations.length ? investigations.map((i) => `
+        <div><h3 class="section-title">Previous runs</h3><div id="history">${investigations.length ? investigations.map((i) => `
           <div class="history-item" data-inv="${esc(i.investigation_id)}"><div class="row">${pill(i.outcome)}<span class="small muted" style="margin-left:auto">${ago(i.created_at)}</span></div>
-          <div class="list__title mono small">${esc(i.investigation_id)}</div><div class="small muted">${esc(i.engine)} &middot; ${i.confidence}%${i.human_override ? ' &middot; overridden' : ''}</div></div>`).join('') : '<p class="small muted" style="margin:0">No previous runs.</p>'}</div></div>
+          <div class="list__title mono small">${esc(i.investigation_id)}</div><div class="small muted">${esc(i.engine)} &middot; ${i.confidence}%${i.human_override ? ' &middot; overridden' : ''}</div></div>`).join('') : '<p class="small muted" style="margin:0">None.</p>'}</div></div>
       </aside>
     </div>`;
 
@@ -257,51 +256,45 @@ function renderReport(md) {
 
 function appendVerdict(area, inv) {
   $$('.verdict, .report-wrap, .override', area).forEach((n) => n.remove());
-  const C = 2 * Math.PI * 46;
   const ov = inv.human_override;
   area.insertAdjacentHTML('beforeend', `
     <div class="verdict verdict--${esc(inv.outcome)}">
-      <div class="ring"><svg viewBox="0 0 104 104"><circle class="ring__bg" cx="52" cy="52" r="46"/><circle class="ring__fg" cx="52" cy="52" r="46" stroke-dasharray="${C}" stroke-dashoffset="${C}"/></svg>
-        <div class="ring__val">${inv.confidence}<small>CONFIDENCE</small></div></div>
-      <div style="min-width:0">
-        <div class="eyebrow">Verdict &middot; ${esc(inv.investigation_id)}</div>
-        <div class="verdict__label">${OUTCOME_TEXT[inv.outcome] || label(inv.outcome)}</div>
-        <div class="small" style="color:var(--ink-2)">${esc(inv.summary)}</div>
-        <div class="facts">
-          <div><span>Tactic</span>${esc(inv.mitre_tactic || '-')}</div>
-          <div><span>Technique</span>${esc(inv.mitre_technique || '-')}</div>
-          <div><span>Response</span><div class="acts">${(inv.actions_taken || []).length ? inv.actions_taken.map((x) => `<span>${esc(label(x.type))} <span class="mono">${esc(x.target)}</span></span>`).join('') : 'None'}</div></div>
-          <div><span>Duration</span>${inv.duration_ms ? `${(inv.duration_ms / 1000).toFixed(1)}s` : '-'}</div>
-        </div>
-        ${ov ? `<div class="notice mt-12">${icon('user')}<div><b>${esc(ov.analyst)}</b> changed this from ${esc(label(ov.previous_outcome))} to ${esc(label(ov.outcome))} ${ago(ov.at)}. <span class="muted">"${esc(ov.notes)}"</span><div class="small muted mt-8">${ov.changes.map(esc).join(' &middot; ')}</div></div></div>` : ''}
+      <div class="verdict__top">
+        <span class="verdict__label">${OUTCOME_TEXT[inv.outcome] || label(inv.outcome)}</span>
+        <span class="verdict__conf">confidence ${inv.confidence}%</span>
+        <span class="verdict__id">${esc(inv.investigation_id)}</span>
       </div>
+      <p class="verdict__summary">${esc(inv.summary)}</p>
+      <div class="facts">
+        <div><span>Tactic</span>${esc(inv.mitre_tactic || '-')}</div>
+        <div><span>Technique</span>${esc(inv.mitre_technique || '-')}</div>
+        <div><span>Response</span><div class="acts">${(inv.actions_taken || []).length ? inv.actions_taken.map((x) => `<span>${esc(label(x.type))} <span class="mono">${esc(x.target)}</span></span>`).join('') : 'None'}</div></div>
+        <div><span>Duration</span><span class="mono">${inv.duration_ms ? `${(inv.duration_ms / 1000).toFixed(1)}s` : '-'}</span></div>
+      </div>
+      ${ov ? `<div class="notice mt-12"><div><b>${esc(ov.analyst)}</b> changed this from ${esc(label(ov.previous_outcome))} to ${esc(label(ov.outcome))} ${ago(ov.at)}. <span class="muted">"${esc(ov.notes)}"</span><div class="small muted mt-8">${ov.changes.map(esc).join(' &middot; ')}</div></div></div>` : ''}
     </div>
-    <div class="report-wrap" style="padding:20px 22px;border-top:1px solid var(--line)">
-      <div class="row"><h3 class="section-title grow" style="margin:0">Incident report</h3><button class="btn btn--ghost btn--sm" id="copy-report">${icon('copy')}Copy markdown</button></div>
+    <div class="report-wrap">
+      <div class="row"><h3 class="section-title grow" style="margin:0">Report</h3><button class="btn btn--ghost btn--sm" id="copy-report">Copy as markdown</button></div>
       <div class="report mt-12">${renderReport(inv.report || '')}</div>
     </div>
     <div class="override">
-      <h3 class="section-title">Disagree with the verdict?</h3>
+      <h3 class="section-title">Override verdict</h3>
       <div class="override__grid">
         <label class="field"><span>Correct outcome</span><select class="select" id="ov-outcome">${Object.entries(OUTCOME_TEXT).map(([k, t]) => `<option value="${k}" ${k === inv.outcome ? 'disabled' : ''}>${t}</option>`).join('')}</select></label>
-        <label class="field"><span>Justification</span><input class="input" id="ov-notes" placeholder="What did the engine miss?"></label>
-        <button class="btn" id="ov-apply">${icon('rotate')}Override</button>
+        <label class="field"><span>Justification</span><input class="input" id="ov-notes" placeholder="Reason for the change"></label>
+        <button class="btn" id="ov-apply">Apply</button>
       </div>
-      <p class="small muted" style="margin:8px 0 0">Downgrading to false positive or recon rolls back rules this case created. Upgrading to confirmed compromise blocks the remote address.</p>
+      <p class="small muted" style="margin:8px 0 0">False positive / recon rolls back rules from this case. Compromise confirmed blocks the source IP.</p>
     </div>`);
   const sel = $('#ov-outcome', area);
   const firstOpen = [...sel.options].find((o) => !o.disabled);
   if (firstOpen) sel.value = firstOpen.value;
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const fg = $('.ring__fg', area);
-    if (fg) fg.style.strokeDashoffset = String(C * (1 - inv.confidence / 100));
-  }));
   $('#copy-report', area).onclick = async () => {
     try { await navigator.clipboard.writeText(inv.report || ''); toast('Report copied'); } catch { toast('Clipboard unavailable', '', 'error'); }
   };
   $('#ov-apply', area).onclick = (e) => busy(e.currentTarget, async () => {
     const notes = $('#ov-notes', area).value.trim();
-    if (notes.length < 4) { $('#ov-notes', area).classList.add('is-invalid'); toast('Add a justification', 'A short note helps the next shift understand the change.', 'error'); return; }
+    if (notes.length < 4) { $('#ov-notes', area).classList.add('is-invalid'); toast('Reason required', 'Add a short note for the audit log.', 'error'); return; }
     try {
       const r = await api(`/investigations/${inv.investigation_id}/override`, { method: 'POST', body: { outcome: sel.value, notes, analyst: state.config && state.config.analystName } });
       toast('Verdict overridden', r.changes.join('. '), 'ok', 6000);

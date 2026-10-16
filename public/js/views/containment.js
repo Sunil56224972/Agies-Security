@@ -9,28 +9,27 @@ export async function render({ el, navigate, query }) {
   el.innerHTML = `
     <div class="page-head">
       <div class="page-head__text">
-        <div class="eyebrow">${icon('shield')}Perimeter &amp; quarantine</div>
         <h1 class="page-title">Containment</h1>
-        <p class="page-sub">Rules created by investigations and by hand. Disabling a rule keeps its history; probing replays traffic from an address so you can see whether a rule actually holds.</p>
+        <p class="page-sub">Firewall and isolation rules. Disabled rules keep their history.</p>
       </div>
-      <div class="page-actions"><button class="btn btn--primary" id="cn-new">${icon('lock')}Add rule</button></div>
+      <div class="page-actions"><button class="btn btn--primary" id="cn-new">Add rule</button></div>
     </div>
     <div class="grid grid-2-1 reveal">
       <section class="panel">
         <div class="toolbar">
-          <div class="seg" id="cn-show"><button data-s="active" class="is-on">Active</button><button data-s="all">All rules</button></div>
+          <div class="seg" id="cn-show"><button data-s="active" class="is-on">Active</button><button data-s="all">All</button></div>
           <div class="toolbar__end small muted" id="cn-sum"></div>
         </div>
         <div id="cn-table"><div style="padding:18px" class="stack">${'<div class="skeleton" style="height:42px"></div>'.repeat(3)}</div></div>
       </section>
       <section class="panel">
-        <div class="panel__head"><h2 class="panel__title">Probe an address</h2><span class="panel__meta">simulated SYN burst</span></div>
+        <div class="panel__head"><h2 class="panel__title">Probe</h2><span class="panel__meta">simulated SYN burst</span></div>
         <div class="panel__body">
           <form id="probe-form" class="row" novalidate>
-            <div class="input-icon grow">${icon('zap')}<input class="input input--mono" id="probe-ip" placeholder="185.220.101.45" value="${esc(query.ip || '')}"></div>
-            <button class="btn btn--primary" id="probe-btn">Send probe</button>
+            <div class="grow"><input class="input input--mono" id="probe-ip" placeholder="185.220.101.45" value="${esc(query.ip || '')}"></div>
+            <button class="btn btn--primary" id="probe-btn">Send</button>
           </form>
-          <div class="small muted mt-8">Try an attacker you have blocked, then one you have not.</div>
+          <div class="small muted mt-8">Sends a burst from the given source and reports whether a rule drops it.</div>
           <div id="probe-out"></div>
         </div>
       </section>
@@ -66,7 +65,7 @@ function paint() {
           <td class="num">${num(r.packets_dropped)}</td>
           <td><button class="switch" role="switch" aria-checked="${r.is_active}" aria-label="Toggle ${esc(r.rule_id)}" data-toggle="${esc(r.rule_id)}"></button></td>
         </tr>`).join('')}</tbody>
-    </table></div>` : emptyState(ctx.show === 'active' ? 'No active rules' : 'No rules yet', 'Rules appear when an investigation contains a threat, or when you add one.', 'shield');
+    </table></div>` : emptyState(ctx.show === 'active' ? 'No active rules' : 'No rules yet', 'Created by investigations or added manually.', 'shield');
 
   $$('[data-toggle]', el).forEach((b) => {
     b.onclick = async () => {
@@ -92,13 +91,16 @@ async function probe() {
   await busy($('#probe-btn', el), async () => {
     try {
       const r = await api('/probe', { method: 'POST', body: { target_ip: ip } });
-      const n = r.status === 'CONTAINED' ? Math.min(64, r.probe_packets) : 32;
+      const drop = r.status === 'CONTAINED';
       out.innerHTML = `
-        <div class="probe-out">
-          <div class="probe-out__head">${pill(r.status)}<span class="mono small">${esc(r.connection_state)}</span>${r.rule_id ? `<span class="tag" style="margin-left:auto">${esc(r.rule_id)}</span>` : ''}</div>
-          <div class="packets ${r.status === 'CONTAINED' ? 'packets--drop' : ''}">${Array.from({ length: n }, (_, i) => `<i style="--i:${i}"></i>`).join('')}</div>
-          <div class="small" style="color:var(--ink-2)">${esc(r.message)}</div>
-          ${r.status === 'EXPOSED' ? `<button class="btn btn--sm mt-12" id="probe-block">${icon('lock')}Block ${esc(ip)}</button>` : ''}
+        <div class="probe-out ${drop ? 'probe-out--drop' : ''}">
+          <dl class="dl">
+            <dt>Result</dt><dd>${pill(r.status)}</dd>
+            <dt>State</dt><dd class="mono">${esc(r.connection_state)}</dd>
+            <dt>Packets</dt><dd class="mono">${drop ? `${r.probe_packets} dropped` : 'delivered'}</dd>
+            <dt>Rule</dt><dd class="mono">${esc(r.rule_id || '-')}</dd>
+          </dl>
+          <div class="probe-out__msg">${esc(r.message)}${r.status === 'EXPOSED' ? `<div class="mt-8"><button class="btn btn--sm" id="probe-block">Block ${esc(ip)}</button></div>` : ''}</div>
         </div>`;
       const pb = $('#probe-block', out);
       if (pb) pb.onclick = () => openNewRule({ target_ip: ip, reason: 'Probe reached service; blocking pending review' });

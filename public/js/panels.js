@@ -25,7 +25,7 @@ export async function openAlert(alertId, navigate) {
           <dt>Source</dt><dd class="ip">${esc(a.source_ip)}</dd>
           <dt>Destination</dt><dd class="ip">${esc(a.dest_ip)}:${esc(a.dest_port)} <span class="muted">${esc(a.protocol)}</span></dd>
           <dt>Detected</dt><dd class="mono">${stamp(a.detected_at)}</dd>
-          ${asset ? `<dt>Target host</dt><dd>${esc(asset.hostname)} <span class="muted">&middot; ${esc(asset.os_version)} &middot; ${esc(asset.criticality.toLowerCase())} criticality</span></dd>` : ''}
+          ${asset ? `<dt>Target host</dt><dd>${esc(asset.hostname)} <span class="muted">&middot; ${esc(asset.os_version)} &middot; tier ${esc(asset.criticality.toLowerCase())}</span></dd>` : ''}
         </dl>
       </section>
       <section>
@@ -80,7 +80,7 @@ const PRESETS = {
 
 export function openNewAlert(navigate) {
   const panel = modal(`
-    <div class="modal__head"><div class="eyebrow">Manual submission</div><h2 class="modal__title">Submit an alert</h2></div>
+    <div class="modal__head"><h2 class="modal__title">New alert</h2></div>
     <form class="modal__body" id="alert-form" novalidate>
       <div class="row wrap" style="margin-bottom:14px">
         <span class="small muted">Start from:</span>
@@ -131,7 +131,7 @@ export function openNewAlert(navigate) {
 
 export function openNewRule(prefill = {}) {
   const panel = modal(`
-    <div class="modal__head"><div class="eyebrow">Containment</div><h2 class="modal__title">Add a rule</h2></div>
+    <div class="modal__head"><h2 class="modal__title">Add rule</h2></div>
     <form class="modal__body" id="rule-form" novalidate>
       <div class="form-grid">
         <label class="field"><span>Target IP</span><input class="input input--mono" name="target_ip" required value="${esc(prefill.target_ip || '')}" placeholder="203.0.113.10"></label>

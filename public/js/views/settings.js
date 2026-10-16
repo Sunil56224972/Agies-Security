@@ -10,11 +10,10 @@ export async function render({ el, navigate }) {
   el.innerHTML = `
     <div class="page-head">
       <div class="page-head__text">
-        <div class="eyebrow">${icon('sliders')}Platform</div>
         <h1 class="page-title">Settings</h1>
-        <p class="page-sub">Response policy, engine and storage. Changes apply to the next investigation and are written to the audit trail.</p>
+        <p class="page-sub">Changes apply to the next run and are recorded in the audit log.</p>
       </div>
-      <div class="page-actions"><button class="btn btn--primary" id="st-save" disabled>${icon('check')}Save changes</button></div>
+      <div class="page-actions"><button class="btn btn--primary" id="st-save" disabled>Save</button></div>
     </div>
     <div class="grid grid-2-1 reveal">
       <div class="stack">
@@ -35,7 +34,7 @@ export async function render({ el, navigate }) {
             <input class="input input--mono" type="number" min="4" max="30" name="maxIterations"></div>
         </section>
         <section class="panel">
-          <div class="panel__head"><h2 class="panel__title">You</h2></div>
+          <div class="panel__head"><h2 class="panel__title">Profile</h2></div>
           <div class="setting"><div><div class="setting__label">Analyst name</div><div class="setting__help">Recorded on rules, overrides and status changes you make.</div></div>
             <input class="input" name="analystName" maxlength="60"></div>
         </section>
@@ -46,12 +45,12 @@ export async function render({ el, navigate }) {
           <div class="panel__body stack">
             <dl class="dl" style="grid-template-columns:90px 1fr"><dt>Backend</dt><dd>${isSb ? 'Supabase Postgres' : 'Local JSON sandbox'}</dd><dt>Status</dt><dd>${esc(health.storage.detail || (health.storage.ok ? 'Connected' : 'Unavailable'))}</dd><dt>Uptime</dt><dd class="mono">${Math.floor(health.uptime_s / 60)}m ${health.uptime_s % 60}s</dd></dl>
             ${isSb ? '' : `<div class="notice notice--warn">${icon('database')}<div>${health.storage.warning ? `${esc(health.storage.warning)}<br>` : ''}To persist to Supabase, set <span class="mono">SUPABASE_URL</span> and <span class="mono">SUPABASE_SERVICE_ROLE_KEY</span> in <span class="mono">.env</span>, apply <span class="mono">supabase/migrations</span>, and restart.</div></div>`}
-            <button class="btn btn--danger" id="st-reset">${icon('refresh')}Reset demo data</button>
+            <button class="btn btn--danger" id="st-reset">Reset demo data</button>
           </div>
         </section>
         <section class="panel">
-          <div class="panel__head"><h2 class="panel__title">Audit trail</h2><span class="panel__meta">last ${audit.length}</span></div>
-          <div class="feed" style="max-height:420px;overflow:auto">${audit.map((a) => `<div class="feed__item"><span class="feed__dot"></span><div><div class="feed__text"><b>${esc(a.actor)}</b> <span class="mono small">${esc(a.action)}</span> ${esc(a.target || '')}</div><div class="feed__time">${ago(a.created_at)}${a.detail ? ` &middot; ${esc(String(a.detail).slice(0, 80))}` : ''}</div></div></div>`).join('')}</div>
+          <div class="panel__head"><h2 class="panel__title">Audit log</h2><span class="panel__meta">last ${audit.length}</span></div>
+          <div class="feed" style="max-height:420px;overflow:auto">${audit.map((a) => `<div class="feed__item" title="${esc(new Date(a.created_at).toLocaleString())}"><span class="feed__time">${new Date(a.created_at).toTimeString().slice(0, 5)}</span><div><div class="feed__text"><b>${esc(a.actor)}</b> <span class="mono small">${esc(a.action)}</span> ${esc(a.target || '')}</div>${a.detail ? `<div class="feed__detail">${esc(String(a.detail).slice(0, 80))}</div>` : ''}</div></div>`).join('')}</div>
         </section>
       </div>
     </div>`;
@@ -86,7 +85,7 @@ export async function render({ el, navigate }) {
 
   $('#st-reset', el).onclick = () => {
     const m = modal(`
-      <div class="modal__head"><div class="eyebrow">Destructive</div><h2 class="modal__title">Reset demo data?</h2></div>
+      <div class="modal__head"><h2 class="modal__title">Reset demo data?</h2></div>
       <div class="modal__body"><p style="margin:0;color:var(--ink-2)">Alerts, investigations, rules, telemetry and settings go back to the seed state. This also applies to Supabase if it is connected. Type <b class="mono">reset</b> to confirm.</p>
         <input class="input input--mono mt-12" id="rs-confirm" autocomplete="off"></div>
       <div class="modal__foot"><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--danger" id="rs-go" disabled>Reset everything</button></div>`);

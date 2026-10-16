@@ -6,8 +6,8 @@ const ROUTES = {
   alerts: { title: 'Alerts', load: () => import('./views/alerts.js') },
   investigate: { title: 'Investigate', load: () => import('./views/investigate.js') },
   containment: { title: 'Containment', load: () => import('./views/containment.js') },
-  assets: { title: 'Assets & exposure', load: () => import('./views/assets.js') },
-  telemetry: { title: 'Host telemetry', load: () => import('./views/telemetry.js') },
+  assets: { title: 'Assets', load: () => import('./views/assets.js') },
+  telemetry: { title: 'Telemetry', load: () => import('./views/telemetry.js') },
   settings: { title: 'Settings', load: () => import('./views/settings.js') }
 };
 
@@ -88,6 +88,7 @@ async function refreshChrome() {
     dot.className = `live-dot ${health.storage.ok ? (health.storage.kind === 'supabase' ? '' : 'live-dot--warn') : 'live-dot--off'}`;
     $('#sys-store').textContent = health.storage.kind === 'supabase' ? 'Supabase' : 'Local sandbox';
     $('#sys-store').title = health.storage.detail || '';
+    $('#brand-env').textContent = health.storage.kind === 'supabase' ? 'prod' : 'local';
     $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Playbook';
     const name = config.analystName || 'On-call analyst';
     $('#analyst-name').textContent = name;
@@ -128,7 +129,7 @@ const JUMPS = [
   { label: 'Open investigation workspace', path: 'investigate', ic: 'scan' },
   { label: 'Containment rules and probe', path: 'containment', ic: 'shield' },
   { label: 'Assets and CVE knowledge base', path: 'assets', ic: 'server' },
-  { label: 'Host telemetry', path: 'telemetry', ic: 'terminal' },
+  { label: 'Telemetry', path: 'telemetry', ic: 'terminal' },
   { label: 'Settings', path: 'settings', ic: 'sliders' }
 ];
 
@@ -179,7 +180,7 @@ function openPalette() {
       { name: 'Alerts', rows: r.alerts.map((a) => ({ lead: icon('bell'), title: a.signature, sub: `${a.alert_id} - ${a.source_ip} to ${a.dest_ip}`, tail: sev(a.severity), path: `investigate/${a.alert_id}` })) },
       { name: 'Investigations', rows: r.investigations.map((i) => ({ lead: icon('scan'), title: `${i.investigation_id} - ${i.alert_id}`, sub: i.summary, tail: pill(i.outcome), path: `investigate/${i.alert_id}` })) },
       { name: 'Assets', rows: r.assets.map((a) => ({ lead: icon('server'), title: a.hostname, sub: `${a.ip_address} - ${a.os_version}`, path: `telemetry?host=${a.ip_address}` })) },
-      { name: 'Knowledge base', rows: r.cves.map((c) => ({ lead: icon('bug'), title: `${c.cve_id} - ${c.title}`, sub: `CVSS ${c.cvss_score}`, tail: sev(c.severity), path: `assets?tab=kb&q=${encodeURIComponent(c.cve_id)}` })) },
+      { name: 'CVEs', rows: r.cves.map((c) => ({ lead: icon('bug'), title: `${c.cve_id} - ${c.title}`, sub: `CVSS ${c.cvss_score}`, tail: sev(c.severity), path: `assets?tab=kb&q=${encodeURIComponent(c.cve_id)}` })) },
       { name: 'Rules', rows: r.rules.map((x) => ({ lead: icon('shield'), title: `${x.action} ${x.target_ip}`, sub: `${x.rule_id} - ${x.reason}`, tail: pill(x.is_active ? 'ACTIVE' : 'DISABLED'), path: 'containment' })) },
       { name: 'Jump to', rows: jumpRows(q) }
     ]);

@@ -12,9 +12,8 @@ export async function render({ el, navigate, query }) {
   el.innerHTML = `
     <div class="page-head">
       <div class="page-head__text">
-        <div class="eyebrow">${icon('terminal')}Endpoint &amp; server logs</div>
-        <h1 class="page-title">Host telemetry</h1>
-        <p class="page-sub">The same evidence the investigation engine reads: web access logs, EDR process events, SSH auth and service output. Highlighted fragments are known attack markers.</p>
+        <h1 class="page-title">Telemetry</h1>
+        <p class="page-sub">HTTP access, EDR, auth and system logs. Known attack markers are highlighted.</p>
       </div>
     </div>
     <section class="panel reveal">
@@ -22,7 +21,7 @@ export async function render({ el, navigate, query }) {
         <select class="select" id="tl-host" style="width:230px"><option value="">All hosts</option>${assets.map((a) => `<option value="${esc(a.ip_address)}">${esc(a.hostname)} (${esc(a.ip_address)})</option>`).join('')}</select>
         <select class="select" id="tl-type" style="width:160px">${TYPES.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>
         <div class="input-icon">${icon('search')}<input class="input input--mono" id="tl-client" placeholder="Remote IP" value="${esc(ctx.client)}"></div>
-        <div class="toolbar__end"><button class="btn btn--ghost btn--sm" id="tl-clear">Clear filters</button><span class="small muted" id="tl-count"></span></div>
+        <div class="toolbar__end"><button class="btn btn--ghost btn--sm" id="tl-clear">Clear</button><span class="small muted" id="tl-count"></span></div>
       </div>
       <div id="tl-list"></div>
     </section>`;
@@ -64,6 +63,6 @@ async function load() {
       <span>${esc(l.host_ip)}</span>
       <span style="color:${TYPE_C[l.log_type] || 'var(--ink-3)'}">${esc(l.log_type)}</span>
       <span class="logline__raw">${markPayload(l.raw_entry)}</span>
-    </div>`).join('')}</div>` : emptyState('No telemetry for this filter', 'Try another host or clear the remote IP.', 'terminal');
+    </div>`).join('')}</div>` : emptyState('No entries', 'Nothing matches this filter.', 'terminal');
   hydrateIcons(el);
 }
