@@ -12,6 +12,21 @@ const ROUTES = {
   settings: { title: 'Settings', load: () => import('./views/settings.js') }
 };
 
+// A browser that kept an older index.html runs these scripts against markup
+// they do not know, and the first missing element throws before boot. Reload
+// once with a fresh URL so the current page is fetched, instead of leaving an
+// empty frame. The flag stops a loop if the markup really is broken.
+const STALE = !['#gate', '#shell', '#analyst-role', '#signout-btn', '#search-btn', '#menu-btn', '#view'].every((s) => $(s));
+if (STALE) {
+  if (!sessionStorage.getItem('aegis-reloaded')) {
+    sessionStorage.setItem('aegis-reloaded', '1');
+    location.replace(`${location.pathname}?v=${Date.now()}${location.hash}`);
+  }
+  throw new Error('Aegis: page markup is out of date; reloading.');
+}
+sessionStorage.removeItem('aegis-reloaded');
+if (/[?&]v=\d+/.test(location.search)) history.replaceState(null, '', location.pathname + location.hash);
+
 const view = $('#view');
 let current = { name: null, cleanup: null, token: 0 };
 

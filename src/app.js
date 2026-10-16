@@ -228,8 +228,12 @@ function createApp({ store, enforcer, nvd = null, reputation = null, env = proce
   const jobs = registerRoutes(app, ctx);
 
   app.use('/api', (req, res) => bad(res, 'Not found', 404));
-  app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'], maxAge: env.NODE_ENV === 'production' ? '1h' : 0 }));
-  app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+  // No-cache means "revalidate every time" (a 304 when unchanged). The page, its
+  // modules and its CSS ship together, so a browser must never pair a cached
+  // index.html with newer scripts after a deploy. Fonts and images can sit for a day.
+  const revalidate = (res, file) => res.set('Cache-Control', /\.(html|js|css)$/.test(file) ? 'no-cache' : 'public, max-age=86400');
+  app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'], setHeaders: revalidate }));
+  app.get('*', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, '..', 'public', 'index.html')); });
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
