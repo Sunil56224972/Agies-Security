@@ -1,19 +1,23 @@
 {
   "name": "aegis-security",
-  "version": "2.0.0",
-  "description": "Aegis Security — Enterprise Incident Detection, Investigation & Response Platform (Track 5: Cybersecurity - Problem Statement 9)",
+  "version": "3.0.0",
+  "description": "Incident response console: alert triage, evidence correlation, automated containment and analyst override, backed by Supabase.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node --watch server.js",
+    "test": "node test/smoke.js",
+    "screenshots": "node scripts/screenshots.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.118.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
-    "groq-sdk": "^1.6.0",
-    "pg": "^8.13.0"
+    "groq-sdk": "^1.6.0"
   },
   "devDependencies": {
     "ffmpeg-static": "^5.3.0",
