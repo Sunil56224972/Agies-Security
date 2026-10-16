@@ -137,7 +137,7 @@ function registerCasework(app, ctx) {
     const r = normalizeSuppression({ name: 'preview', ...(req.body || {}) });
     if (r.error) return bad(res, r.error);
     const days = Math.min(Math.max(Number((req.body || {}).days) || 30, 1), 90);
-    const alerts = await store.alerts.list({ since: new Date(Date.now() - days * 86400000).toISOString(), limit: 20000 });
+    const alerts = await store.alerts.list({ since: new Date(Date.now() - days * 86400000).toISOString(), lite: true, limit: 20000 });
     const hit = alerts.filter((a) => matches(r.rule, a));
     const bySig = {};
     for (const a of hit) bySig[a.signature] = (bySig[a.signature] || 0) + 1;
@@ -156,7 +156,7 @@ function registerCasework(app, ctx) {
     const rule = await store.suppressions.insert({ ...r.rule, created_by: actor(req) });
     let closed = 0;
     if (b.apply_to_open) {
-      const open = (await store.alerts.list({ status: 'NEW', limit: 20000 })).filter((a) => matches(rule, a));
+      const open = (await store.alerts.list({ status: 'NEW', lite: true, limit: 20000 })).filter((a) => matches(rule, a));
       if (open.length) {
         await store.alerts.updateMany(open.map((a) => a.alert_id), { status: 'FALSE_POSITIVE', suppressed_by: rule.id });
         await store.notes.addMany(open.map((a) => ({ alert_id: a.alert_id, kind: 'event', author: actor(req), author_id: req.user.id, body: `Closed as false positive by suppression rule "${rule.name}"` })));
@@ -247,7 +247,7 @@ function registerCasework(app, ctx) {
     if (!isIP(ip)) return bad(res, 'Not an IP address');
     const internal = isInternal(ip);
     const [alerts, rules, invs, asset, byClient] = await Promise.all([
-      store.alerts.list({ ip, limit: 2000 }), store.rules.list(), store.investigations.list({ limit: 5000 }), store.assets.get(ip),
+      store.alerts.list({ ip, lite: true, limit: 2000 }), store.rules.list(), store.investigations.forIp(ip), store.assets.get(ip),
       store.logs.list({ client_ip: ip, limit: 100 })
     ]);
     const byHost = asset ? await store.logs.list({ host_ip: ip, limit: 100 }) : [];
@@ -288,7 +288,7 @@ function registerCasework(app, ctx) {
     const now = Date.now();
     const since = new Date(now - days * 86400000).toISOString();
     const [cfg, alerts, invs, rules, supps] = await Promise.all([
-      store.config.get(), store.alerts.list({ since, limit: 50000 }), store.investigations.list({ since, limit: 10000 }), store.rules.list(), store.suppressions.list()
+      store.config.get(), store.alerts.list({ since, lite: true, limit: 50000 }), store.investigations.list({ since, lite: true, limit: 10000 }), store.rules.list(), store.suppressions.list()
     ]);
     const real = alerts.filter((a) => !a.suppressed_by);
     const sla = SEVERITIES.map((s) => {
@@ -381,7 +381,7 @@ function registerCasework(app, ctx) {
 
   app.get('/api/export/alerts.csv', wrap(async (req, res) => {
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 730);
-    const rows = await store.alerts.list({ since: new Date(Date.now() - days * 86400000).toISOString(), status: req.query.status || undefined, limit: 100000 });
+    const rows = await store.alerts.list({ since: new Date(Date.now() - days * 86400000).toISOString(), status: req.query.status || undefined, lite: true, limit: 100000 });
     const cols = ['alert_id', 'detected_at', 'severity', 'status', 'signature', 'category', 'source_ip', 'dest_ip', 'dest_port', 'protocol', 'sensor', 'external_ref', 'assignee_name', 'acknowledged_at', 'resolved_at', 'suppressed_by'];
     await store.audit.add({ actor: actor(req), action: 'export.alerts', target: `${rows.length} alerts`, detail: `last ${days} days` });
     sendCsv(res, `aegis-alerts-${new Date().toISOString().slice(0, 10)}.csv`, csv(cols, rows));

@@ -44,7 +44,7 @@ function registerRoutes(app, ctx) {
 
   app.get('/api/overview', wrap(async (req, res) => {
     const [alerts, investigations, rules, assets, cves, audit] = await Promise.all([
-      store.alerts.list({ limit: 100000 }), store.investigations.list(), store.rules.list(), store.assets.list(), store.cves.list(), store.audit.list(12)
+      store.alerts.list({ lite: true, limit: 100000 }), store.investigations.list({ lite: true }), store.rules.list(), store.assets.list(), store.cves.list(), store.audit.list(12)
     ]);
     const open = alerts.filter((a) => OPEN.includes(a.status));
     const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, open.filter((a) => a.severity === s).length]));
@@ -98,17 +98,24 @@ function registerRoutes(app, ctx) {
     if (assignee === 'me') assignee = req.user.id;
     else if (assignee === 'none') assignee = 'none';
     else if (assignee !== undefined) assignee = Number(assignee) || undefined;
-    res.json(await store.alerts.list({ severity, status, q, ip: ip && isIP(ip) ? ip : undefined, assignee, limit: Math.min(Number(req.query.limit) || 500, 2000) }));
+    const statuses = status === 'OPEN' ? OPEN : undefined;
+    res.json(await store.alerts.list({ severity, status: statuses ? undefined : status, statuses, q, ip: ip && isIP(ip) ? ip : undefined, assignee, lite: true, limit: Math.min(Number(req.query.limit) || 500, 2000) }));
+  }));
+
+  // Cheap badge counter for the navigation; never ships alert rows.
+  app.get('/api/alerts/count', wrap(async (req, res) => {
+    const [open, total] = await Promise.all([store.alerts.count({ open: true }), store.alerts.count()]);
+    res.json({ open, total });
   }));
 
   app.get('/api/alerts/:id', wrap(async (req, res) => {
     const alert = await store.alerts.get(req.params.id);
     if (!alert) return bad(res, 'Alert not found', 404);
     const [investigations, asset, notes, suppression] = await Promise.all([
-      store.investigations.list({ limit: 5000 }), store.assets.get(alert.dest_ip), store.notes.list(alert.alert_id),
+      store.investigations.forAlert(alert.alert_id), store.assets.get(alert.dest_ip), store.notes.list(alert.alert_id),
       alert.suppressed_by ? store.suppressions.get(alert.suppressed_by) : null
     ]);
-    res.json({ alert, asset, notes, suppression, investigations: investigations.filter((i) => i.alert_id === alert.alert_id) });
+    res.json({ alert, asset, notes, suppression, investigations });
   }));
 
   app.post('/api/alerts', need('respond'), wrap(async (req, res) => {
@@ -162,7 +169,7 @@ function registerRoutes(app, ctx) {
     res.end();
   }));
 
-  app.get('/api/investigations', wrap(async (req, res) => res.json(await store.investigations.list())));
+  app.get('/api/investigations', wrap(async (req, res) => res.json(await store.investigations.list({ lite: true, limit: Math.min(Number(req.query.limit) || 500, 5000) }))));
 
   app.get('/api/investigations/:id', wrap(async (req, res) => {
     const inv = await store.investigations.get(req.params.id);
@@ -236,7 +243,7 @@ function registerRoutes(app, ctx) {
 
   // ---- Assets --------------------------------------------------------------
   app.get('/api/assets', wrap(async (req, res) => {
-    const [assets, cves, alerts] = await Promise.all([store.assets.list(), store.cves.list(), store.alerts.list({ limit: 100000 })]);
+    const [assets, cves, alerts] = await Promise.all([store.assets.list(), store.cves.list(), store.alerts.list({ statuses: OPEN, lite: true, limit: 100000 })]);
     res.json(assets.map((a) => ({
       ...a,
       exposures: cves.map((c) => ({ c, e: exposureFor(a, c) })).filter((x) => x.e.exposed)
@@ -356,7 +363,7 @@ function registerRoutes(app, ctx) {
     if (q.length < 2) return res.json({ ip: null, alerts: [], assets: [], cves: [], rules: [], investigations: [] });
     const needle = q.toLowerCase();
     const has = (...f) => f.some((x) => x != null && String(x).toLowerCase().includes(needle));
-    const [alerts, assets, cves, rules, invs] = await Promise.all([store.alerts.list({ q, limit: 6 }), store.assets.list(), store.cves.list(q), store.rules.list(), store.investigations.list()]);
+    const [alerts, assets, cves, rules, invs] = await Promise.all([store.alerts.list({ q, lite: true, limit: 6 }), store.assets.list(), store.cves.list(q), store.rules.list(), store.investigations.list({ lite: true, limit: 2000 })]);
     res.json({
       ip: isIP(q) ? q : null,
       alerts,

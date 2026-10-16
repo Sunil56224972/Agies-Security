@@ -10,10 +10,11 @@ const SCOPES = [['all', 'Everyone'], ['mine', 'My queue'], ['none', 'Unassigned'
 
 let ctx = null;
 const f = { sev: 'ALL', status: 'OPEN', q: '', sort: 'severity', scope: 'all' };
+const PAGE = 200;
 const initials = (n) => String(n || '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
 
 export async function render({ el, navigate, query }) {
-  ctx = { el, navigate, all: [], picked: new Set() };
+  ctx = { el, navigate, all: [], picked: new Set(), shown: PAGE };
   if (query.q) f.q = query.q;
   if (query.mine) f.scope = 'mine';
   const respond = can('respond');
@@ -43,8 +44,8 @@ export async function render({ el, navigate, query }) {
     </section>`;
   if ($('#al-new', el)) $('#al-new', el).onclick = () => openNewAlert(navigate);
   let t;
-  $('#al-q', el).oninput = (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); paint(); }, 120); };
-  $('#al-status', el).onchange = (e) => { f.status = e.target.value; ctx.picked.clear(); paint(); };
+  $('#al-q', el).oninput = (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); ctx.shown = PAGE; paint(); }, 120); };
+  $('#al-status', el).onchange = (e) => { f.status = e.target.value; ctx.picked.clear(); ctx.shown = PAGE; paint(); };
   $('#al-sort', el).value = f.sort;
   $('#al-sort', el).onchange = (e) => { f.sort = e.target.value; paint(); };
   $$('[data-scope]', el).forEach((b) => {
@@ -78,7 +79,7 @@ function paint() {
   const byStatus = visible();
   const counts = Object.fromEntries(SEVS.map((s) => [s, s === 'ALL' ? byStatus.length : byStatus.filter((a) => a.severity === s).length]));
   $('#al-sev', el).innerHTML = SEVS.map((s) => `<button class="${f.sev === s ? 'is-on' : ''}" data-sev="${s}" role="tab" aria-selected="${f.sev === s}">${s === 'ALL' ? 'All' : s[0] + s.slice(1).toLowerCase()} <span class="n">${counts[s]}</span></button>`).join('');
-  $$('[data-sev]', el).forEach((b) => { b.onclick = () => { f.sev = b.dataset.sev; paint(); }; });
+  $$('[data-sev]', el).forEach((b) => { b.onclick = () => { f.sev = b.dataset.sev; ctx.shown = PAGE; paint(); }; });
 
   const rows = byStatus.filter((a) => f.sev === 'ALL' || a.severity === f.sev)
     .sort((a, b) => (f.sort === 'severity' ? RANK[b.severity] - RANK[a.severity] : 0) || b.detected_at.localeCompare(a.detected_at));
@@ -94,7 +95,7 @@ function paint() {
       <thead><tr>
         ${respond ? `<th class="col-check"><input type="checkbox" class="cb" id="al-all" aria-label="Select all" ${allOn ? 'checked' : ''}></th>` : ''}
         <th style="width:104px">Severity</th><th>Signature</th><th class="hide-sm">Flow</th><th class="hide-md">Owner</th><th>Status</th><th class="num hide-sm">Detected</th><th style="width:1%"></th></tr></thead>
-      <tbody class="rows-in">${rows.map((a, i) => `
+      <tbody class="rows-in">${rows.slice(0, ctx.shown).map((a, i) => `
         <tr class="is-clickable ${['CLOSED', 'FALSE_POSITIVE'].includes(a.status) ? 'is-dim' : ''} ${picked.has(a.alert_id) ? 'is-picked' : ''}" style="--i:${Math.min(i, 20)}" data-id="${esc(a.alert_id)}">
           ${respond ? `<td class="col-check"><input type="checkbox" class="cb" data-pick="${esc(a.alert_id)}" aria-label="Select ${esc(a.alert_id)}" ${picked.has(a.alert_id) ? 'checked' : ''} ${a.status === 'INVESTIGATING' ? 'disabled title="Under investigation"' : ''}></td>` : ''}
           <td>${sev(a.severity)}</td>
@@ -106,7 +107,8 @@ function paint() {
           <td>${respond ? `<button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Run investigation">Run</button>` : ''}</td>
         </tr>`).join('')}</tbody>
     </table></div>
-    <div class="table-foot">${rows.length} of ${all.length}</div>` : empty;
+    <div class="table-foot">${Math.min(rows.length, ctx.shown)} of ${rows.length}${rows.length !== all.length ? ` (${all.length} loaded)` : ''}${rows.length > ctx.shown ? ` <button class="btn btn--ghost btn--sm" id="al-more">Show ${Math.min(PAGE, rows.length - ctx.shown)} more</button>` : ''}</div>` : empty;
+  if ($('#al-more', el)) $('#al-more', el).onclick = () => { ctx.shown += PAGE; paint(); };
 
   $$('tr[data-id]', el).forEach((r) => { r.onclick = (e) => { if (!e.target.closest('[data-run], .col-check')) openAlert(r.dataset.id, navigate); }; });
   $$('[data-run]', el).forEach((b) => { b.onclick = (e) => { e.stopPropagation(); navigate(`investigate/${b.dataset.run}?run=1`); }; });

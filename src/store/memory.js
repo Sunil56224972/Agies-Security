@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const seed = require('../seed');
 const { materializeSeed, emptyState, matchesQuery, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CLOSED_STATUSES } = require('./shared');
+const OPEN_STATUSES = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
 
 // File-backed store used when Supabase credentials are absent. Good for a
 // single-node install or evaluation; use Supabase for anything shared.
@@ -86,9 +87,9 @@ class MemoryStore {
   get alerts() {
     const s = this;
     return {
-      async list({ severity, status, q, ip, assignee, since, limit = 500 } = {}) {
+      async list({ severity, status, statuses, q, ip, assignee, since, limit = 500 } = {}) {
         return s.db.alerts
-          .filter((a) => (!severity || a.severity === severity) && (!status || a.status === status) && (!since || a.detected_at >= since))
+          .filter((a) => (!severity || a.severity === severity) && (!status || a.status === status) && (!statuses || statuses.includes(a.status)) && (!since || a.detected_at >= since))
           .filter((a) => (!ip || a.source_ip === ip || a.dest_ip === ip) && (!assignee || (assignee === 'none' ? a.assignee_id == null : a.assignee_id === Number(assignee))))
           .filter((a) => matchesQuery(q, [a.alert_id, a.signature, a.source_ip, a.dest_ip, a.category, a.sensor]))
           .sort((a, b) => b.detected_at.localeCompare(a.detected_at))
@@ -96,6 +97,7 @@ class MemoryStore {
           .map((r) => s.clone(r));
       },
       async get(id) { return s.clone(s.db.alerts.find((a) => a.alert_id === id)); },
+      async count({ open } = {}) { return open ? s.db.alerts.filter((a) => OPEN_STATUSES.includes(a.status)).length : s.db.alerts.length; },
       async insert(row) {
         const now = new Date().toISOString();
         const rec = applyLifecycle(null, { detected_at: now, updated_at: now, status: 'NEW', ...ALERT_DEFAULTS, ...row });
@@ -296,6 +298,12 @@ class MemoryStore {
           .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map((r) => s.clone(r));
       },
       async get(id) { return s.clone(s.db.investigations.find((i) => i.investigation_id === id)); },
+      async forAlert(alertId) {
+        return s.db.investigations.filter((i) => i.alert_id === alertId).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 100).map((r) => s.clone(r));
+      },
+      async forIp(ip, { limit = 50 } = {}) {
+        return s.db.investigations.filter((i) => i.attacker_ip === ip || i.target_ip === ip).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map((r) => s.clone(r));
+      },
       async insert(row) {
         const now = new Date().toISOString();
         const rec = { created_at: now, updated_at: now, human_override: null, ...row };

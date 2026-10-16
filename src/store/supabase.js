@@ -15,16 +15,28 @@ function unwrap({ data, error }) {
   return data;
 }
 
-// PostgREST caps a response at 1000 rows (db-max-rows). Pages through with
-// range() until `limit` rows or the end. `make` must build a fresh, ordered query.
+// List views skip the bulky columns (payload text, agent transcripts). The
+// detail endpoints still read the whole row.
+const ALERT_LITE = 'alert_id,signature,category,severity,source_ip,dest_ip,dest_port,protocol,sensor,status,detected_at,updated_at,external_ref,assignee_id,assignee_name,acknowledged_at,resolved_at,suppressed_by';
+const INV_LITE = 'investigation_id,alert_id,target_ip,attacker_ip,outcome,confidence,mitre_tactic,mitre_technique,summary,engine,human_override,duration_ms,created_at,updated_at';
+const OPEN_STATUSES = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
+
+// PostgREST caps a response at 1000 rows (db-max-rows). The first page also
+// returns the exact count, then the remaining pages are fetched a few at a time
+// instead of one round trip after another. `make(opts)` builds a fresh, ordered
+// query and passes `opts` to select().
 const PAGE = 1000;
+const PARALLEL = 4;
 async function paged(make, limit) {
-  const out = [];
-  for (let from = 0; from < limit; from += PAGE) {
-    const to = Math.min(limit, from + PAGE) - 1;
-    const rows = unwrap(await make().range(from, to));
-    out.push(...rows);
-    if (rows.length < to - from + 1) break;
+  const first = await make({ count: limit > PAGE ? 'exact' : undefined }).range(0, Math.min(limit, PAGE) - 1);
+  const out = unwrap(first);
+  const total = Math.min(limit, first.count == null ? out.length : first.count);
+  if (out.length < PAGE || total <= PAGE) return out;
+  const starts = [];
+  for (let from = PAGE; from < total; from += PAGE) starts.push(from);
+  for (let i = 0; i < starts.length; i += PARALLEL) {
+    const batch = await Promise.all(starts.slice(i, i + PARALLEL).map((from) => make({}).range(from, Math.min(total, from + PAGE) - 1)));
+    for (const r of batch) out.push(...unwrap(r));
   }
   return out;
 }
@@ -40,17 +52,18 @@ class SupabaseStore {
 
   async init() {
     // Fails fast if either migration is missing.
-    for (const [table, col] of [['alerts', 'alert_id'], ['users', 'id'], ['api_keys', 'id']]) {
-      const { error } = await this.sb.from(table).select(col, { head: true, count: 'exact' });
-      if (error) throw new Error(`${error.message}. Apply every file in supabase/migrations first.`);
-    }
-    const { error: colErr } = await this.sb.from('firewall_rules').select('enforcement').limit(1);
-    if (colErr) throw new Error(`${colErr.message}. Apply supabase/migrations/20261016010000_real_integrations.sql.`);
-    for (const [table, col] of [['alert_notes', 'id'], ['suppressions', 'id'], ['firewall_rules', 'expires_at'], ['alerts', 'assignee_id']]) {
-      const { error } = await this.sb.from(table).select(col).limit(1);
-      if (error) throw new Error(`${error.message}. Apply supabase/migrations/20261017000000_cases_tuning_expiry.sql.`);
-    }
-    const { count } = await this.sb.from('cves').select('cve_id', { count: 'exact', head: true });
+    // Every probe runs at once; a cold start should cost one round trip, not ten.
+    const probe = (table, col) => this.sb.from(table).select(col).limit(1);
+    const [base, enf, cases, { count }] = await Promise.all([
+      Promise.all([['alerts', 'alert_id'], ['users', 'id'], ['api_keys', 'id']].map(([t, c]) => probe(t, c))),
+      probe('firewall_rules', 'enforcement'),
+      Promise.all([['alert_notes', 'id'], ['suppressions', 'id'], ['firewall_rules', 'expires_at'], ['alerts', 'assignee_id']].map(([t, c]) => probe(t, c))),
+      this.sb.from('cves').select('cve_id', { count: 'exact', head: true })
+    ]);
+    const failed = (list) => list.find((r) => r.error);
+    if (failed(base)) throw new Error(`${failed(base).error.message}. Apply every file in supabase/migrations first.`);
+    if (enf.error) throw new Error(`${enf.error.message}. Apply supabase/migrations/20261016010000_real_integrations.sql.`);
+    if (failed(cases)) throw new Error(`${failed(cases).error.message}. Apply supabase/migrations/20261017000000_cases_tuning_expiry.sql.`);
     if (!count) unwrap(await this.sb.from('cves').upsert(referenceCves(seed)));
     if (this.demo) {
       const { count: alerts } = await this.sb.from('alerts').select('alert_id', { count: 'exact', head: true });
@@ -94,11 +107,12 @@ class SupabaseStore {
   get alerts() {
     const sb = this.sb;
     return {
-      async list({ severity, status, q, ip, assignee, since, limit = 500 } = {}) {
-        const make = () => {
-          let query = sb.from('alerts').select('*').order('detected_at', { ascending: false }).order('alert_id');
+      async list({ severity, status, statuses, q, ip, assignee, since, lite, limit = 500 } = {}) {
+        const make = (opts) => {
+          let query = sb.from('alerts').select(lite ? ALERT_LITE : '*', opts).order('detected_at', { ascending: false }).order('alert_id');
           if (severity) query = query.eq('severity', severity);
           if (status) query = query.eq('status', status);
+          if (statuses) query = query.in('status', statuses);
           if (since) query = query.gte('detected_at', since);
           if (assignee === 'none') query = query.is('assignee_id', null);
           else if (assignee) query = query.eq('assignee_id', Number(assignee));
@@ -109,9 +123,16 @@ class SupabaseStore {
           }
           return query;
         };
-        return paged(make, limit);
+            return paged(make, limit);
       },
       async get(id) { return unwrap(await sb.from('alerts').select('*').eq('alert_id', id).maybeSingle()); },
+      async count({ open } = {}) {
+        let q = sb.from('alerts').select('alert_id', { count: 'exact', head: true });
+        if (open) q = q.in('status', OPEN_STATUSES);
+        const { count, error } = await q;
+        if (error) throw new Error(`Supabase: ${error.message}`);
+        return count || 0;
+      },
       async insert(row) { return unwrap(await sb.from('alerts').insert(row).select().single()); },
       async insertMany(rows) {
         const inserted = [];
@@ -187,7 +208,7 @@ class SupabaseStore {
   get rules() {
     const sb = this.sb;
     return {
-      async list({ limit = 5000 } = {}) { return paged(() => sb.from('firewall_rules').select('*').order('created_at', { ascending: false }).order('rule_id'), limit); },
+      async list({ limit = 5000 } = {}) { return paged((o) => sb.from('firewall_rules').select('*', o).order('created_at', { ascending: false }).order('rule_id'), limit); },
       async get(id) { return unwrap(await sb.from('firewall_rules').select('*').eq('rule_id', id).maybeSingle()); },
       async activeFor(ip) { return unwrap(await sb.from('firewall_rules').select('*').eq('target_ip', ip).eq('is_active', true)); },
       async active(action) {
@@ -238,11 +259,18 @@ class SupabaseStore {
   get investigations() {
     const sb = this.sb;
     return {
-      async list({ since, limit = 500 } = {}) {
-        return paged(() => {
-          const q = sb.from('investigations').select('*').order('created_at', { ascending: false }).order('investigation_id');
+      async list({ since, lite, limit = 500 } = {}) {
+        return paged((o) => {
+          const q = sb.from('investigations').select(lite ? INV_LITE : '*', o).order('created_at', { ascending: false }).order('investigation_id');
           return since ? q.gte('created_at', since) : q;
         }, limit);
+      },
+      async forAlert(alertId) {
+        return unwrap(await sb.from('investigations').select('*').eq('alert_id', alertId).order('created_at', { ascending: false }).limit(100));
+      },
+      async forIp(ip, { limit = 50 } = {}) {
+        const t = safeTerm(ip);
+        return unwrap(await sb.from('investigations').select(INV_LITE).or(`attacker_ip.eq.${t},target_ip.eq.${t}`).order('created_at', { ascending: false }).limit(limit));
       },
       async get(id) { return unwrap(await sb.from('investigations').select('*').eq('investigation_id', id).maybeSingle()); },
       async insert(row) { return unwrap(await sb.from('investigations').insert(row).select().single()); },
@@ -302,7 +330,7 @@ class SupabaseStore {
     const sb = this.sb;
     return {
       async add(entry) { return unwrap(await sb.from('audit_log').insert(entry).select().single()); },
-      async list(limit = 50) { return paged(() => sb.from('audit_log').select('*').order('id', { ascending: false }), limit); }
+      async list(limit = 50) { return paged((o) => sb.from('audit_log').select('*', o).order('id', { ascending: false }), limit); }
     };
   }
 }

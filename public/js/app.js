@@ -90,16 +90,30 @@ async function route(force = false) {
 
 // Views re-render in place when another view or panel mutates data.
 on('data:changed', () => {
-  refreshChrome();
+  scheduleChrome();
   if (current.name && !layerOpen()) {
     import(`./views/${current.name}.js`).then((m) => (m.onDataChanged ? m.onDataChanged() : null));
   }
 });
 
 // ---- Chrome: health, config, open count ----------------------------------
+// Health and config barely change; the open count does. Health and config are
+// re-read at most once a minute, the badge on every refresh.
+let chromeAt = 0;
+let chromeTimer = null;
+function scheduleChrome() {
+  clearTimeout(chromeTimer);
+  chromeTimer = setTimeout(refreshChrome, 800);
+}
+
 async function refreshChrome() {
+  clearTimeout(chromeTimer);
   try {
-    const [health, config, open] = await Promise.all([api('/health'), api('/config'), api('/alerts')]);
+    const full = !state.health || Date.now() - chromeAt > 60000;
+    const [health, config, count] = await Promise.all([
+      full ? api('/health') : state.health, full ? api('/config') : state.config, api('/alerts/count')
+    ]);
+    if (full) chromeAt = Date.now();
     state.health = health;
     state.config = config;
     const dot = $('#sys-dot');
@@ -108,8 +122,7 @@ async function refreshChrome() {
     $('#sys-store').title = health.storage.detail || '';
     $('#brand-env').textContent = health.demo ? 'demo' : health.storage.kind === 'supabase' ? 'supabase' : 'local';
     $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Playbook';
-    const n = open.filter((a) => ['NEW', 'INVESTIGATING', 'CONFIRMED'].includes(a.status)).length;
-    $('#nav-open').textContent = n ? String(n) : '';
+    $('#nav-open').textContent = count.open ? String(count.open) : '';
   } catch {
     $('#sys-dot').className = 'live-dot live-dot--off';
     $('#sys-store').textContent = 'Offline';
@@ -244,6 +257,7 @@ on('auth:required', async () => {
   reauth = false;
   paintUser(user);
   $('#shell').hidden = false;
+  chromeAt = 0;
   refreshChrome();
   route(true);
 });
@@ -269,7 +283,9 @@ async function boot() {
   const h = state.health;
   if (h && h.storage.warning) toast('Storage fallback', h.storage.warning, 'error', 9000);
   if (h && h.enforcement && h.enforcement.warning) toast('Enforcement', h.enforcement.warning, 'error', 9000);
-  setInterval(refreshChrome, 30000);
+  // Background tabs do not poll; coming back refreshes straight away.
+  setInterval(() => { if (!document.hidden) refreshChrome(); }, 30000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleChrome(); });
   route();
 }
 boot();
