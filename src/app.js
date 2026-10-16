@@ -109,7 +109,12 @@ function createApp({ store, enforcer, nvd = null, reputation = null, env = proce
   app.post('/api/auth/setup', loginLimit, wrap(async (req, res) => {
     if ((await store.users.count()) > 0) return bad(res, 'Setup is already complete. Sign in instead.', 409);
     const b = req.body || {};
-    if (env.AEGIS_SETUP_TOKEN && b.setup_token !== env.AEGIS_SETUP_TOKEN) return bad(res, 'Setup token does not match AEGIS_SETUP_TOKEN', 403);
+    // Pasted tokens often carry a space or newline; neither can be part of a real token.
+    const want = Buffer.from(String(env.AEGIS_SETUP_TOKEN || '').trim());
+    const given = Buffer.from(String(b.setup_token || '').trim());
+    if (want.length && (given.length !== want.length || !require('crypto').timingSafeEqual(given, want))) {
+      return bad(res, 'Setup token does not match AEGIS_SETUP_TOKEN', 403);
+    }
     const err = validateNewUser(b);
     if (err) return bad(res, err);
     const user = await store.users.insert({ email: String(b.email).trim().toLowerCase(), name: String(b.name).trim().slice(0, 60), role: 'admin', password_hash: auth.hashPassword(b.password), last_login_at: new Date().toISOString() });

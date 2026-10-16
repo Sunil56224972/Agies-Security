@@ -69,7 +69,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok(r.status === 403, 'setup rejects wrong setup token');
     r = await call('POST', '/api/auth/setup', { body: { name: 'Priya Rao', email: 'priya@corp.example', password: 'weak' , setup_token: 'bootstrap-123' } });
     ok(r.status === 400, 'setup enforces password policy');
-    r = await call('POST', '/api/auth/setup', { body: { name: 'Priya Rao', email: 'Priya@corp.example', password: 'Str0ngPassword', setup_token: 'bootstrap-123' } });
+    r = await call('POST', '/api/auth/setup', { body: { name: 'Priya Rao', email: 'Priya@corp.example', password: 'Str0ngPassword', setup_token: ' bootstrap-123\n' } });
     ok(r.status === 201 && r.json.user.role === 'admin' && jar.admin, 'first admin created and signed in');
     const adminId = r.json.user.id;
     ok((await call('POST', '/api/auth/setup', { as: null, body: { name: 'X', email: 'x@y.z', password: 'Str0ngPassword' } })).status === 409, 'setup cannot run twice');
