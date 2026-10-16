@@ -1,47 +1,44 @@
 # Aegis Security
 
-An incident response console for a small SOC. It takes a network IDS alert and works out whether the attack actually landed. It pulls evidence from the asset inventory, the CVE knowledge base and the target host's logs, reaches a verdict, and contains the source when the attack succeeded. An analyst can override any verdict, and containment follows the override.
+An incident response console for a small SOC. Aegis takes IDS alerts from your sensors and works out whether each attack actually landed. It checks the target against your asset inventory and against NVD CVE data, matched by CPE version range, and reads the host's own logs for the attacker's address. It then records a verdict and pushes a containment rule to your firewall, and reports whether the firewall actually picked the rule up.
 
-The backend is Express on Node, with Supabase (Postgres) for storage. If Supabase is not configured, the server runs against a local file sandbox, so it works out of the box.
+Express on Node, with Supabase Postgres or a local file for storage. There is no build step.
 
 ![Overview](docs/images/overview.png)
 
-## What it does
+## How it works
 
-Most IDS alerts are noise. A Log4j signature firing against a Python service is not a compromise. A Log4j signature firing against an unpatched Java app, followed by an outbound connection from that host, is one. Aegis runs the same checks an analyst would, in the same order, and shows its work.
+```
+ Suricata / Zeek / any IDS --POST /api/ingest/alerts-->  +--------+  --feed / webhook / Cloudflare-->  firewall
+ nginx, auth, EDR logs     --POST /api/ingest/logs---->  | Aegis  |  <--GET /api/feeds/blocklist.txt-- (pull)
+ CMDB / scanner export     --Assets > Import---------->  +--------+  <--NVD CVE API 2.0 (CPE ranges, CISA KEV)
+```
 
-Every investigation goes through six phases. The console streams each one live:
+Every investigation runs six phases, streamed live to the console:
 
-| Phase | What happens | Tools |
-| --- | --- | --- |
-| Triage | Load the alert and classify the payload (JNDI, traversal, SQLi, brute force, beaconing) | `ingest_nids_alerts`, `get_packet_metadata` |
-| Enrich | Look up the target in the CMDB and match its software against known CVEs | `lookup_asset_inventory`, `query_cve_kb` |
-| Correlate | Read the host's HTTP, auth and EDR logs for the attacker's IP | `query_server_logs` |
-| Decide | Weigh exposure against host evidence and record a verdict with confidence and MITRE mapping | `record_investigation_verdict` |
-| Contain | Block the source IP, or isolate the host if the compromise is confirmed | `execute_firewall_action` |
-| Verify | Probe the perimeter to confirm the block holds | `verify_defense_state` |
+| Phase | What happens |
+| --- | --- |
+| Triage | Load the alert and classify the payload (JNDI, traversal, SQLi, brute force, beaconing) |
+| Enrich | Find the target in the inventory and test its installed versions against NVD CPE ranges. Optionally check the source IP on AbuseIPDB |
+| Correlate | Read the target's ingested HTTP, auth and EDR logs for the attacker's address |
+| Decide | Weigh exposure against host evidence and record a verdict with confidence and a MITRE mapping |
+| Contain | Create a BLOCK rule for the source, and an ISOLATE rule for the host when compromise is confirmed |
+| Verify | Read the rule back from the enforcement backend: `ENFORCED`, `PENDING`, `FAILED` or `RECORDED` |
 
-There are two engines:
+Aegis never marks an alert *contained* until the backend has confirmed the rule. A rule that is only published shows as `PENDING`, and one the firewall rejected shows as `FAILED`. Both appear under Containment > Needs attention.
 
-- **Playbook** (the default) is deterministic and needs no API key. It gives the same answer on every run, which suits demos and tests.
-- **LLM agent** is optional. It uses Groq tool calling with the same eight tools, so it cannot do anything the playbook cannot. Set `GROQ_API_KEY` to enable it, then pick it in Settings or per case.
+The **playbook** engine is deterministic and needs no API key. The optional **LLM agent** drives the same tools through Groq tool calling, so it cannot do anything the playbook cannot. It falls back to the playbook if the model errors.
 
 ## Screens
 
 | | |
 | --- | --- |
 | ![Alerts](docs/images/alerts.png) | ![Investigation](docs/images/investigation.png) |
-| Alert queue with severity filters and a detail drawer | Live investigation timeline, verdict and report |
+| Alert queue with severity filters | Live investigation timeline, verdict and report |
 | ![Containment](docs/images/containment.png) | ![Assets](docs/images/assets.png) |
-| Firewall rules and a perimeter probe | Hosts and the vulnerability knowledge base |
-| ![Telemetry](docs/images/telemetry.png) | ![Dark theme](docs/images/overview-dark.png) |
-| Host log search | Dark theme |
-
-Other things worth knowing:
-
-- Press `/` or `Ctrl+K` anywhere to search alerts, hosts, CVEs and rules.
-- The theme follows your OS until you toggle it.
-- Each finished case produces a markdown incident report you can copy straight into a ticket.
+| Rules with enforcement read-back | Inventory and NVD-backed CVE records |
+| ![Settings](docs/images/settings.png) | ![Dark theme](docs/images/overview-dark.png) |
+| Team, API keys, integrations, policy | Dark theme |
 
 ## Quick start
 
@@ -49,82 +46,141 @@ Requires Node 18 or newer.
 
 ```bash
 npm install
+cp .env.example .env      # optional: fill in what applies
 npm start
 ```
 
-Open http://localhost:3000. With no configuration the server keeps its data in `.data/sandbox.json`. To start over, use Settings > Reset demo data.
+Open http://localhost:3000. On first run the console asks you to create the administrator account. On a host other people can reach, set `AEGIS_SETUP_TOKEN` first: the setup screen then asks for it, so nobody else can claim the account before you do.
+
+A fresh install is empty, with no alerts, hosts or CVEs. To try it with sample incidents, start with `AEGIS_DEMO=1`, ideally against a throwaway file:
+
+```bash
+AEGIS_DEMO=1 AEGIS_DATA_FILE=.data/demo.json npm start
+```
+
+## Connecting your environment
+
+### 1. Inventory
+
+Assets > Add host, or Assets > Import with a CSV or JSON export from your CMDB or scanner. Columns:
+
+```
+ip_address,hostname,os_version,owner,criticality,waf_enabled,services,installed_packages
+10.20.0.5,web-01,Ubuntu 22.04,Payments,HIGH,true,"443/nginx 1.24.0; 22/OpenSSH 8.9p1",log4j-core-2.17.1.jar
+```
+
+Include versions. Exposure comes from comparing them against NVD CPE version ranges, so `log4j-core-2.14.1` is exposed to CVE-2021-44228 and `2.17.1` is not.
+
+### 2. CVE records
+
+Assets > CVE records > Add from NVD fetches a CVE by id: CVSS, CWE, CPE ranges, references and the CISA KEV flag. Sync from NVD refreshes every record. Without `NVD_API_KEY`, NVD allows 5 requests per 30 seconds, and Aegis paces itself to match.
+
+### 3. Sensor alerts
+
+Create an API key with the `ingest` scope under Settings > API keys. The key is shown once, with ready-to-paste commands. Aegis accepts Suricata EVE JSON as NDJSON, a JSON array, or `{"events": [...]}`, up to 5000 events per request. Non-alert EVE records are skipped, and events that were already sent are de-duplicated.
+
+```bash
+# Stream Suricata alerts as they happen
+tail -F /var/log/suricata/eve.json | grep --line-buffered '"event_type":"alert"' | \
+  while read -r line; do printf '%s\n' "$line" | curl -sS -X POST https://aegis.example.com/api/ingest/alerts \
+    -H "Authorization: Bearer $AEGIS_KEY" -H "Content-Type: application/x-ndjson" --data-binary @-; done
+```
+
+For production, ship with Filebeat or Vector rather than a shell loop. Use an HTTP output to `/api/ingest/alerts` with the bearer header and `application/x-ndjson`. Other IDSs can send generic JSON with `signature`, `severity`, `source_ip`, `dest_ip`, `dest_port`, `payload` and `timestamp`. The response reports `{accepted, duplicates, skipped, rejected}` with a reason for each rejected line.
+
+Enable Settings > Investigate ingested alerts to triage every HIGH or CRITICAL alert automatically.
+
+### 4. Host logs
+
+The Correlate phase can only find evidence you have shipped:
+
+```bash
+curl -sS -X POST "https://aegis.example.com/api/ingest/logs?host_ip=10.20.0.5&log_type=http_access" \
+  -H "Authorization: Bearer $AEGIS_KEY" -H "Content-Type: text/plain" --data-binary @/var/log/nginx/access.log
+```
+
+The log types are `http_access`, `auth_log`, `edr_process` and `system`. Plain lines, NDJSON and JSON arrays are all accepted. When `log_type` is left out, Aegis infers it from the line's format.
+
+### 5. Enforcement
+
+Set `ENFORCEMENT_MODE` in `.env`:
+
+| Mode | How rules reach the firewall | When a rule counts as ENFORCED |
+| --- | --- | --- |
+| `feed` (default) | Firewall pulls `/api/feeds/blocklist.txt` and `/api/feeds/isolate.txt` | After the firewall's next pull |
+| `webhook` | `POST` to `ENFORCEMENT_WEBHOOK_URL` for each create or remove | When the receiver answers 2xx |
+| `cloudflare` | IP Access Rule on `CF_ZONE_ID` (BLOCK only) | When the rule reads back as `mode=block` |
+| `record` | Nowhere. Rules are stored for you to apply by hand | Never; shown as RECORDED |
+
+**Pull feed.** Create a key with the `feed` scope. The feed is plain text, one address per line. Firewalls that only support basic auth can use any username, with the key as the password.
+
+- PAN-OS: Objects > External Dynamic Lists, type IP List, source the blocklist URL, then reference the EDL in a deny policy.
+- FortiGate: Security Fabric > External Connectors > Threat Feeds > IP Address, then use it in a deny policy.
+- pfSense / OPNsense: Firewall > Aliases, type URL Table (IPs), then use the alias in a block rule.
+
+**Webhook.** The body is `{"event": "rule.created" | "rule.removed", "sent_at", "rule": {rule_id, action, target_ip, ip_version, reason, enacted_by, investigation_id}}`. When `ENFORCEMENT_WEBHOOK_SECRET` is set, each request carries `X-Aegis-Timestamp` and `X-Aegis-Signature: sha256=<hex>`, an HMAC-SHA256 of `"<timestamp>.<raw body>"`. Verify it and reject old timestamps:
+
+```js
+const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(`${req.get('x-aegis-timestamp')}.${rawBody}`).digest('hex');
+const fresh = Math.abs(Date.now() / 1000 - Number(req.get('x-aegis-timestamp'))) < 300;
+if (!fresh || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.get('x-aegis-signature')))) return res.sendStatus(401);
+```
+
+Reply `{"status": "failed", "detail": "..."}` to mark the rule FAILED, or `{"id": "..."}` to record the remote id.
+
+**Cloudflare.** Create an API token with *Zone > Firewall Services > Edit*, and set `CF_API_TOKEN` and `CF_ZONE_ID`. ISOLATE rules are recorded only, because the edge cannot quarantine an internal host.
+
+## Users and roles
+
+| Role | Can |
+| --- | --- |
+| Administrator | Everything: users, API keys, policy, CVE sync |
+| Analyst | Investigate, override verdicts, create and toggle rules, edit inventory |
+| Read only | View everything, change nothing |
+
+Passwords are hashed with scrypt. Sessions are HMAC-signed, HttpOnly, SameSite=Strict cookies that last 12 hours. Changing a password or role, or disabling a user, ends that user's other sessions at once. Cookie-authenticated writes must carry an `X-Aegis-Client` header, which blocks cross-site form posts. API keys are stored as SHA-256 hashes and scoped to `ingest` or `feed`. Login attempts are rate limited, and failed sign-ins are written to the audit log. Behind HTTPS, set `COOKIE_SECURE=1`. Behind a reverse proxy, also set `TRUST_PROXY`.
 
 ## Supabase backend
 
 1. Create a project at https://supabase.com.
-2. Apply the schema in `supabase/migrations/20261016000000_aegis_schema.sql`. Use whichever of these suits you:
-   - **SQL editor:** paste the file into the project's SQL editor and run it.
-   - **Supabase CLI:** run `supabase link --project-ref <ref>`, then `supabase db push`.
-   - **Supabase MCP:** ask your agent to run `apply_migration` with the file's contents.
-3. Copy `.env.example` to `.env` and fill in `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (Project settings > API).
-4. Restart the server. On first boot it seeds the tables. The startup banner and the sidebar both show `Supabase` as the storage backend.
+2. Apply **both** files in `supabase/migrations/`, in order: the base schema, then `..._real_integrations.sql` (users, API keys, enforcement state). Use the SQL editor, `supabase db push`, or the Supabase MCP `apply_migration` tool.
+3. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, then restart. Settings > Integrations shows the active backend.
 
-Row level security is enabled on every table, and no policies are defined. The anon key can read nothing; only the server, using the service role key, can access the data. Keep that key on the server and never ship it to a browser.
+Row level security is on for every table, with no policies, so the anon key can read nothing. Only the server, holding the service role key, has access. If Supabase is configured but unreachable, the server refuses to start rather than quietly writing incidents to a local file. Set `AEGIS_ALLOW_FALLBACK=1` if you would rather it fall back.
 
-If the credentials are set but the project is unreachable or the migration has not been applied, the server logs a warning and falls back to the local sandbox. It does not fail every request. Settings > Storage shows which backend is active and why.
-
-### Connecting the Supabase MCP server
-
-To let an AI coding agent manage the project directly (apply migrations, run SQL, read logs), add the official MCP server to your agent's config:
+To let a coding agent manage the project, add the official MCP server:
 
 ```json
-{
-  "mcpServers": {
-    "supabase": {
-      "command": "npx",
-      "args": ["-y", "@supabase/mcp-server-supabase@latest", "--project-ref=<your-project-ref>"],
-      "env": { "SUPABASE_ACCESS_TOKEN": "<personal-access-token>" }
-    }
-  }
-}
+{ "mcpServers": { "supabase": { "command": "npx", "args": ["-y", "@supabase/mcp-server-supabase@latest", "--project-ref=<ref>"], "env": { "SUPABASE_ACCESS_TOKEN": "<token>" } } } }
 ```
 
-Create the access token under Account > Access tokens. Add `--read-only` once the schema is in place if you only want the agent to read.
+## What Aegis does not do for you
 
-## Seeded scenarios
-
-The seed data covers the common outcomes, and the cases are related: 9006 is follow-on activity from 9002.
-
-| Alert | Scenario | Expected verdict |
-| --- | --- | --- |
-| ALERT-2026-9001 | Log4Shell JNDI against Tomcat with log4j 2.14.1; Java then spawns a shell that fetches a second stage | Attack succeeded: source blocked, host isolated |
-| ALERT-2026-9002 | Path traversal against Apache httpd 2.4.49; httpd runs `id` and `uname` | Attack succeeded: source blocked, host isolated |
-| ALERT-2026-9003 | Log4j payload against a FastAPI (Python) service with no Java on the box | False positive, no action |
-| ALERT-2026-9004 | SSH password spray against the bastion; every attempt fails and fail2ban bans the source | Attack failed, source blocked |
-| ALERT-2026-9005 | sqlmap against a PHP login that uses prepared statements | Attack failed, source blocked |
-| ALERT-2026-9006 | 60-second TLS beacon from the portal, which was compromised in 9002, to the same attacker | Attack succeeded: C2 blocked, host isolated |
-
-You can also submit your own alert from the Alerts page.
+- It does not capture traffic. Alerts come from your IDS, and evidence comes from the logs you ship. A host that sends no logs gets a lower-confidence verdict.
+- It does not touch your firewall directly. It publishes rules through one of the four modes above, and the firewall has to be configured to consume them.
+- CVE data comes from NVD. Records are only as current as your last sync, and CPE matching is only as good as the versions in your inventory.
+- Retention purges closed alerts, their investigations and telemetry older than the configured window, every hour. Open alerts are never purged.
 
 ## API
 
-All endpoints are JSON under `/api`.
+Browser endpoints use the session cookie. Ingest and feed endpoints use `Authorization: Bearer <key>`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health` | Storage backend, engine and uptime |
-| GET | `/overview` | KPIs, 24h volume, severity and verdict breakdown |
-| GET | `/alerts` | List alerts (`severity`, `status`, `q`) |
-| GET | `/alerts/:id` | Alert with its asset and investigations |
-| POST | `/alerts` | Submit an alert |
-| POST | `/alerts/:id/status` | Change alert status |
-| POST | `/investigations/stream` | Run an investigation, streamed as server-sent events |
-| GET | `/investigations` | List investigations |
-| GET | `/investigations/:id` | One investigation with its steps |
-| POST | `/investigations/:id/override` | Analyst override; reconciles containment |
-| GET / POST | `/rules` | List or create firewall rules |
-| POST | `/rules/:id/toggle` | Enable or disable a rule |
-| POST | `/probe` | Perimeter probe for an IP |
-| GET | `/assets`, `/cves`, `/logs` | Inventory, knowledge base, host logs |
-| GET | `/search` | Global search used by the command palette |
-| GET / PUT | `/config` | Policy and engine settings |
-| GET | `/audit` | Audit trail |
-| POST | `/reset` | Restore the seed data |
+| GET | `/api/health` | Storage, enforcement, intel and engine status |
+| GET / POST | `/api/auth/state`, `/setup`, `/login`, `/logout`, `/password` | Sessions |
+| GET / POST / PATCH | `/api/users`, `/api/users/:id` | Team management (admin) |
+| GET / POST | `/api/keys`, `/api/keys/:id/revoke` | API keys (admin) |
+| POST | `/api/ingest/alerts`, `/api/ingest/logs` | Sensor ingest (`ingest` key) |
+| GET | `/api/feeds/blocklist.txt`, `/api/feeds/isolate.txt` | Firewall feeds (`feed` key) |
+| GET / POST | `/api/alerts`, `/api/alerts/:id/status` | Alert queue |
+| POST | `/api/investigations/stream` | Run an investigation (server-sent events) |
+| POST | `/api/investigations/:id/override` | Override a verdict; containment follows |
+| GET / POST | `/api/rules`, `/rules/:id/toggle`, `/rules/:id/verify`, `/api/verify` | Containment and read-back |
+| GET / POST / PUT / DELETE | `/api/assets`, `/api/assets/:ip`, `/api/assets/import` | Inventory |
+| GET / POST / DELETE | `/api/cves`, `/api/cves/:id`, `/api/cves/sync` | NVD-backed CVE records |
+| GET | `/api/logs`, `/api/audit`, `/api/search`, `/api/overview` | Read models |
+| GET / PUT | `/api/config` | Response policy |
 
 ## Tests
 
@@ -132,23 +188,25 @@ All endpoints are JSON under `/api`.
 npm test
 ```
 
-This runs every seeded alert through the playbook against an isolated in-memory store. It checks each verdict and final status, and that containment rules were written.
+There are three suites. Unit tests cover CPE version matching, EVE normalisation, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes about 40 end-to-end checks: auth, roles, CSRF, ingest and de-duplication, feeds, CSV import, enforcement read-back and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
 
-To regenerate the screenshots, keep `npm start` running and run `npm run screenshots`. To record a walkthrough video, run `node demo_video/record_demo.js`. The script needs Playwright's Chromium (`npx playwright install chromium`).
+To regenerate the screenshots or the walkthrough video, start a demo server (`AEGIS_DEMO=1 AEGIS_DATA_FILE=.data/demo.json npm start`), then run `npm run screenshots` or `node demo_video/record_demo.js`. Both need `npx playwright install chromium`.
 
 ## Project layout
 
 ```
-server.js                 Express app and API routes
-src/engine/               analysis rules, tools, playbook and LLM investigator
-src/store/                storage interface, Supabase and local sandbox backends
-src/seed.js               demo telemetry
-supabase/migrations/      Postgres schema
-public/                   single-page console (no build step)
-  css/                    tokens, layout, components, views
-  js/views/               one module per screen
-test/smoke.js             end-to-end playbook test
-scripts/screenshots.js    README screenshots
+server.js               boot: store, enforcer, intel clients, banner
+src/app.js              HTTP hardening, sessions, auth, users, API keys
+src/routes.js           console API, ingest, feeds, retention
+src/engine/             analysis rules, tools, playbook and LLM investigator
+src/enforce/            record / feed / webhook / Cloudflare adapters
+src/ingest/             EVE, generic alert, log and CSV normalisation
+src/intel/              NVD CVE API 2.0 client, AbuseIPDB
+src/security/           scrypt, signed sessions, API keys, rate limits
+src/store/              Supabase and local file backends
+supabase/migrations/    Postgres schema
+public/                 single-page console (ES modules, no build step)
+test/                   unit, smoke and HTTP suites
 ```
 
 ## License

@@ -1,4 +1,4 @@
-import { $, $$, api, stream, esc, sev, pill, flow, ago, stamp, label, markPayload, emptyState, toast, busy, emit, state } from '../core.js';
+import { $, $$, api, stream, esc, sev, pill, flow, ago, stamp, label, markPayload, emptyState, toast, busy, emit, state, can } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
 
 const PHASES = [['triage', 'Triage'], ['enrich', 'Enrich'], ['correlate', 'Correlate'], ['decide', 'Decide'], ['contain', 'Contain'], ['verify', 'Verify']];
@@ -93,7 +93,7 @@ async function openCase(id, autoRun = false, quiet = false) {
       </div>
       <div class="case-head__actions">
         ${llm ? `<div class="seg" id="engine-seg" title="Investigation engine"><button data-e="playbook" class="${engine !== 'llm' ? 'is-on' : ''}">Playbook</button><button data-e="llm" class="${engine === 'llm' ? 'is-on' : ''}">LLM</button></div>` : ''}
-        <button class="btn btn--primary btn--lg" id="run-btn" ${a.status === 'INVESTIGATING' ? 'disabled' : ''}>${inv ? 'Re-run' : 'Run investigation'}</button>
+        ${can('respond') ? `<button class="btn btn--primary btn--lg" id="run-btn" ${a.status === 'INVESTIGATING' ? 'disabled' : ''}>${inv ? 'Re-run' : 'Run investigation'}</button>` : '<span class="tag">read only</span>'}
       </div>
     </div>
     <div class="phases" id="phases">${PHASES.map(([k, t], i) => `<div class="phase" data-phase="${k}"><span class="phase__n">${String(i + 1).padStart(2, '0')}</span>${t}</div>`).join('')}</div>
@@ -116,13 +116,13 @@ async function openCase(id, autoRun = false, quiet = false) {
   $$('#engine-seg button', box).forEach((b) => {
     b.onclick = () => { $$('#engine-seg button', box).forEach((x) => x.classList.toggle('is-on', x === b)); };
   });
-  $('#run-btn', box).onclick = () => run(a.alert_id);
+  if ($('#run-btn', box)) $('#run-btn', box).onclick = () => run(a.alert_id);
   $$('[data-inv]', box).forEach((h) => {
     h.onclick = () => { const i = investigations.find((x) => x.investigation_id === h.dataset.inv); if (i) showInvestigation(i, false); };
   });
   if (inv) showInvestigation(inv, false);
   hydrateIcons(box);
-  if (autoRun && a.status !== 'INVESTIGATING') {
+  if (autoRun && a.status !== 'INVESTIGATING' && can('respond')) {
     history.replaceState(null, '', `#/investigate/${a.alert_id}`);
     run(a.alert_id);
   }
@@ -172,7 +172,7 @@ function bindToggles(list, steps) {
 }
 
 async function run(alertId) {
-  if (ctx.running) return;
+  if (ctx.running || !can('respond')) return;
   const box = $('#case', ctx.el);
   const btn = $('#run-btn', box);
   const seg = $('#engine-seg .is-on', box);
@@ -268,7 +268,7 @@ function appendVerdict(area, inv) {
       <div class="facts">
         <div><span>Tactic</span>${esc(inv.mitre_tactic || '-')}</div>
         <div><span>Technique</span>${esc(inv.mitre_technique || '-')}</div>
-        <div><span>Response</span><div class="acts">${(inv.actions_taken || []).length ? inv.actions_taken.map((x) => `<span>${esc(label(x.type))} <span class="mono">${esc(x.target)}</span></span>`).join('') : 'None'}</div></div>
+        <div><span>Response</span><div class="acts">${(inv.actions_taken || []).length ? inv.actions_taken.map((x) => `<span>${esc(label(x.type))} <span class="mono">${esc(x.target)}</span>${x.enforcement ? ` ${pill(x.enforcement)}` : ''}</span>`).join('') : 'None'}</div></div>
         <div><span>Duration</span><span class="mono">${inv.duration_ms ? `${(inv.duration_ms / 1000).toFixed(1)}s` : '-'}</span></div>
       </div>
       ${ov ? `<div class="notice mt-12"><div><b>${esc(ov.analyst)}</b> changed this from ${esc(label(ov.previous_outcome))} to ${esc(label(ov.outcome))} ${ago(ov.at)}. <span class="muted">"${esc(ov.notes)}"</span><div class="small muted mt-8">${ov.changes.map(esc).join(' &middot; ')}</div></div></div>` : ''}
@@ -277,7 +277,7 @@ function appendVerdict(area, inv) {
       <div class="row"><h3 class="section-title grow" style="margin:0">Report</h3><button class="btn btn--ghost btn--sm" id="copy-report">Copy as markdown</button></div>
       <div class="report mt-12">${renderReport(inv.report || '')}</div>
     </div>
-    <div class="override">
+    ${can('respond') ? `<div class="override">
       <h3 class="section-title">Override verdict</h3>
       <div class="override__grid">
         <label class="field"><span>Correct outcome</span><select class="select" id="ov-outcome">${Object.entries(OUTCOME_TEXT).map(([k, t]) => `<option value="${k}" ${k === inv.outcome ? 'disabled' : ''}>${t}</option>`).join('')}</select></label>
@@ -285,18 +285,18 @@ function appendVerdict(area, inv) {
         <button class="btn" id="ov-apply">Apply</button>
       </div>
       <p class="small muted" style="margin:8px 0 0">False positive / recon rolls back rules from this case. Compromise confirmed blocks the source IP.</p>
-    </div>`);
+    </div>` : ''}`);
   const sel = $('#ov-outcome', area);
-  const firstOpen = [...sel.options].find((o) => !o.disabled);
+  const firstOpen = sel && [...sel.options].find((o) => !o.disabled);
   if (firstOpen) sel.value = firstOpen.value;
   $('#copy-report', area).onclick = async () => {
     try { await navigator.clipboard.writeText(inv.report || ''); toast('Report copied'); } catch { toast('Clipboard unavailable', '', 'error'); }
   };
-  $('#ov-apply', area).onclick = (e) => busy(e.currentTarget, async () => {
+  if ($('#ov-apply', area)) $('#ov-apply', area).onclick = (e) => busy(e.currentTarget, async () => {
     const notes = $('#ov-notes', area).value.trim();
     if (notes.length < 4) { $('#ov-notes', area).classList.add('is-invalid'); toast('Reason required', 'Add a short note for the audit log.', 'error'); return; }
     try {
-      const r = await api(`/investigations/${inv.investigation_id}/override`, { method: 'POST', body: { outcome: sel.value, notes, analyst: state.config && state.config.analystName } });
+      const r = await api(`/investigations/${inv.investigation_id}/override`, { method: 'POST', body: { outcome: sel.value, notes } });
       toast('Verdict overridden', r.changes.join('. '), 'ok', 6000);
       emit('data:changed');
       ctx.running = false;

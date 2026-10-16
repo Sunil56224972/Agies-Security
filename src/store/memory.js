@@ -3,58 +3,73 @@
 const fs = require('fs');
 const path = require('path');
 const seed = require('../seed');
-const { materializeSeed, matchesQuery } = require('./shared');
+const { materializeSeed, emptyState, matchesQuery, publicUser, publicKey, CLOSED_STATUSES } = require('./shared');
 
-// File-backed sandbox used when Supabase credentials are absent. State is
-// written to .data/sandbox.json so local demos survive a restart.
-const DATA_FILE = path.join(__dirname, '..', '..', '.data', 'sandbox.json');
+// File-backed store used when Supabase credentials are absent. Good for a
+// single-node install or evaluation; use Supabase for anything shared.
+const DEFAULT_FILE = path.join(__dirname, '..', '..', '.data', 'aegis.json');
+const LOG_CAP = 50000;
 
 class MemoryStore {
-  constructor() {
+  constructor({ file = DEFAULT_FILE, demo = false } = {}) {
     this.kind = 'local';
-    this.label = 'Local sandbox';
+    this.label = 'Local file store';
+    this.file = file;
+    this.demo = demo;
     this.db = null;
     this.saveTimer = null;
-    this.logSeq = 1;
-    this.auditSeq = 1;
   }
 
   async init() {
     try {
-      if (fs.existsSync(DATA_FILE)) {
-        this.db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      }
+      if (fs.existsSync(this.file)) this.db = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     } catch (err) {
-      console.warn('  Local sandbox file unreadable, reseeding:', err.message);
+      // Keep the unreadable file for inspection instead of silently overwriting it.
+      const bad = `${this.file}.corrupt-${Date.now()}`;
+      try { fs.renameSync(this.file, bad); } catch { /* ignore */ }
+      console.warn(`  Store file unreadable (${err.message}); moved to ${bad}`);
     }
-    if (!this.db || !this.db.alerts) this.db = materializeSeed(seed);
-    this.logSeq = Math.max(0, ...this.db.logs.map(l => l.id)) + 1;
-    this.auditSeq = Math.max(0, ...this.db.audit.map(a => a.id)) + 1;
+    if (!this.db || !this.db.alerts) this.db = this.demo ? { ...emptyState(seed), ...materializeSeed(seed) } : emptyState(seed);
+    for (const k of ['users', 'api_keys', 'audit', 'logs', 'rules', 'investigations', 'assets', 'cves']) if (!Array.isArray(this.db[k])) this.db[k] = [];
+    this.seq = {
+      log: Math.max(0, ...this.db.logs.map((l) => l.id)) + 1,
+      audit: Math.max(0, ...this.db.audit.map((a) => a.id)) + 1,
+      user: Math.max(0, ...this.db.users.map((u) => u.id)) + 1,
+      key: Math.max(0, ...this.db.api_keys.map((k) => k.id)) + 1
+    };
     this.persist();
   }
 
   persist() {
     clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => {
-      try {
-        fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-        fs.writeFileSync(DATA_FILE, JSON.stringify(this.db, null, 2));
-      } catch (err) {
-        console.warn('  Could not persist local sandbox:', err.message);
-      }
-    }, 150);
+    this.saveTimer = setTimeout(() => this.flush(), 150);
+  }
+
+  flush() {
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      // Write-then-rename so a crash mid-write never leaves a truncated file.
+      const tmp = `${this.file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.db));
+      fs.renameSync(tmp, this.file);
+    } catch (err) {
+      console.warn('  Could not persist store:', err.message);
+    }
   }
 
   async health() {
-    return { ok: true, detail: 'File-backed sandbox (.data/sandbox.json)' };
+    return { ok: true, detail: `File store (${path.relative(process.cwd(), this.file) || this.file})` };
   }
 
+  // Replaces telemetry with the demo dataset. Users and API keys are kept.
   async reset() {
-    this.db = materializeSeed(seed);
+    const keep = { users: this.db.users, api_keys: this.db.api_keys };
+    this.db = { ...emptyState(seed), ...materializeSeed(seed), ...keep };
+    this.seq.log = this.db.logs.length + 1;
+    this.seq.audit = 2;
     this.persist();
   }
 
-  // Shallow copies keep callers from mutating stored rows by accident.
   clone(row) { return row ? JSON.parse(JSON.stringify(row)) : null; }
   touch(row, patch) {
     Object.assign(row, patch, { updated_at: new Date().toISOString() });
@@ -62,27 +77,50 @@ class MemoryStore {
     return this.clone(row);
   }
 
+  async counts() {
+    return { alerts: this.db.alerts.length, assets: this.db.assets.length, logs: this.db.logs.length, users: this.db.users.length };
+  }
+
   get alerts() {
     const s = this;
     return {
-      async list({ severity, status, q } = {}) {
+      async list({ severity, status, q, limit = 500 } = {}) {
         return s.db.alerts
-          .filter(a => (!severity || a.severity === severity) && (!status || a.status === status))
-          .filter(a => matchesQuery(q, [a.alert_id, a.signature, a.source_ip, a.dest_ip, a.category]))
+          .filter((a) => (!severity || a.severity === severity) && (!status || a.status === status))
+          .filter((a) => matchesQuery(q, [a.alert_id, a.signature, a.source_ip, a.dest_ip, a.category, a.sensor]))
           .sort((a, b) => b.detected_at.localeCompare(a.detected_at))
-          .map(r => s.clone(r));
+          .slice(0, limit)
+          .map((r) => s.clone(r));
       },
-      async get(id) { return s.clone(s.db.alerts.find(a => a.alert_id === id)); },
+      async get(id) { return s.clone(s.db.alerts.find((a) => a.alert_id === id)); },
       async insert(row) {
         const now = new Date().toISOString();
-        const rec = { detected_at: now, updated_at: now, status: 'NEW', ...row };
+        const rec = { detected_at: now, updated_at: now, status: 'NEW', external_ref: null, ...row };
         s.db.alerts.push(rec);
         s.persist();
         return s.clone(rec);
       },
+      // Idempotent bulk insert for sensors: rows whose alert_id exists are skipped.
+      async insertMany(rows) {
+        const have = new Set(s.db.alerts.map((a) => a.alert_id));
+        const fresh = rows.filter((r) => !have.has(r.alert_id) && have.add(r.alert_id));
+        s.db.alerts.push(...fresh.map((r) => ({ status: 'NEW', external_ref: null, ...r })));
+        s.persist();
+        return { inserted: fresh.map((r) => r.alert_id), duplicates: rows.length - fresh.length };
+      },
       async update(id, patch) {
-        const row = s.db.alerts.find(a => a.alert_id === id);
+        const row = s.db.alerts.find((a) => a.alert_id === id);
         return row ? s.touch(row, patch) : null;
+      },
+      async purgeClosed(before) {
+        const gone = new Set(s.db.alerts.filter((a) => CLOSED_STATUSES.includes(a.status) && a.updated_at < before).map((a) => a.alert_id));
+        if (!gone.size) return 0;
+        s.db.alerts = s.db.alerts.filter((a) => !gone.has(a.alert_id));
+        const invs = new Set(s.db.investigations.filter((i) => gone.has(i.alert_id)).map((i) => i.investigation_id));
+        s.db.investigations = s.db.investigations.filter((i) => !invs.has(i.investigation_id));
+        for (const r of s.db.rules) if (invs.has(r.investigation_id)) r.investigation_id = null;
+        s.persist();
+        return gone.size;
       }
     };
   }
@@ -90,8 +128,24 @@ class MemoryStore {
   get assets() {
     const s = this;
     return {
-      async list() { return [...s.db.assets].sort((a, b) => a.ip_address.localeCompare(b.ip_address, undefined, { numeric: true })).map(r => s.clone(r)); },
-      async get(ip) { return s.clone(s.db.assets.find(a => a.ip_address === ip)); }
+      async list() { return [...s.db.assets].sort((a, b) => a.ip_address.localeCompare(b.ip_address, undefined, { numeric: true })).map((r) => s.clone(r)); },
+      async get(ip) { return s.clone(s.db.assets.find((a) => a.ip_address === ip)); },
+      async upsert(rows) {
+        const now = new Date().toISOString();
+        for (const r of rows) {
+          const i = s.db.assets.findIndex((a) => a.ip_address === r.ip_address);
+          const rec = { last_scanned: now, ...(i >= 0 ? s.db.assets[i] : {}), ...r };
+          if (i >= 0) s.db.assets[i] = rec; else s.db.assets.push(rec);
+        }
+        s.persist();
+        return rows.map((r) => s.clone(s.db.assets.find((a) => a.ip_address === r.ip_address)));
+      },
+      async remove(ip) {
+        const n = s.db.assets.length;
+        s.db.assets = s.db.assets.filter((a) => a.ip_address !== ip);
+        s.persist();
+        return s.db.assets.length < n;
+      }
     };
   }
 
@@ -100,9 +154,24 @@ class MemoryStore {
     return {
       async list(q) {
         return s.db.cves
-          .filter(c => matchesQuery(q, [c.cve_id, c.title, c.description, ...(c.affected_products || []), ...(c.match_terms || [])]))
+          .filter((c) => matchesQuery(q, [c.cve_id, c.title, c.description, ...(c.affected_products || []), ...(c.match_terms || [])]))
           .sort((a, b) => b.cvss_score - a.cvss_score)
-          .map(r => s.clone(r));
+          .map((r) => s.clone(r));
+      },
+      async get(id) { return s.clone(s.db.cves.find((c) => c.cve_id === id)); },
+      async upsert(rows) {
+        for (const r of rows) {
+          const i = s.db.cves.findIndex((c) => c.cve_id === r.cve_id);
+          if (i >= 0) s.db.cves[i] = { ...s.db.cves[i], ...r }; else s.db.cves.push(r);
+        }
+        s.persist();
+        return rows.length;
+      },
+      async remove(id) {
+        const n = s.db.cves.length;
+        s.db.cves = s.db.cves.filter((c) => c.cve_id !== id);
+        s.persist();
+        return s.db.cves.length < n;
       }
     };
   }
@@ -112,10 +181,22 @@ class MemoryStore {
     return {
       async list({ host_ip, log_type, client_ip, limit = 50 } = {}) {
         return s.db.logs
-          .filter(l => (!host_ip || l.host_ip === host_ip) && (!log_type || l.log_type === log_type) && (!client_ip || l.client_ip === client_ip))
+          .filter((l) => (!host_ip || l.host_ip === host_ip) && (!log_type || l.log_type === log_type) && (!client_ip || l.client_ip === client_ip))
           .sort((a, b) => b.logged_at.localeCompare(a.logged_at))
           .slice(0, limit)
-          .map(r => s.clone(r));
+          .map((r) => s.clone(r));
+      },
+      async insertMany(rows) {
+        s.db.logs.push(...rows.map((r) => ({ id: s.seq.log++, ...r })));
+        if (s.db.logs.length > LOG_CAP) s.db.logs.splice(0, s.db.logs.length - LOG_CAP);
+        s.persist();
+        return rows.length;
+      },
+      async purge(before) {
+        const n = s.db.logs.length;
+        s.db.logs = s.db.logs.filter((l) => l.logged_at >= before);
+        if (s.db.logs.length !== n) s.persist();
+        return n - s.db.logs.length;
       }
     };
   }
@@ -123,18 +204,19 @@ class MemoryStore {
   get rules() {
     const s = this;
     return {
-      async list() { return [...s.db.rules].sort((a, b) => b.created_at.localeCompare(a.created_at)).map(r => s.clone(r)); },
-      async get(id) { return s.clone(s.db.rules.find(r => r.rule_id === id)); },
-      async activeFor(ip) { return s.db.rules.filter(r => r.target_ip === ip && r.is_active).map(r => s.clone(r)); },
+      async list() { return [...s.db.rules].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => s.clone(r)); },
+      async get(id) { return s.clone(s.db.rules.find((r) => r.rule_id === id)); },
+      async activeFor(ip) { return s.db.rules.filter((r) => r.target_ip === ip && r.is_active).map((r) => s.clone(r)); },
+      async active(action) { return s.db.rules.filter((r) => r.is_active && (!action || r.action === action)).map((r) => s.clone(r)); },
       async insert(row) {
         const now = new Date().toISOString();
-        const rec = { created_at: now, updated_at: now, is_active: true, packets_dropped: 0, investigation_id: null, ...row };
+        const rec = { created_at: now, updated_at: now, is_active: true, investigation_id: null, enforcement: null, ...row };
         s.db.rules.push(rec);
         s.persist();
         return s.clone(rec);
       },
       async update(id, patch) {
-        const row = s.db.rules.find(r => r.rule_id === id);
+        const row = s.db.rules.find((r) => r.rule_id === id);
         return row ? s.touch(row, patch) : null;
       }
     };
@@ -143,8 +225,8 @@ class MemoryStore {
   get investigations() {
     const s = this;
     return {
-      async list() { return [...s.db.investigations].sort((a, b) => b.created_at.localeCompare(a.created_at)).map(r => s.clone(r)); },
-      async get(id) { return s.clone(s.db.investigations.find(i => i.investigation_id === id)); },
+      async list() { return [...s.db.investigations].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => s.clone(r)); },
+      async get(id) { return s.clone(s.db.investigations.find((i) => i.investigation_id === id)); },
       async insert(row) {
         const now = new Date().toISOString();
         const rec = { created_at: now, updated_at: now, human_override: null, ...row };
@@ -153,7 +235,7 @@ class MemoryStore {
         return s.clone(rec);
       },
       async update(id, patch) {
-        const row = s.db.investigations.find(i => i.investigation_id === id);
+        const row = s.db.investigations.find((i) => i.investigation_id === id);
         return row ? s.touch(row, patch) : null;
       }
     };
@@ -171,17 +253,67 @@ class MemoryStore {
     };
   }
 
+  get users() {
+    const s = this;
+    return {
+      async count() { return s.db.users.length; },
+      async list() { return s.db.users.map(publicUser); },
+      // Returns the full row including password_hash; only the auth layer calls this.
+      async byEmail(email) { return s.clone(s.db.users.find((u) => u.email === String(email).toLowerCase())); },
+      async byId(id) { return s.clone(s.db.users.find((u) => u.id === Number(id))); },
+      async insert(row) {
+        if (s.db.users.some((u) => u.email === row.email)) throw new Error('A user with that email already exists');
+        const rec = { id: s.seq.user++, created_at: new Date().toISOString(), disabled: false, session_version: 1, last_login_at: null, ...row };
+        s.db.users.push(rec);
+        s.persist();
+        return publicUser(rec);
+      },
+      async update(id, patch) {
+        const row = s.db.users.find((u) => u.id === Number(id));
+        if (!row) return null;
+        Object.assign(row, patch);
+        s.persist();
+        return publicUser(row);
+      }
+    };
+  }
+
+  get apiKeys() {
+    const s = this;
+    return {
+      async list() { return [...s.db.api_keys].sort((a, b) => b.id - a.id).map(publicKey); },
+      async byHash(hash) { return s.clone(s.db.api_keys.find((k) => k.hash === hash && !k.revoked_at)); },
+      async insert(row) {
+        const rec = { id: s.seq.key++, created_at: new Date().toISOString(), last_used_at: null, revoked_at: null, ...row };
+        s.db.api_keys.push(rec);
+        s.persist();
+        return publicKey(rec);
+      },
+      async touch(id) {
+        const k = s.db.api_keys.find((x) => x.id === id);
+        if (k) { k.last_used_at = new Date().toISOString(); s.persist(); }
+      },
+      async revoke(id) {
+        const k = s.db.api_keys.find((x) => x.id === Number(id));
+        if (!k || k.revoked_at) return null;
+        k.revoked_at = new Date().toISOString();
+        s.persist();
+        return publicKey(k);
+      }
+    };
+  }
+
   get audit() {
     const s = this;
     return {
       async add(entry) {
-        const rec = { id: s.auditSeq++, created_at: new Date().toISOString(), detail: null, ...entry };
+        const rec = { id: s.seq.audit++, created_at: new Date().toISOString(), detail: null, ...entry };
         s.db.audit.push(rec);
-        if (s.db.audit.length > 500) s.db.audit.splice(0, s.db.audit.length - 500);
+        if (s.db.audit.length > 5000) s.db.audit.splice(0, s.db.audit.length - 5000);
         s.persist();
         return rec;
       },
-      async list(limit = 50) { return [...s.db.audit].sort((a, b) => b.id - a.id).slice(0, limit).map(r => s.clone(r)); }
+      async list(limit = 50) { return [...s.db.audit].sort((a, b) => b.id - a.id).slice(0, limit).map((r) => s.clone(r)); }
     };
   }
 }

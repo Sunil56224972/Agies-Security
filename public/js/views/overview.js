@@ -1,4 +1,4 @@
-import { $, $$, api, esc, sev, pill, flow, ago, num, label, emptyState } from '../core.js';
+import { $, $$, api, esc, sev, pill, flow, ago, label, emptyState, can } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
 import { openAlert, openNewAlert } from '../panels.js';
 
@@ -15,10 +15,29 @@ const ACT = {
   'rule.rollback': ['warn', 'rolled back rule for'],
   'alert.created': ['accent', 'submitted'],
   'alert.status': ['', 'updated status of'],
-  'probe.sent': ['', 'probed'],
+  'rule.verified': ['', 're-checked enforcement for'],
+  'enforcement.verified': ['', 'verified enforcement for'],
+  'feed.pulled': ['ok', 'pulled'],
+  'ingest.alerts': ['accent', 'ingested'],
+  'investigation.started': ['', 'started investigation on'],
+  'asset.created': ['', 'added host'],
+  'asset.updated': ['', 'updated host'],
+  'asset.deleted': ['warn', 'removed host'],
+  'asset.imported': ['', 'imported'],
+  'cve.added': ['', 'added'],
+  'cve.removed': ['warn', 'removed'],
+  'cve.synced': ['ok', 'synced'],
   'config.updated': ['', 'changed settings'],
-  'sandbox.seeded': ['ok', 'seeded'],
-  'sandbox.reset': ['warn', 'reset']
+  'auth.login': ['', 'signed in'],
+  'auth.failed': ['warn', 'failed sign-in for'],
+  'user.created': ['', 'added user'],
+  'user.updated': ['warn', 'changed user'],
+  'user.password': ['', 'changed password for'],
+  'key.created': ['', 'created API key'],
+  'key.revoked': ['warn', 'revoked API key'],
+  'retention.purged': ['', 'purged'],
+  'demo.seeded': ['ok', 'seeded'],
+  'demo.reset': ['warn', 'reset']
 };
 
 export async function render({ el, navigate }) {
@@ -30,15 +49,14 @@ export async function render({ el, navigate }) {
         <p class="page-sub" id="ov-sub">Loading...</p>
       </div>
       <div class="page-actions">
-        <button class="btn" id="ov-new">New alert</button>
-        <button class="btn btn--primary" id="ov-next">Investigate next</button>
+        ${can('respond') ? '<button class="btn" id="ov-new">New alert</button><button class="btn btn--primary" id="ov-next">Investigate next</button>' : ''}
       </div>
     </div>
     <div class="stack reveal" id="ov-body">
       <div class="kpis grid grid-kpi">${'<div class="kpi"><div class="skeleton" style="height:11px;width:50%"></div><div class="skeleton mt-8" style="height:26px;width:30%"></div></div>'.repeat(5)}</div>
       <div class="grid grid-2-1"><div class="panel skeleton" style="height:260px"></div><div class="panel skeleton" style="height:260px"></div></div>
     </div>`;
-  $('#ov-new', el).onclick = () => openNewAlert(navigate);
+  if ($('#ov-new', el)) $('#ov-new', el).onclick = () => openNewAlert(navigate);
   await paint();
 }
 
@@ -56,8 +74,15 @@ async function paint() {
     ? `${c.open} open${d.by_severity.CRITICAL ? `, ${d.by_severity.CRITICAL} critical` : ''}${top ? ` &middot; top of queue ${ago(top.detected_at)}` : ''}`
     : 'No open alerts.';
   const next = $('#ov-next', el);
-  next.disabled = !top;
-  next.onclick = () => top && navigate(`investigate/${top.alert_id}?run=1`);
+  if (next) {
+    next.disabled = !top;
+    next.onclick = () => top && navigate(`investigate/${top.alert_id}?run=1`);
+  }
+  const e = d.enforcement || {};
+  const attention = (e.PENDING || 0) + (e.FAILED || 0);
+  const enfFoot = d.enforcement_mode === 'record'
+    ? 'recorded only, no enforcement backend'
+    : `<span class="mono">${e.ENFORCED || 0}</span> enforced${e.PENDING ? ` &middot; ${e.PENDING} pending` : ''}${e.FAILED ? ` &middot; <span style="color:var(--crit)">${e.FAILED} failed</span>` : ''}`;
 
   const max = Math.max(4, ...d.hourly.map((h) => h.CRITICAL + h.HIGH + h.MEDIUM + h.LOW));
   const totalSev = Math.max(1, ...Object.values(d.by_severity));
@@ -68,8 +93,8 @@ async function paint() {
     <div class="kpis grid grid-kpi">
       <div class="kpi ${c.open ? 'kpi--alert' : ''}"><div class="kpi__label">Open alerts</div><div class="kpi__value">${c.open}</div><div class="kpi__foot">${c.alerts} total</div></div>
       <div class="kpi"><div class="kpi__label">Investigations</div><div class="kpi__value">${c.investigations}</div><div class="kpi__foot">${d.avg_run_ms ? `avg ${(d.avg_run_ms / 1000).toFixed(1)}s per run` : 'none yet'}</div></div>
-      <div class="kpi"><div class="kpi__label">Active rules</div><div class="kpi__value">${c.active_rules}</div><div class="kpi__foot"><span class="mono">${num(d.packets_dropped)}</span> packets dropped</div></div>
-      <div class="kpi"><div class="kpi__label">Exposed assets</div><div class="kpi__value">${c.exposed_assets}<small>/ ${c.assets}</small></div><div class="kpi__foot">with a critical CVE</div></div>
+      <div class="kpi ${attention ? 'kpi--alert' : ''}"><div class="kpi__label">Active rules</div><div class="kpi__value">${c.active_rules}</div><div class="kpi__foot">${c.active_rules ? enfFoot : 'none in force'}</div></div>
+      <div class="kpi"><div class="kpi__label">Exposed assets</div><div class="kpi__value">${c.exposed_assets}<small>/ ${c.assets}</small></div><div class="kpi__foot">${c.cves ? 'running a version with CVSS 7+' : 'no CVE records loaded'}</div></div>
       <div class="kpi"><div class="kpi__label">MTTR</div><div class="kpi__value">${d.mttr_min == null ? '-' : `${d.mttr_min}<small>min</small>`}</div><div class="kpi__foot">detection to verdict</div></div>
     </div>
     <div class="grid grid-2-1">
@@ -102,7 +127,7 @@ async function paint() {
             ${sev(a.severity)}
             <div style="min-width:0"><div class="list__title truncate">${esc(a.signature)}</div><div class="list__sub"><span class="mono">${esc(a.alert_id)}</span>${flow(a.source_ip, a.dest_ip, a.dest_port)}<span>${ago(a.detected_at)}</span></div></div>
             ${pill(a.status)}
-          </div>`).join('')}</div>` : emptyState('Nothing open', 'New alerts will show up here.', 'shieldCheck')}
+          </div>`).join('')}</div>` : emptyState('Nothing open', c.alerts ? 'Every alert has a verdict.' : 'Point a sensor at /api/ingest/alerts to start receiving detections.', 'shield')}
       </section>
       <section class="panel">
         <div class="panel__head"><h2 class="panel__title">Audit log</h2></div>

@@ -3,6 +3,7 @@
 const Groq = require('groq-sdk');
 const { SEVERITY_RANK, classifyPayload, exposureFor, assessLogs, isInternal, newId } = require('./analysis');
 const { createTools, TOOL_DEFINITIONS } = require('./tools');
+const { RecordAdapter } = require('../enforce');
 
 const OUTCOME_STATUS = {
   ATTACK_SUCCEEDED: 'CONFIRMED',
@@ -14,9 +15,11 @@ const OUTCOME_STATUS = {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 class Investigator {
-  constructor(store, { groqKey, model } = {}) {
+  constructor(store, { groqKey, model, enforcer = new RecordAdapter(), nvd = null, reputation = null } = {}) {
     this.store = store;
-    this.tools = createTools(store);
+    this.enforcer = enforcer;
+    this.reputation = reputation;
+    this.tools = createTools(store, { enforcer, nvd, reputation });
     this.model = model || 'llama-3.3-70b-versatile';
     this.groq = groqKey ? new Groq({ apiKey: groqKey }) : null;
     this.running = new Set();
@@ -86,16 +89,22 @@ class Investigator {
     ctx.hostIp = hostIp;
     ctx.remoteIp = remoteIp;
 
-    const asset = await this.call(ctx, 'enrich', 'lookup_asset_inventory', { ip_address: hostIp }, `CMDB lookup for ${hostIp}`);
+    const asset = await this.call(ctx, 'enrich', 'lookup_asset_inventory', { ip_address: hostIp }, `Inventory lookup for ${hostIp}`);
     const hasAsset = !asset.error;
-    if (!hasAsset) this.note(ctx, 'adapt', 'Host missing from CMDB', 'Exposure cannot be confirmed. Weighting host telemetry more heavily.', 'adaptation');
+    if (!hasAsset) this.note(ctx, 'adapt', 'Host missing from inventory', 'Exposure cannot be confirmed. Weighting host telemetry more heavily.', 'adaptation');
+
+    let rep = null;
+    if (this.reputation && this.reputation.available && !isInternal(remoteIp)) {
+      rep = await this.call(ctx, 'enrich', 'check_ip_reputation', { ip_address: remoteIp }, `Reputation of ${remoteIp}`);
+      if (rep.error) rep = null;
+    }
 
     let exposure = { exposed: false, evidence: null };
     let cve = null;
     if (technique && technique.cve) {
       const kb = await this.call(ctx, 'enrich', 'query_cve_kb', { cve_id: technique.cve, asset_ip: hasAsset ? hostIp : undefined }, `Correlate with ${technique.cve}`);
       cve = (kb.matches || [])[0] || null;
-      if (cve && hasAsset) exposure = exposureFor(asset, { match_terms: (await this.store.cves.list(cve.cve_id))[0]?.match_terms });
+      if (cve && hasAsset) exposure = exposureFor(asset, await this.store.cves.get(cve.cve_id));
     }
 
     const logRes = await this.call(ctx, 'correlate', 'query_server_logs', { host_ip: hostIp, client_ip: remoteIp, limit: 25 }, `Host telemetry on ${hostIp} for ${remoteIp}`);
@@ -127,6 +136,10 @@ class Investigator {
       outcome = 'RECON_ONLY'; confidence = 70;
       reasons.push('No exposure and no host-side effect observed.');
     }
+    if (rep && rep.score != null && rep.reports) {
+      reasons.push(`AbuseIPDB: ${remoteIp} scores ${rep.score}/100 from ${rep.reports} reports${rep.isp ? ` (${rep.isp}${rep.country ? `, ${rep.country}` : ''})` : ''}.`);
+      if (outcome === 'ATTACK_FAILED' && rep.score >= 75) confidence = Math.min(97, confidence + 4);
+    }
     this.note(ctx, 'decide', `Verdict: ${outcome.replace('_', ' ').toLowerCase()} (${confidence}%)`, reasons.join(' '), 'verdict');
 
     // --- Contain ----------------------------------------------------------
@@ -138,11 +151,11 @@ class Investigator {
 
     if (shouldBlock) {
       const r = await this.call(ctx, 'contain', 'execute_firewall_action', { action: 'BLOCK', target_ip: remoteIp, reason: `${alert.alert_id}: ${outcome.toLowerCase()} - ${technique ? technique.label : alert.category}` }, `Block ${remoteIp} at perimeter`);
-      if (r.rule) ctx.actions.push({ type: 'BLOCK', target: remoteIp, rule_id: r.rule.rule_id, status: r.status });
+      if (r.rule) ctx.actions.push({ type: 'BLOCK', target: remoteIp, rule_id: r.rule.rule_id, status: r.status, enforcement: r.enforcement || (r.rule.enforcement && r.rule.enforcement.status) || null });
     }
     if (shouldIsolate) {
       const r = await this.call(ctx, 'contain', 'execute_firewall_action', { action: 'ISOLATE', target_ip: hostIp, reason: `${alert.alert_id}: confirmed compromise, quarantine pending forensics` }, `Isolate ${hostIp}`);
-      if (r.rule) ctx.actions.push({ type: 'ISOLATE', target: hostIp, rule_id: r.rule.rule_id, status: r.status });
+      if (r.rule) ctx.actions.push({ type: 'ISOLATE', target: hostIp, rule_id: r.rule.rule_id, status: r.status, enforcement: r.enforcement || (r.rule.enforcement && r.rule.enforcement.status) || null });
     }
     if (!shouldBlock && !shouldIsolate) {
       const why = outcome === 'FALSE_POSITIVE' ? 'False positive: no containment, avoiding collateral blocking.'
@@ -154,14 +167,19 @@ class Investigator {
     // --- Verify -----------------------------------------------------------
     let verification = null;
     if (ctx.actions.length) {
-      verification = await this.call(ctx, 'verify', 'verify_defense_state', { target_ip: ctx.actions[0].target }, `Probe ${ctx.actions[0].target} against new rule`);
-      if (verification.status !== 'CONTAINED') {
-        this.note(ctx, 'adapt', 'Probe got through, re-applying rule', verification.message, 'adaptation');
-        await this.call(ctx, 'contain', 'execute_firewall_action', { action: ctx.actions[0].type, target_ip: ctx.actions[0].target, reason: 'Re-applied after failed verification' }, 'Re-apply containment');
-        verification = await this.call(ctx, 'verify', 'verify_defense_state', { target_ip: ctx.actions[0].target }, 'Re-probe');
+      const first = ctx.actions[0];
+      verification = await this.call(ctx, 'verify', 'verify_defense_state', { target_ip: first.target }, `Read back ${first.rule_id} from ${this.enforcer.label.toLowerCase()}`);
+      if (verification.status === 'FAILED') {
+        this.note(ctx, 'adapt', 'Enforcement backend did not confirm the rule, retrying once', verification.message, 'adaptation');
+        verification = await this.call(ctx, 'verify', 'verify_defense_state', { target_ip: first.target }, 'Retry read-back');
+      }
+      if (!verification.contained) {
+        const why = verification.status === 'PENDING' ? 'Rule is published but the firewall has not pulled it yet. The alert stays open until it does.'
+          : verification.status === 'RECORDED' ? 'No enforcement backend is configured (ENFORCEMENT_MODE=record). Apply the rule on the firewall by hand.'
+          : `Enforcement not confirmed: ${verification.message}`;
+        this.note(ctx, 'verify', 'Containment not yet in force', why, 'policy');
       }
     }
-
     return {
       outcome, confidence, reasons,
       target_ip: hostIp, attacker_ip: remoteIp,
@@ -176,8 +194,8 @@ class Investigator {
   }
 
   async runLlm(ctx, alert) {
-    const system = `You are a tier-3 SOC analyst working inside a sandbox. Investigate the alert with the tools, in this order:
-packet metadata -> asset inventory (for the internal host) -> CVE knowledge base (pass asset_ip) -> host logs (pass client_ip).
+    const system = `You are a tier-3 SOC analyst. Investigate the alert with the tools, in this order:
+packet metadata -> asset inventory (for the internal host) -> IP reputation (external party) -> CVE knowledge base (pass asset_ip) -> host logs (pass client_ip).
 Decide: ATTACK_SUCCEEDED needs host evidence of execution or access; ATTACK_FAILED when the host rejected it; FALSE_POSITIVE when the host does not run the targeted software.
 If succeeded, BLOCK the external IP and ISOLATE the internal host, then verify_defense_state. Never block on a false positive.
 Finish by calling record_investigation_verdict once, then reply with a short plain summary. Only use facts from tool output.`;
@@ -204,12 +222,12 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
           messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ error: `Unknown tool ${name}` }) });
           continue;
         }
-        const phase = { get_packet_metadata: 'triage', ingest_nids_alerts: 'triage', lookup_asset_inventory: 'enrich', query_cve_kb: 'enrich',
+        const phase = { get_packet_metadata: 'triage', ingest_nids_alerts: 'triage', lookup_asset_inventory: 'enrich', query_cve_kb: 'enrich', check_ip_reputation: 'enrich',
           query_server_logs: 'correlate', execute_firewall_action: 'contain', verify_defense_state: 'verify', record_investigation_verdict: 'decide' }[name];
         const res = await this.call(ctx, phase, name, { ...args, actor: name === 'execute_firewall_action' ? 'Aegis agent' : undefined }, labelFor(name, args));
         if (name === 'lookup_asset_inventory' && !res.error) assetRes = res;
         if (name === 'verify_defense_state') verification = res;
-        if (name === 'execute_firewall_action' && res.rule) ctx.actions.push({ type: res.rule.action, target: res.rule.target_ip, rule_id: res.rule.rule_id, status: res.status });
+        if (name === 'execute_firewall_action' && res.rule) ctx.actions.push({ type: res.rule.action, target: res.rule.target_ip, rule_id: res.rule.rule_id, status: res.status, enforcement: res.enforcement || null });
         if (name === 'record_investigation_verdict' && res.accepted) verdictArgs = args;
         messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(res).slice(0, 6000) });
       }
@@ -235,7 +253,7 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
 
   async finish(ctx, alert, v) {
     const id = newId('INV');
-    const contained = ctx.actions.length > 0 && v.verification && v.verification.status === 'CONTAINED';
+    const contained = ctx.actions.length > 0 && Boolean(v.verification && v.verification.contained);
     let status = OUTCOME_STATUS[v.outcome] || 'CLOSED';
     if (v.outcome === 'ATTACK_SUCCEEDED' && contained) status = 'CONTAINED';
 
@@ -246,7 +264,7 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
       summary: v.reasons.join(' '), report, engine: ctx.engine, steps: ctx.steps, actions_taken: ctx.actions,
       verification: v.verification, duration_ms: Date.now() - ctx.started
     });
-    for (const a of ctx.actions.filter(x => x.status === 'ENFORCED')) await this.store.rules.update(a.rule_id, { investigation_id: id }).catch(() => {});
+    for (const a of ctx.actions.filter(x => x.status === 'APPLIED')) await this.store.rules.update(a.rule_id, { investigation_id: id }).catch(() => {});
     await this.store.alerts.update(alert.alert_id, { status });
     await this.store.audit.add({ actor: ctx.engine.startsWith('llm') ? 'Aegis agent' : 'Aegis playbook', action: 'investigation.closed', target: alert.alert_id, detail: `${id} ${v.outcome} ${v.confidence}%` });
     ctx.emit({ type: 'verdict', investigation: inv, alert_status: status });
@@ -264,20 +282,20 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
     const rules = (await this.store.rules.list()).filter(r => r.investigation_id === investigationId && r.is_active);
     if (outcome === 'FALSE_POSITIVE' || outcome === 'RECON_ONLY') {
       for (const r of rules) {
-        await this.store.rules.update(r.rule_id, { is_active: false });
+        await this.store.rules.update(r.rule_id, { is_active: false, enforcement: await this.enforcer.remove(r) });
         changes.push(`Rolled back ${r.action} ${r.target_ip} (${r.rule_id})`);
       }
     } else if (outcome === 'ATTACK_SUCCEEDED' && !rules.some(r => r.target_ip === inv.attacker_ip) && !isInternal(inv.attacker_ip)) {
       const res = await this.tools.execute_firewall_action({ action: 'BLOCK', target_ip: inv.attacker_ip, reason: `Analyst override on ${investigationId}: ${notes || 'confirmed compromise'}`, investigation_id: investigationId, actor });
       if (res.rule) changes.push(`Blocked ${inv.attacker_ip} (${res.rule.rule_id})`);
-      const probe = await this.tools.verify_defense_state({ target_ip: inv.attacker_ip });
-      changes.push(`Probe: ${probe.status.toLowerCase()}`);
+      const check = await this.tools.verify_defense_state({ target_ip: inv.attacker_ip });
+      changes.push(`Enforcement: ${check.status.toLowerCase()}`);
     }
     if (!changes.length) changes.push('Containment already consistent with new verdict');
 
     const override = { analyst: actor, notes: notes || '', previous_outcome: inv.outcome, outcome, changes, at: new Date().toISOString() };
     const updated = await this.store.investigations.update(investigationId, { outcome, human_override: override });
-    const hasRule = (await this.store.rules.list()).some(r => r.investigation_id === investigationId && r.is_active);
+    const hasRule = (await this.store.rules.list()).some(r => r.investigation_id === investigationId && r.is_active && r.enforcement && r.enforcement.status === 'ENFORCED');
     await this.store.alerts.update(inv.alert_id, { status: outcome === 'ATTACK_SUCCEEDED' && hasRule ? 'CONTAINED' : OUTCOME_STATUS[outcome] });
     await this.store.audit.add({ actor, action: 'investigation.override', target: investigationId, detail: `${inv.outcome} -> ${outcome}` });
     return { investigation: updated, changes };
@@ -287,11 +305,12 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
 function labelFor(name, a) {
   switch (name) {
     case 'get_packet_metadata': return 'Decode captured payload';
-    case 'lookup_asset_inventory': return `CMDB lookup for ${a.ip_address}`;
+    case 'lookup_asset_inventory': return `Inventory lookup for ${a.ip_address}`;
+    case 'check_ip_reputation': return `Reputation of ${a.ip_address}`;
     case 'query_cve_kb': return `Knowledge base: ${a.cve_id || a.keyword || 'search'}`;
     case 'query_server_logs': return `Host telemetry on ${a.host_ip}`;
     case 'execute_firewall_action': return `${a.action} ${a.target_ip}`;
-    case 'verify_defense_state': return `Probe ${a.target_ip}`;
+    case 'verify_defense_state': return `Verify enforcement for ${a.target_ip}`;
     case 'record_investigation_verdict': return 'Submit verdict';
     default: return name;
   }
@@ -305,8 +324,8 @@ function recommend(outcome, cve, asset, tid) {
   }
   if (cve && cve.cve_id === 'CVE-2021-44228') out.push('Upgrade log4j-core to 2.17.1 and set log4j2.formatMsgNoLookups=true.');
   if (cve && /CVE-2021-4(1773|2013)/.test(cve.cve_id)) out.push('Upgrade Apache httpd to 2.4.51+ and disable mod_cgi where unused.');
-  if (tid === 'sqli') out.push('Audit /login.php for string-built queries; keep the prepared-statement path.');
-  if (tid === 'ssh_bruteforce') out.push('Disable password auth on the bastion; keys only.');
+  if (tid === 'sqli') out.push('Audit the targeted endpoint for string-built queries; keep the prepared-statement path.');
+  if (tid === 'ssh_bruteforce') out.push('Disable SSH password auth on the target; keys only.');
   if (tid === 'c2_beacon') out.push('Hunt for the same JA3 / SNI across the fleet.');
   if (asset && !asset.waf_enabled && outcome !== 'FALSE_POSITIVE') out.push(`Put ${asset.hostname} behind the WAF.`);
   if (outcome === 'FALSE_POSITIVE') out.push('Tune the signature to skip hosts without the targeted runtime.');
@@ -327,7 +346,7 @@ function buildReport(alert, v, actions, id) {
     ...v.reasons.map(r => `- ${r}`),
     '',
     '### Response',
-    ...(actions.length ? actions.map(a => `- ${a.type} ${a.target} (${a.rule_id})`) : ['- No containment applied']),
+    ...(actions.length ? actions.map(a => `- ${a.type} ${a.target} (${a.rule_id}, ${String(a.enforcement || a.status || '').toLowerCase()})`) : ['- No containment applied']),
     ...(v.verification ? [`- Verification: ${v.verification.message}`] : []),
     '',
     '### Next steps',

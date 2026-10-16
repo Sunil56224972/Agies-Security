@@ -1,5 +1,6 @@
 import { $, $$, api, esc, sev, pill, toast, on, emit, state, closeLayer, layerOpen, modal } from './core.js';
 import { icon, hydrateIcons } from './icons.js';
+import { showGate, signOut } from './gate.js';
 
 const ROUTES = {
   overview: { title: 'Overview', load: () => import('./views/overview.js') },
@@ -86,13 +87,10 @@ async function refreshChrome() {
     state.config = config;
     const dot = $('#sys-dot');
     dot.className = `live-dot ${health.storage.ok ? (health.storage.kind === 'supabase' ? '' : 'live-dot--warn') : 'live-dot--off'}`;
-    $('#sys-store').textContent = health.storage.kind === 'supabase' ? 'Supabase' : 'Local sandbox';
+    $('#sys-store').textContent = health.storage.kind === 'supabase' ? 'Supabase' : 'Local file';
     $('#sys-store').title = health.storage.detail || '';
-    $('#brand-env').textContent = health.storage.kind === 'supabase' ? 'prod' : 'local';
+    $('#brand-env').textContent = health.demo ? 'demo' : health.storage.kind === 'supabase' ? 'supabase' : 'local';
     $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Playbook';
-    const name = config.analystName || 'On-call analyst';
-    $('#analyst-name').textContent = name;
-    $('#analyst-initials').textContent = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || 'OA';
     const n = open.filter((a) => ['NEW', 'INVESTIGATING', 'CONFIRMED'].includes(a.status)).length;
     $('#nav-open').textContent = n ? String(n) : '';
   } catch {
@@ -201,15 +199,58 @@ document.addEventListener('keydown', (e) => {
   if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) { e.preventDefault(); openPalette(); }
 });
 
-// ---- Boot ----------------------------------------------------------------
-hydrateIcons(document);
-tickClock();
-setInterval(tickClock, 1000);
-window.addEventListener('hashchange', () => route());
-refreshChrome().then(() => {
-  if (state.health && state.health.storage.warning) toast('Running on the local sandbox', state.health.storage.warning, 'info', 7000);
+// ---- Session ---------------------------------------------------------------
+function paintUser(user) {
+  state.user = user;
+  const name = user.name || user.email;
+  $('#analyst-name').textContent = name;
+  $('#analyst-name').title = user.email;
+  $('#analyst-role').textContent = { admin: 'Administrator', analyst: 'Analyst', viewer: 'Read only' }[user.role] || user.role;
+  $('#analyst-initials').textContent = name.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+  document.body.toggleAttribute('data-readonly', user.role === 'viewer');
+}
+
+$('#signout-btn').onclick = signOut;
+
+let reauth = false;
+on('auth:required', async () => {
+  if (reauth || !state.user) return;
+  reauth = true;
+  closeLayer();
+  toast('Session ended', 'Sign in again to continue.', 'info');
+  const st = await fetch('/api/auth/state').then((r) => r.json()).catch(() => ({ needs_setup: false }));
+  const user = await showGate(st);
+  reauth = false;
+  paintUser(user);
+  $('#shell').hidden = false;
+  refreshChrome();
+  route(true);
 });
-setInterval(refreshChrome, 30000);
-route();
+
+// ---- Boot ----------------------------------------------------------------
+async function boot() {
+  hydrateIcons(document);
+  let st;
+  try {
+    st = await fetch('/api/auth/state', { credentials: 'same-origin' }).then((r) => r.json());
+  } catch {
+    document.body.innerHTML = '<div class="empty" style="min-height:100vh"><b>Aegis server is not reachable</b><span class="small">Check that the service is running, then reload.</span></div>';
+    return;
+  }
+  state.demo = Boolean(st.demo);
+  const user = st.user || await showGate(st);
+  paintUser(user);
+  $('#shell').hidden = false;
+  tickClock();
+  setInterval(tickClock, 1000);
+  window.addEventListener('hashchange', () => route());
+  await refreshChrome();
+  const h = state.health;
+  if (h && h.storage.warning) toast('Storage fallback', h.storage.warning, 'error', 9000);
+  if (h && h.enforcement && h.enforcement.warning) toast('Enforcement', h.enforcement.warning, 'error', 9000);
+  setInterval(refreshChrome, 30000);
+  route();
+}
+boot();
 
 export { emit };

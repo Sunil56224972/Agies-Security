@@ -13,7 +13,7 @@ export async function render({ el, navigate, query }) {
     <div class="page-head">
       <div class="page-head__text">
         <h1 class="page-title">Telemetry</h1>
-        <p class="page-sub">HTTP access, EDR, auth and system logs. Known attack markers are highlighted.</p>
+        <p class="page-sub">Host logs shipped through the ingest API. Known attack markers are highlighted.</p>
       </div>
     </div>
     <section class="panel reveal">
@@ -54,7 +54,7 @@ async function load() {
   const p = new URLSearchParams({ limit: '200' });
   if (ctx.host) p.set('host_ip', ctx.host);
   if (ctx.type) p.set('log_type', ctx.type);
-  if (ctx.client && /^[\d.]+$/.test(ctx.client)) p.set('client_ip', ctx.client);
+  if (ctx.client && /^[\da-f.:]+$/i.test(ctx.client)) p.set('client_ip', ctx.client);
   const logs = await api(`/logs?${p}`);
   $('#tl-count', el).textContent = `${logs.length} entr${logs.length === 1 ? 'y' : 'ies'}`;
   $('#tl-list', el).innerHTML = logs.length ? `<div class="rows-in">${logs.map((l, i) => `
@@ -63,6 +63,6 @@ async function load() {
       <span>${esc(l.host_ip)}</span>
       <span style="color:${TYPE_C[l.log_type] || 'var(--ink-3)'}">${esc(l.log_type)}</span>
       <span class="logline__raw">${markPayload(l.raw_entry)}</span>
-    </div>`).join('')}</div>` : emptyState('No entries', 'Nothing matches this filter.', 'terminal');
+    </div>`).join('')}</div>` : emptyState('No entries', ctx.host || ctx.type || ctx.client ? 'Nothing matches this filter.' : 'Ship logs to POST /api/ingest/logs?host_ip=<host> with an ingest API key. Plain text lines, NDJSON and JSON arrays are accepted.', 'terminal');
   hydrateIcons(el);
 }

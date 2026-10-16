@@ -1,4 +1,4 @@
-import { $, $$, api, esc, sev, pill, flow, ago, stamp, emptyState } from '../core.js';
+import { $, $$, api, esc, sev, pill, flow, ago, stamp, emptyState, can } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
 import { openAlert, openNewAlert } from '../panels.js';
 
@@ -19,7 +19,7 @@ export async function render({ el, navigate, query }) {
         <h1 class="page-title">Alerts</h1>
         <p class="page-sub">Sensor detections and manual submissions.</p>
       </div>
-      <div class="page-actions"><button class="btn btn--primary" id="al-new">New alert</button></div>
+      <div class="page-actions">${can('respond') ? '<button class="btn btn--primary" id="al-new">New alert</button>' : ''}</div>
     </div>
     <section class="panel reveal">
       <div class="toolbar">
@@ -32,7 +32,7 @@ export async function render({ el, navigate, query }) {
       </div>
       <div id="al-table"><div style="padding:18px" class="stack">${'<div class="skeleton" style="height:38px"></div>'.repeat(5)}</div></div>
     </section>`;
-  $('#al-new', el).onclick = () => openNewAlert(navigate);
+  if ($('#al-new', el)) $('#al-new', el).onclick = () => openNewAlert(navigate);
   let t;
   $('#al-q', el).oninput = (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); paint(); }, 120); };
   $('#al-status', el).onchange = (e) => { f.status = e.target.value; paint(); };
@@ -70,11 +70,11 @@ function paint() {
           <td class="hide-sm">${flow(a.source_ip, a.dest_ip, a.dest_port)}</td>
           <td>${pill(a.status)}</td>
           <td class="num hide-sm small muted" title="${stamp(a.detected_at)}">${ago(a.detected_at)}</td>
-          <td><button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Run investigation">Run</button></td>
+          <td>${can('respond') ? `<button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Run investigation">Run</button>` : ''}</td>
         </tr>`).join('')}</tbody>
     </table></div>
     <div class="table-foot">${rows.length} of ${all.length}</div>`
-    : emptyState(all.length ? 'No matches' : 'No alerts', all.length ? 'Try a different filter.' : 'Create one with New alert.', 'inbox');
+    : emptyState(all.length ? 'No matches' : 'No alerts', all.length ? 'Try a different filter.' : 'Send Suricata EVE or JSON alerts to POST /api/ingest/alerts with an ingest API key (Settings, API keys).', 'inbox');
 
   $$('tr[data-id]', el).forEach((r) => { r.onclick = (e) => { if (!e.target.closest('[data-run]')) openAlert(r.dataset.id, navigate); }; });
   $$('[data-run]', el).forEach((b) => { b.onclick = (e) => { e.stopPropagation(); navigate(`investigate/${b.dataset.run}?run=1`); }; });

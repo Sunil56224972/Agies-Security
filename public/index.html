@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aegis - Incident Response Console</title>
-  <meta name="description" content="Alert triage, evidence correlation and containment for a small SOC team.">
+  <meta name="description" content="Alert triage, evidence correlation and containment.">
   <meta name="theme-color" content="#15181d">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 5 7v8c0 7 4.8 11.6 11 14 6.2-2.4 11-7 11-14V7z' fill='%2315181d'/%3E%3Cpath d='m11 16 4 4 7-8' stroke='%23ffffff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -14,17 +14,11 @@
   <link rel="stylesheet" href="/css/layout.css">
   <link rel="stylesheet" href="/css/components.css">
   <link rel="stylesheet" href="/css/views.css">
-  <script>
-    // Apply the saved theme before first paint to avoid a flash.
-    (function () {
-      var t = localStorage.getItem('aegis.theme');
-      if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      document.documentElement.dataset.theme = t;
-    })();
-  </script>
+  <script src="/js/theme-boot.js"></script>
 </head>
 <body>
-  <div class="shell" id="shell">
+  <div class="gate" id="gate" hidden></div>
+  <div class="shell" id="shell" hidden>
     <aside class="rail" id="rail" aria-label="Primary">
       <a class="brand" href="#/overview">
         <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
@@ -52,8 +46,9 @@
           <div class="sysline__row"><span class="live-dot live-dot--off" style="visibility:hidden"></span>Engine<b id="sys-engine">...</b></div>
         </div>
         <div class="analyst">
-          <span class="avatar" id="analyst-initials">OA</span>
-          <div><div class="analyst__name" id="analyst-name">On-call analyst</div><div class="analyst__role">Tier 2 responder</div></div>
+          <span class="avatar" id="analyst-initials">--</span>
+          <div class="grow"><div class="analyst__name truncate" id="analyst-name">Signed out</div><div class="analyst__role" id="analyst-role"></div></div>
+          <button class="icon-btn icon-btn--bare rail-btn" id="signout-btn" title="Sign out" aria-label="Sign out"><i data-icon="logout"></i></button>
         </div>
       </div>
     </aside>

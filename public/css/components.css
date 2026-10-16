@@ -260,3 +260,58 @@ mark { background: var(--crit-soft); color: var(--crit); padding: 0 1px; }
   .kpi:nth-child(n+3) { border-top: 1px solid var(--line); }
   .kpi:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
+/* Enforcement states ------------------------------------------------------ */
+.pill--ENFORCED { --c: var(--ok); --cs: var(--ok-soft); }
+.pill--PENDING { --c: var(--med); --cs: var(--med-soft); }
+.pill--RECORDED, .pill--REMOVED, .pill--NO_RULE { --c: var(--low); --cs: var(--low-soft); }
+.pill--FAILED { --c: var(--crit); --cs: var(--crit-soft); }
+.pill--admin { --c: var(--accent); --cs: var(--accent-soft); }
+.pill--analyst { --c: var(--ink-2); --cs: var(--surface-3); }
+.pill--viewer { --c: var(--low); --cs: var(--low-soft); }
+.tag--kev { background: var(--crit-soft); color: var(--crit); border-color: transparent; font-weight: 600; }
+
+/* Sign-in gate ------------------------------------------------------------ */
+.gate { position: fixed; inset: 0; z-index: 100; display: grid; grid-template-columns: minmax(300px, 420px) 1fr; background: var(--bg); opacity: 0; transition: opacity .25s var(--ease-out); }
+.gate.is-in { opacity: 1; }
+.gate.is-out { opacity: 0; transition-duration: .2s; }
+.gate__side { display: flex; flex-direction: column; padding: 28px 32px; background: var(--rail-bg); color: var(--rail-ink); border-right: 1px solid var(--rail-line);
+  background-image: linear-gradient(var(--rail-line) 1px, transparent 1px), linear-gradient(90deg, var(--rail-line) 1px, transparent 1px); background-size: 28px 28px; background-position: -1px -1px; }
+.gate__brand { display: flex; align-items: center; gap: 10px; color: var(--rail-ink-strong); font-weight: 600; font-size: 15px; letter-spacing: .02em; }
+.gate__brand svg { width: 24px; height: 24px; }
+.gate__copy { margin-top: auto; margin-bottom: auto; max-width: 320px; }
+.gate__lede { color: var(--rail-ink-strong); font-size: 19px; line-height: 1.35; font-weight: 500; margin: 0 0 22px; letter-spacing: -.01em; }
+.gate__facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; font-size: 12.5px; }
+.gate__facts li { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding-top: 12px; border-top: 1px solid var(--rail-line); }
+.gate__facts span { font: 500 11px/1.6 var(--font-mono); color: #6b7480; text-transform: uppercase; letter-spacing: .06em; }
+.gate__foot { font-size: 11px; color: #5d6570; }
+.gate__main { display: grid; place-items: center; padding: 32px 20px; }
+.gate__card { width: 100%; max-width: 360px; animation: rise .35s var(--ease-out) .05s both; }
+.gate__title { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.gate__sub { color: var(--ink-3); margin: 6px 0 22px; font-size: 13px; }
+.gate__form { display: grid; gap: 14px; }
+.gate__form .input { height: 36px; }
+.gate__help { color: var(--ink-3); font-size: 12px; margin-top: -8px; }
+.gate__err { min-height: 18px; color: var(--crit); font-size: 12.5px; }
+.gate__err:empty { min-height: 0; }
+.gate__submit { height: 36px; justify-content: center; }
+.gate__note { margin-top: 18px; }
+.gate__form.is-shake { animation: shake .32s var(--ease); }
+@keyframes shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+@media (max-width: 760px) {
+  .gate { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .gate__copy, .gate__foot { display: none; }
+  .gate__side { padding: 16px 20px; }
+}
+
+/* Rail account ------------------------------------------------------------ */
+.rail-btn { color: var(--rail-ink); width: 26px; height: 26px; }
+.rail-btn:hover { color: var(--rail-ink-strong); background: var(--rail-hover); border-color: transparent; }
+
+/* Secrets shown once -------------------------------------------------------- */
+.secret { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: var(--r-sm); border: 1px dashed var(--line-strong); background: var(--surface-2); }
+.secret code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; }
+.snippet { margin: 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 12.5px; }
+.kv dt { color: var(--ink-3); }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+[data-readonly] .needs-respond, [data-readonly] .needs-configure { display: none !important; }

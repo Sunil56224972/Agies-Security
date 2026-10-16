@@ -1,14 +1,14 @@
 // Records a walkthrough of the console and encodes it to MP4.
-//   npm start                     (in one terminal)
-//   node demo_video/record_demo.js (in another)
-// Resets the demo data first so the recording always starts from the seeded state.
+//   AEGIS_DEMO=1 AEGIS_DATA_FILE=.data/demo.json npm start   (in one terminal)
+//   node demo_video/record_demo.js                           (in another)
+// Resets the sample data first so the recording always starts from the same state.
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 const { chromium } = require('playwright');
 const ffmpeg = require('ffmpeg-static');
+const { signIn, BASE } = require('../scripts/demo-session');
 
-const BASE = process.env.AEGIS_URL || 'http://localhost:3000';
 const TMP = path.join(__dirname, 'rec_tmp');
 const OUT = path.join(__dirname, 'aegis_demo.mp4');
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -21,12 +21,7 @@ async function step(label, fn) {
 }
 
 (async () => {
-  const health = await fetch(`${BASE}/api/health`).catch(() => null);
-  if (!health || !health.ok) {
-    console.error(`No server at ${BASE}. Run "npm start" first.`);
-    process.exit(1);
-  }
-  await fetch(`${BASE}/api/reset`, { method: 'POST' });
+  const { cookie } = await signIn({ reset: true });
 
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
@@ -34,6 +29,7 @@ async function step(label, fn) {
   const size = { width: 1440, height: 900 };
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: size, recordVideo: { dir: TMP, size } });
+  await ctx.addCookies([cookie]);
   await ctx.addInitScript(() => localStorage.setItem('aegis.theme', 'light'));
   const page = await ctx.newPage();
   const go = (route) => page.evaluate((r) => { location.hash = r; }, route);

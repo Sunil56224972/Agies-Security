@@ -55,23 +55,41 @@ export function countUp(el, to, { duration = 900, format = num } = {}) {
 }
 
 // ---- API ---------------------------------------------------------------------
-export async function api(path, { method = 'GET', body, signal } = {}) {
+// Every state-changing request carries X-Aegis-Client; the server refuses
+// cookie-authenticated writes without it (cross-site forms cannot set it).
+function headersFor(method, body, type = 'application/json') {
+  const h = {};
+  if (body !== undefined) h['Content-Type'] = type;
+  if (method !== 'GET') h['X-Aegis-Client'] = 'web';
+  return h;
+}
+
+function failed(res, data) {
+  if (res.status === 401) emit('auth:required');
+  const err = new Error((data && data.error) || `Request failed (${res.status})`);
+  err.status = res.status;
+  return err;
+}
+
+export async function api(path, { method = 'GET', body, signal, raw, type } = {}) {
   const res = await fetch(`/api${path}`, {
     method,
     signal,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined
+    credentials: 'same-origin',
+    headers: headersFor(method, raw !== undefined ? raw : body, raw !== undefined ? type || 'text/plain' : undefined),
+    body: raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : undefined
   });
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
-  if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);
+  if (!res.ok) throw failed(res, data);
   return data;
 }
 
 // POST that consumes a server-sent event stream.
 export async function stream(path, body, onEvent, signal) {
-  const res = await fetch(`/api${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
+  const res = await fetch(`/api${path}`, { method: 'POST', credentials: 'same-origin', headers: headersFor('POST', body), body: JSON.stringify(body), signal });
   if (!res.ok || !res.body) {
+    if (res.status === 401) emit('auth:required');
     let msg = `Request failed (${res.status})`;
     try { msg = (await res.json()).error || msg; } catch { /* not json */ }
     throw new Error(msg);
@@ -164,4 +182,22 @@ export const bus = new EventTarget();
 export const emit = (name, detail) => bus.dispatchEvent(new CustomEvent(name, { detail }));
 export const on = (name, fn) => { bus.addEventListener(name, fn); return () => bus.removeEventListener(name, fn); };
 
-export const state = { health: null, config: null };
+export const state = { health: null, config: null, user: null, demo: false };
+
+// Role checks mirror the server (src/security/auth.js). The server is the
+// authority; these only decide what to show.
+const PERMS = { admin: ['respond', 'configure', 'manage'], analyst: ['respond'], viewer: [] };
+export const can = (perm) => Boolean(state.user && (PERMS[state.user.role] || []).includes(perm));
+
+export async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch { /* ignore */ }
+    ta.remove();
+  }
+  if (btn && !btn.dataset.copied) { const h = btn.innerHTML; btn.dataset.copied = '1'; btn.textContent = 'Copied'; setTimeout(() => { btn.innerHTML = h; delete btn.dataset.copied; }, 1400); }
+}

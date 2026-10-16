@@ -1,6 +1,6 @@
 'use strict';
 
-// Sandbox seed data. `minutes_ago` is resolved against boot time so a fresh
+// Demo dataset, loaded only when AEGIS_DEMO=1 (or by the demo reset). `minutes_ago` is resolved against boot time so a fresh
 // install always shows a recent queue instead of stale timestamps.
 
 const assets = [
@@ -21,34 +21,42 @@ const assets = [
     installed_packages: ['openssh-server', 'docker-ce', 'act_runner-0.2.10'], criticality: 'MEDIUM', waf_enabled: false }
 ];
 
-// `match` lists lowercase fragments that, when found in an asset's packages or
-// services, mean the asset runs an affected component.
+// Snapshot of the NVD records for the CVEs the demo alerts reference. `cpe_matches`
+// is the NVD cpeMatch list and drives exposure matching; Assets > CVE reference >
+// "Sync from NVD" refreshes these from the live API. `match` is a fallback used
+// only for entries without CPE data (the CWE weakness class).
+const LOG4J = 'cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*';
 const cves = [
-  { cve_id: 'CVE-2021-44228', title: 'Log4Shell JNDI remote code execution', cvss_score: 10.0, severity: 'CRITICAL',
-    affected_products: ['Apache Log4j2', 'Apache Tomcat', 'Spring Boot'], vulnerable_versions: '2.0-beta9 <= Log4j < 2.15.0',
-    exploit_vector: 'Network / JNDI lookup', match: ['log4j-core-2.14', 'log4j 2.14'],
-    description: 'Log4j2 JNDI lookups in logged data are not restricted. An attacker who controls a logged string can make the JVM fetch and run remote code.',
-    remediation: 'Upgrade to Log4j 2.17.1, or set log4j2.formatMsgNoLookups=true and block outbound LDAP/RMI at the perimeter.' },
-  { cve_id: 'CVE-2021-41773', title: 'Apache HTTP Server 2.4.49 path traversal', cvss_score: 7.5, severity: 'HIGH',
-    affected_products: ['Apache HTTP Server'], vulnerable_versions: '2.4.49', exploit_vector: 'Network / URL-encoded traversal',
-    match: ['httpd-2.4.49', 'httpd 2.4.49'],
-    description: 'A path normalisation flaw lets URLs map outside Alias-like directories. With mod_cgi enabled it becomes remote code execution.',
-    remediation: 'Upgrade to Apache HTTP Server 2.4.51 or later and deny access to the filesystem root.' },
-  { cve_id: 'CVE-2021-42013', title: 'Apache HTTP Server 2.4.50 traversal bypass', cvss_score: 9.8, severity: 'CRITICAL',
-    affected_products: ['Apache HTTP Server'], vulnerable_versions: '2.4.49, 2.4.50', exploit_vector: 'Network / double-encoded traversal',
-    match: ['httpd-2.4.49', 'httpd 2.4.49', 'httpd-2.4.50'],
-    description: 'The 2.4.50 fix for CVE-2021-41773 was incomplete; double-encoded sequences still escape the document root.',
-    remediation: 'Upgrade to Apache HTTP Server 2.4.51 or later.' },
+  { cve_id: 'CVE-2021-44228', title: 'Apache Log4j2 Remote Code Execution Vulnerability', cvss_score: 10.0, severity: 'CRITICAL',
+    affected_products: ['apache log4j'], vulnerable_versions: '2.0.1 <= v < 2.3.1, 2.4.0 <= v < 2.12.2, 2.13.0 <= v < 2.15.0',
+    exploit_vector: 'NETWORK / LOW complexity', match: [], kev: true, published: '2021-12-10T10:15:09Z', source: 'NVD snapshot',
+    cpe_matches: [
+      { vulnerable: true, criteria: LOG4J, versionStartIncluding: '2.0.1', versionEndExcluding: '2.3.1' },
+      { vulnerable: true, criteria: LOG4J, versionStartIncluding: '2.4.0', versionEndExcluding: '2.12.2' },
+      { vulnerable: true, criteria: LOG4J, versionStartIncluding: '2.13.0', versionEndExcluding: '2.15.0' }
+    ],
+    description: 'Apache Log4j2 2.0-beta9 through 2.15.0 (excluding 2.12.2, 2.12.3 and 2.3.1) JNDI features used in configuration, log messages and parameters do not protect against attacker-controlled LDAP and other JNDI endpoints. An attacker who can control log messages can execute arbitrary code loaded from LDAP servers when message lookup substitution is enabled.',
+    remediation: 'Upgrade log4j-core to 2.17.1 (Java 8), 2.12.4 (Java 7) or 2.3.2 (Java 6). Block outbound LDAP/RMI from application hosts.' },
+  { cve_id: 'CVE-2021-41773', title: 'Apache HTTP Server Path Traversal Vulnerability', cvss_score: 7.5, severity: 'HIGH',
+    affected_products: ['apache http_server'], vulnerable_versions: '2.4.49', exploit_vector: 'NETWORK / LOW complexity',
+    match: [], kev: true, published: '2021-10-05T09:15:07Z', source: 'NVD snapshot',
+    cpe_matches: [{ vulnerable: true, criteria: 'cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*' }],
+    description: 'A flaw in path normalization in Apache HTTP Server 2.4.49 lets an attacker map URLs to files outside the directories configured by Alias-like directives. If CGI scripts are enabled for those paths, this can allow remote code execution.',
+    remediation: 'Upgrade Apache HTTP Server to 2.4.51 or later. Keep "Require all denied" on the filesystem root.' },
+  { cve_id: 'CVE-2021-42013', title: 'Apache HTTP Server Path Traversal Vulnerability', cvss_score: 9.8, severity: 'CRITICAL',
+    affected_products: ['apache http_server'], vulnerable_versions: '2.4.49, 2.4.50', exploit_vector: 'NETWORK / LOW complexity',
+    match: [], kev: true, published: '2021-10-07T16:15:09Z', source: 'NVD snapshot',
+    cpe_matches: [
+      { vulnerable: true, criteria: 'cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*' },
+      { vulnerable: true, criteria: 'cpe:2.3:a:apache:http_server:2.4.50:*:*:*:*:*:*:*' }
+    ],
+    description: 'The fix for CVE-2021-41773 in Apache HTTP Server 2.4.50 was insufficient. Path traversal is still possible with double-encoded sequences, and with mod_cgi enabled it leads to remote code execution.',
+    remediation: 'Upgrade Apache HTTP Server to 2.4.51 or later.' },
   { cve_id: 'CWE-89', title: 'SQL injection (weakness class)', cvss_score: 8.6, severity: 'HIGH',
     affected_products: ['PHP web applications', 'MySQL'], vulnerable_versions: 'Apps that build SQL from raw input',
-    exploit_vector: 'HTTP parameter injection', match: ['php-', 'php '],
+    exploit_vector: 'HTTP parameter injection', match: ['php-', 'php '], kev: false, published: null, source: 'curated', cpe_matches: [],
     description: 'Input concatenated into SQL can change query logic, bypass login, or leak data.',
-    remediation: 'Parameterised queries, least-privilege DB accounts, WAF virtual patching for legacy paths.' },
-  { cve_id: 'AEGIS-SSH-BF', title: 'SSH credential brute force (internal tracking id)', cvss_score: 7.5, severity: 'HIGH',
-    affected_products: ['OpenSSH Server'], vulnerable_versions: 'Any SSH service with password auth',
-    exploit_vector: 'Port 22 password spray', match: ['openssh'],
-    description: 'Automated dictionary spraying against SSH aiming for interactive root or service-account access.',
-    remediation: 'Disable password auth, enforce Ed25519 keys, rate-limit with fail2ban, block the source.' }
+    remediation: 'Parameterised queries, least-privilege DB accounts, WAF virtual patching for legacy paths.' }
 ];
 
 const alerts = [
@@ -111,7 +119,8 @@ const logs = [
 
 const firewallRules = [
   { rule_id: 'FW-0001', target_ip: '45.95.147.236', action: 'BLOCK', reason: 'Known Mirai scanning infrastructure (threat-intel import).',
-    enacted_by: 'Threat intel import', is_active: true, packets_dropped: 12840, minutes_ago: 4320 }
+    enacted_by: 'Threat intel import', is_active: true, minutes_ago: 4320,
+    enforcement: { mode: 'feed', status: 'PENDING', detail: 'Waiting for the firewall to pull the blocklist feed' } }
 ];
 
 const defaultConfig = {
@@ -119,7 +128,8 @@ const defaultConfig = {
   isolateOnCompromise: true,
   maxIterations: 12,
   alertRetentionDays: 90,
-  analystName: 'On-call analyst'
+  autoInvestigate: false,
+  engine: 'playbook'
 };
 
 module.exports = { assets, cves, alerts, logs, firewallRules, defaultConfig };

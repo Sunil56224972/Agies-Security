@@ -124,8 +124,8 @@
 .cvss { font: 600 13px var(--font-mono); }
 
 /* Containment ----------------------------------------------------------- */
-.probe-out { margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--c, var(--ok)); border-radius: var(--r-sm); animation: fade-in .25s both; }
-.probe-out--drop { --c: var(--crit); }
+.probe-out { margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--c, var(--high)); border-radius: var(--r-sm); animation: fade-in .25s both; }
+.probe-out--drop { --c: var(--ok); }
 .probe-out .dl { padding: 10px 12px; grid-template-columns: 96px 1fr; font-size: 12.5px; }
 .probe-out__msg { padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); background: var(--surface-2); }
 

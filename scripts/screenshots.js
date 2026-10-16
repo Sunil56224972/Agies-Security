@@ -1,17 +1,20 @@
-// Captures README screenshots from a running server.
-//   npm start            (in one terminal)
-//   npm run screenshots  (in another)
+// Captures README screenshots from a demo server.
+//   AEGIS_DEMO=1 AEGIS_DATA_FILE=.data/demo.json npm start   (in one terminal)
+//   npm run screenshots                                      (in another)
 const path = require('path');
 const fs = require('fs');
 const { chromium } = require('playwright');
+const { signIn, BASE } = require('./demo-session');
 
-const BASE = process.env.AEGIS_URL || 'http://localhost:3000';
 const OUT = path.join(__dirname, '..', 'docs', 'images');
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
+  const { cookie } = await signIn({ reset: true });
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  await context.addCookies([cookie]);
+  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   const shot = (name, opts = {}) => page.screenshot({ path: path.join(OUT, `${name}.png`), ...opts });
@@ -44,8 +47,12 @@ const OUT = path.join(__dirname, '..', 'docs', 'images');
   await shot('assets');
   await open('telemetry?host=10.0.4.15');
   await shot('telemetry');
+  await open('settings', 1500);
+  await shot('settings');
 
-  const dark = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const darkCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await darkCtx.addCookies([cookie]);
+  const dark = await darkCtx.newPage();
   await dark.addInitScript(() => localStorage.setItem('aegis.theme', 'dark'));
   await dark.goto(`${BASE}/#/overview`);
   await dark.waitForTimeout(1800);

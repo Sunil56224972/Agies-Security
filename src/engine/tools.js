@@ -1,18 +1,22 @@
 'use strict';
 
 const { classifyPayload, exposureFor, isInternal, newId } = require('./analysis');
+const { RecordAdapter } = require('../enforce');
+const { CVE_RE } = require('../intel/nvd');
+
+const CONTAINED_STATES = ['ENFORCED'];
 
 // Tool implementations shared by the deterministic playbook and the LLM agent.
 // Every tool returns plain JSON and never throws; failures come back as { error }.
-function createTools(store) {
+function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputation = null } = {}) {
   const tools = {
     async ingest_nids_alerts({ alert_id, severity } = {}) {
       if (alert_id) {
         const alert = await store.alerts.get(alert_id);
         return alert ? { alerts: [alert], count: 1 } : { error: `Alert ${alert_id} not found` };
       }
-      const alerts = await store.alerts.list({ severity });
-      return { alerts: alerts.slice(0, 20), count: alerts.length };
+      const alerts = await store.alerts.list({ severity, limit: 20 });
+      return { alerts, count: alerts.length };
     },
 
     async get_packet_metadata({ alert_id }) {
@@ -26,6 +30,7 @@ function createTools(store) {
         bytes_captured: alert.raw_payload.length,
         technique: technique ? technique.label : 'Unclassified',
         technique_id: technique ? technique.id : null,
+        sensor_rule: alert.external_ref || null,
         indicators,
         raw_payload: alert.raw_payload
       };
@@ -33,21 +38,38 @@ function createTools(store) {
 
     async lookup_asset_inventory({ ip_address }) {
       const asset = await store.assets.get(ip_address);
-      if (!asset) return { error: `No CMDB record for ${ip_address}` };
+      if (!asset) return { error: `No inventory record for ${ip_address}` };
       return asset;
     },
 
+    async check_ip_reputation({ ip_address }) {
+      if (!ip_address) return { error: 'ip_address is required' };
+      if (isInternal(ip_address)) return { ip: ip_address, skipped: true, reason: 'Internal address' };
+      if (!reputation || !reputation.available) return { ip: ip_address, skipped: true, reason: 'No reputation provider configured' };
+      try { return await reputation.check(ip_address); } catch (err) { return { error: err.message }; }
+    },
+
     async query_cve_kb({ cve_id, keyword, asset_ip } = {}) {
-      const matches = await store.cves.list(cve_id || keyword);
+      let fetched = null;
+      // Unknown CVE id: pull the record from NVD and keep it.
+      if (cve_id && CVE_RE.test(cve_id) && nvd && !(await store.cves.get(cve_id.toUpperCase()))) {
+        try {
+          const rec = await nvd.fetchCve(cve_id);
+          if (rec) { await store.cves.upsert([rec]); fetched = 'NVD'; }
+        } catch (err) { fetched = `NVD lookup failed: ${err.message}`; }
+      }
+      const matches = cve_id ? [await store.cves.get(String(cve_id).toUpperCase())].filter(Boolean) : await store.cves.list(keyword);
       const asset = asset_ip ? await store.assets.get(asset_ip) : null;
       return {
         query: cve_id || keyword || null,
+        fetched,
         count: matches.length,
-        matches: matches.map(c => {
-          const { match_terms, ...rest } = c;
-          if (!asset) return rest;
+        matches: matches.slice(0, 10).map((c) => {
+          const { match_terms, cpe_matches, ...rest } = c;
+          const out = { ...rest, cpe_ranges: (cpe_matches || []).length };
+          if (!asset) return out;
           const exp = exposureFor(asset, c);
-          return { ...rest, asset_exposed: exp.exposed, exposure_evidence: exp.evidence };
+          return { ...out, asset_exposed: exp.exposed, exposure_evidence: exp.evidence };
         })
       };
     },
@@ -62,35 +84,42 @@ function createTools(store) {
       if (!target_ip) return { error: 'target_ip is required' };
       if (action === 'UNBLOCK') {
         const active = await store.rules.activeFor(target_ip);
-        for (const r of active) await store.rules.update(r.rule_id, { is_active: false });
+        for (const r of active) await store.rules.update(r.rule_id, { is_active: false, enforcement: await enforcer.remove(r) });
         await store.audit.add({ actor, action: 'rule.rollback', target: target_ip, detail: reason || null });
-        return { status: 'DEACTIVATED', target_ip, rules: active.map(r => r.rule_id) };
+        return { status: 'DEACTIVATED', target_ip, rules: active.map((r) => r.rule_id) };
       }
       if (!['BLOCK', 'ISOLATE'].includes(action)) return { error: `Unsupported action ${action}` };
-      const existing = (await store.rules.activeFor(target_ip)).find(r => r.action === action);
+      const existing = (await store.rules.activeFor(target_ip)).find((r) => r.action === action);
       if (existing) return { status: 'ALREADY_ENFORCED', rule: existing };
-      const rule = await store.rules.insert({
+      const draft = {
         rule_id: newId('FW'), target_ip, action, reason: reason || 'No justification supplied',
-        enacted_by: actor, is_active: true, packets_dropped: 0, investigation_id
-      });
-      await store.audit.add({ actor, action: `rule.${action.toLowerCase()}`, target: target_ip, detail: rule.rule_id });
-      return { status: 'ENFORCED', rule };
+        enacted_by: actor, is_active: true, investigation_id
+      };
+      const enforcement = await enforcer.apply(draft);
+      const rule = await store.rules.insert({ ...draft, enforcement });
+      await store.audit.add({ actor, action: `rule.${action.toLowerCase()}`, target: target_ip, detail: `${rule.rule_id} ${enforcement.mode}:${enforcement.status}` });
+      return { status: 'APPLIED', enforcement: enforcement.status, rule };
     },
 
+    // Reads the rule back from the enforcement backend. This does not send traffic.
     async verify_defense_state({ target_ip }) {
       if (!target_ip) return { error: 'target_ip is required' };
       const active = await store.rules.activeFor(target_ip);
       if (!active.length) {
-        return { target_ip, status: 'EXPOSED', connection_state: 'SYN_ACK_RECEIVED', packets_dropped: 0,
-          message: `Probe from ${target_ip} reached the service. No active rule matches.` };
+        return { target_ip, status: 'NO_RULE', contained: false, mode: enforcer.mode, message: `No active rule covers ${target_ip}.` };
       }
-      // Simulated probe burst: a handful of SYNs land on the drop rule.
-      const rule = active[0];
-      const burst = 24 + Math.floor(Math.random() * 40);
-      const updated = await store.rules.update(rule.rule_id, { packets_dropped: Number(rule.packets_dropped || 0) + burst });
-      return { target_ip, status: 'CONTAINED', connection_state: 'DROPPED', rule_id: rule.rule_id, action: rule.action,
-        probe_packets: burst, packets_dropped: updated.packets_dropped,
-        message: `${burst}/${burst} probe packets from ${target_ip} dropped by ${rule.rule_id}.` };
+      const checks = [];
+      for (const rule of active) {
+        const e = await enforcer.verify(rule);
+        if (JSON.stringify(e) !== JSON.stringify(rule.enforcement)) await store.rules.update(rule.rule_id, { enforcement: e });
+        checks.push({ rule_id: rule.rule_id, action: rule.action, ...e });
+      }
+      const best = checks.find((c) => CONTAINED_STATES.includes(c.status)) || checks.find((c) => c.status === 'PENDING') || checks[0];
+      return {
+        target_ip, status: best.status, contained: CONTAINED_STATES.includes(best.status), mode: best.mode,
+        rule_id: best.rule_id, action: best.action, checked_at: new Date().toISOString(),
+        rules: checks, message: `${best.rule_id} (${best.action}) via ${best.mode}: ${best.detail}`
+      };
     },
 
     async record_investigation_verdict(args) {
@@ -101,23 +130,24 @@ function createTools(store) {
   };
   return tools;
 }
-
 const TOOL_DEFINITIONS = [
   ['ingest_nids_alerts', 'Fetch one alert by id, or list recent NIDS alerts.', {
     alert_id: { type: 'string', description: 'Alert id, e.g. ALERT-2026-9001' },
     severity: { type: 'string', enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] } }, []],
   ['get_packet_metadata', 'Decode the captured payload for an alert: flow, direction, technique classification and indicators.', {
     alert_id: { type: 'string' } }, ['alert_id']],
-  ['lookup_asset_inventory', 'CMDB lookup for an internal host: OS, services, installed packages, WAF, criticality.', {
+  ['lookup_asset_inventory', 'Inventory lookup for an internal host: OS, services, installed packages, WAF, criticality.', {
     ip_address: { type: 'string' } }, ['ip_address']],
-  ['query_cve_kb', 'Search the vulnerability knowledge base. Pass asset_ip to get per-asset exposure.', {
+  ['check_ip_reputation', 'Reputation of an external IP from the configured threat-intel provider (AbuseIPDB).', {
+    ip_address: { type: 'string' } }, ['ip_address']],
+  ['query_cve_kb', 'Look up a CVE (fetched from NVD if not cached) or search by keyword. Pass asset_ip to get per-asset exposure from CPE version ranges.', {
     cve_id: { type: 'string' }, keyword: { type: 'string' }, asset_ip: { type: 'string' } }, []],
   ['query_server_logs', 'Read host telemetry (http_access, auth_log, edr_process, system) to see whether the exploit executed.', {
     host_ip: { type: 'string' }, client_ip: { type: 'string', description: 'Filter to lines involving this remote IP' },
     log_type: { type: 'string', enum: ['http_access', 'auth_log', 'edr_process', 'system'] }, limit: { type: 'number' } }, ['host_ip']],
-  ['execute_firewall_action', 'Apply a sandbox containment rule. BLOCK an external IP, ISOLATE an internal host, or UNBLOCK to roll back.', {
+  ['execute_firewall_action', 'Create a containment rule and push it to the enforcement backend. BLOCK an external IP, ISOLATE an internal host, or UNBLOCK to roll back.', {
     action: { type: 'string', enum: ['BLOCK', 'ISOLATE', 'UNBLOCK'] }, target_ip: { type: 'string' }, reason: { type: 'string' } }, ['action', 'target_ip', 'reason']],
-  ['verify_defense_state', 'Send a probe from the given IP and report whether containment drops it.', {
+  ['verify_defense_state', 'Read the rule for this IP back from the enforcement backend and report whether it is in force.', {
     target_ip: { type: 'string' } }, ['target_ip']],
   ['record_investigation_verdict', 'Submit the final verdict. Call exactly once, after containment is verified.', {
     alert_id: { type: 'string' }, attack_outcome: { type: 'string', enum: ['ATTACK_SUCCEEDED', 'ATTACK_FAILED', 'FALSE_POSITIVE', 'RECON_ONLY'] },
@@ -128,4 +158,4 @@ const TOOL_DEFINITIONS = [
   function: { name, description, parameters: { type: 'object', properties, required } }
 }));
 
-module.exports = { createTools, TOOL_DEFINITIONS };
+module.exports = { createTools, TOOL_DEFINITIONS, CONTAINED_STATES };

@@ -1,12 +1,12 @@
 {
   "name": "aegis-security",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Incident response console: alert triage, evidence correlation, automated containment and analyst override, backed by Supabase.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/smoke.js",
+    "test": "node test/unit.js && node test/smoke.js && node test/http.js",
     "screenshots": "node scripts/screenshots.js"
   },
   "engines": {
