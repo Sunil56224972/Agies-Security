@@ -1,6 +1,9 @@
 'use strict';
 // End-to-end HTTP test: boots the real app on an ephemeral port with an
 // isolated store and exercises auth, CSRF, roles, ingest, feeds and retention.
+// AEGIS_TEST_SUPABASE=1 runs the same checks against the Supabase project in
+// .env instead. It WIPES every Aegis table before and after: never point it
+// at a database that holds real incidents.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -12,8 +15,26 @@ const { createApp } = require('../src/app');
 const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline test)'); } };
 
 (async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-http-'));
-  const store = new MemoryStore({ file: path.join(dir, 'store.json'), demo: false });
+  const live = process.env.AEGIS_TEST_SUPABASE === '1';
+  let store;
+  let wipe = async () => {};
+  if (live) {
+    require('dotenv').config();
+    const { SupabaseStore } = require('../src/store/supabase');
+    store = new SupabaseStore(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY);
+    wipe = async () => {
+      for (const [t, c] of [['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'], ['alerts', 'alert_id'],
+        ['assets', 'ip_address'], ['cves', 'cve_id'], ['app_config', 'key'], ['audit_log', 'id'], ['api_keys', 'id'], ['users', 'id']]) {
+        const { error } = await store.sb.from(t).delete().not(c, 'is', null);
+        if (error) throw new Error(`wipe ${t}: ${error.message}`);
+      }
+    };
+    await wipe();
+    console.log(`Running against ${new URL(process.env.SUPABASE_URL).host}`);
+  } else {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-http-'));
+    store = new MemoryStore({ file: path.join(dir, 'store.json'), demo: false });
+  }
   await store.init();
   const env = { SESSION_SECRET: 'x'.repeat(48), AEGIS_SETUP_TOKEN: 'bootstrap-123' };
   const { app, jobs } = createApp({ store, enforcer: new FeedAdapter(), nvd: offlineNvd, env, demo: false, warnings: [] });
@@ -50,6 +71,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok(r.status === 400, 'setup enforces password policy');
     r = await call('POST', '/api/auth/setup', { body: { name: 'Priya Rao', email: 'Priya@corp.example', password: 'Str0ngPassword', setup_token: 'bootstrap-123' } });
     ok(r.status === 201 && r.json.user.role === 'admin' && jar.admin, 'first admin created and signed in');
+    const adminId = r.json.user.id;
     ok((await call('POST', '/api/auth/setup', { as: null, body: { name: 'X', email: 'x@y.z', password: 'Str0ngPassword' } })).status === 409, 'setup cannot run twice');
 
     r = await call('GET', '/api/alerts');
@@ -73,7 +95,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     r = await call('PATCH', `/api/users/${viewerId}`, { body: { disabled: true } });
     ok(r.status === 200, 'admin disables viewer');
     ok((await call('GET', '/api/alerts', { as: 'viewer' })).status === 401, 'disabled user session is revoked immediately');
-    ok((await call('PATCH', '/api/users/1', { body: { role: 'analyst' } })).status === 409, 'last admin cannot be demoted');
+    ok((await call('PATCH', `/api/users/${adminId}`, { body: { role: 'analyst' } })).status === 409, 'last admin cannot be demoted');
 
     // API keys and ingest
     ok((await call('POST', '/api/ingest/alerts', { as: null, body: [] })).status === 401, 'ingest needs an API key');
@@ -144,6 +166,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
   } finally {
     server.close();
     jobs.stop();
+    await wipe();
   }
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

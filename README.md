@@ -142,17 +142,21 @@ Passwords are hashed with scrypt. Sessions are HMAC-signed, HttpOnly, SameSite=S
 
 ## Supabase backend
 
-1. Create a project at https://supabase.com.
-2. Apply **both** files in `supabase/migrations/`, in order: the base schema, then `..._real_integrations.sql` (users, API keys, enforcement state). Use the SQL editor, `supabase db push`, or the Supabase MCP `apply_migration` tool.
-3. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, then restart. Settings > Integrations shows the active backend.
+With the Supabase CLI:
 
-Row level security is on for every table, with no policies, so the anon key can read nothing. Only the server, holding the service role key, has access. If Supabase is configured but unreachable, the server refuses to start rather than quietly writing incidents to a local file. Set `AEGIS_ALLOW_FALLBACK=1` if you would rather it fall back.
-
-To let a coding agent manage the project, add the official MCP server:
-
-```json
-{ "mcpServers": { "supabase": { "command": "npx", "args": ["-y", "@supabase/mcp-server-supabase@latest", "--project-ref=<ref>"], "env": { "SUPABASE_ACCESS_TOKEN": "<token>" } } } }
+```bash
+npx supabase login
+npx supabase projects create aegis-security --org-id <org> --region ap-south-1 --db-password <pw>
+npx supabase link --project-ref <ref>
+npx supabase db push                                   # applies every file in supabase/migrations
+npx supabase projects api-keys --project-ref <ref> --reveal
 ```
+
+Put the project URL (`https://<ref>.supabase.co`) in `SUPABASE_URL` and the `sb_secret_...` key (or the legacy `service_role` JWT) in `SUPABASE_SERVICE_ROLE_KEY`, then restart. The startup banner and Settings > Integrations show `Supabase Postgres` when it is in use. The SQL editor or the Supabase MCP `apply_migration` tool work too; apply the migrations in filename order.
+
+Row level security is on for every table, with no policies, and the third migration revokes table privileges from `anon` and `authenticated` outright, so a leaked publishable key reads nothing. Only the server, holding the secret key, has access. If Supabase is configured but unreachable, the server refuses to start rather than quietly writing incidents to a local file. Set `AEGIS_ALLOW_FALLBACK=1` if you would rather it fall back.
+
+To let a coding agent manage the project, add Supabase's hosted MCP server (`https://mcp.supabase.com/mcp`, OAuth sign-in) to the agent's MCP config.
 
 ## What Aegis does not do for you
 
@@ -189,6 +193,8 @@ npm test
 ```
 
 There are three suites. Unit tests cover CPE version matching, EVE normalisation, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes about 40 end-to-end checks: auth, roles, CSRF, ingest and de-duplication, feeds, CSV import, enforcement read-back and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
+
+To run the HTTP suite against the Supabase project in `.env` instead of a temp file, set `AEGIS_TEST_SUPABASE=1`. It empties every Aegis table before and after the run, so use a staging project, never one holding real incidents.
 
 To regenerate the screenshots or the walkthrough video, start a demo server (`AEGIS_DEMO=1 AEGIS_DATA_FILE=.data/demo.json npm start`), then run `npm run screenshots` or `node demo_video/record_demo.js`. Both need `npx playwright install chromium`.
 
