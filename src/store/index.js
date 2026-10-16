@@ -24,6 +24,12 @@ async function createStore(env = process.env) {
       return { store: fallback, warning: `Supabase unavailable (${err.message}). Using the local file store.`, demo };
     }
   }
+  if (env.VERCEL) {
+    // The deployment bundle is read-only; /tmp is per instance and wiped on cold start.
+    const store = new MemoryStore({ demo, file: require('path').join(require('os').tmpdir(), 'aegis.json') });
+    await store.init();
+    return { store, warning: 'No SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY on this deployment. Data lives in /tmp and is lost on every cold start.', demo };
+  }
   const store = new MemoryStore({ demo, ...(env.AEGIS_DATA_FILE ? { file: require('path').resolve(env.AEGIS_DATA_FILE) } : {}) });
   await store.init();
   return { store, warning: null, demo };

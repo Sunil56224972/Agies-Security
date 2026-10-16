@@ -1,0 +1,10 @@
+.data
+.env
+.env.*
+demo_video
+docs
+test
+scripts
+supabase
+*.md
+!README.md

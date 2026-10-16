@@ -158,6 +158,22 @@ Row level security is on for every table, with no policies, and the third migrat
 
 To let a coding agent manage the project, add Supabase's hosted MCP server (`https://mcp.supabase.com/mcp`, OAuth sign-in) to the agent's MCP config.
 
+## Deploying on Vercel
+
+`server.js` exports the Express app, so Vercel runs it as one function with zero config; `npm start` still runs it as a normal server. Files in `public/` are served from Vercel's CDN with the headers in `vercel.json`.
+
+Set these in Project Settings > Environment Variables, then redeploy:
+
+| Variable | Value |
+| --- | --- |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Required. Without them each instance keeps data in `/tmp` and loses it on cold start. |
+| `SESSION_SECRET` | 32+ random characters. Required: instances do not share a generated one. |
+| `AEGIS_SETUP_TOKEN` | Asked for on the first-run screen, so nobody else claims the admin account. |
+| `COOKIE_SECURE=1`, `TRUST_PROXY=1`, `NODE_ENV=production` | Vercel serves HTTPS behind one proxy hop. |
+| `CRON_SECRET` | Vercel Cron sends it to `/api/cron/retention` (daily, 03:00 UTC). |
+
+Rate limits are kept per function instance, so they are looser on Vercel than on a single server. Investigations stream over one request; a long LLM run is bounded by the function's max duration.
+
 ## What Aegis does not do for you
 
 - It does not capture traffic. Alerts come from your IDS, and evidence comes from the logs you ship. A host that sends no logs gets a lower-confidence verdict.

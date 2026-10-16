@@ -9,7 +9,7 @@ const { registerRoutes } = require('./routes');
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PUBLIC_API = new Set(['/health', '/auth/state', '/auth/login', '/auth/setup', '/auth/logout']);
+const PUBLIC_API = new Set(['/health', '/auth/state', '/auth/login', '/auth/setup', '/auth/logout', '/cron/retention']);
 
 const CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",

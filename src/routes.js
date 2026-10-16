@@ -473,6 +473,15 @@ function registerRoutes(app, ctx) {
   }
   const timer = setInterval(retention, 3600000);
   timer.unref();
+
+  // Called by Vercel Cron (vercel.json) with Authorization: Bearer $CRON_SECRET.
+  app.get('/api/cron/retention', wrap(async (req, res) => {
+    const secret = env.CRON_SECRET;
+    const given = Buffer.from(req.get('authorization') || '');
+    const want = Buffer.from(`Bearer ${secret}`);
+    if (!secret || given.length !== want.length || !require('crypto').timingSafeEqual(given, want)) return bad(res, 'Forbidden', 403);
+    res.json(await retention());
+  }));
   return { retention, stop: () => clearInterval(timer), closedStatuses: CLOSED_STATUSES };
 }
 
