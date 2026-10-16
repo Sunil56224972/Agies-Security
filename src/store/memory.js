@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const seed = require('../seed');
-const { materializeSeed, emptyState, matchesQuery, publicUser, publicKey, CLOSED_STATUSES } = require('./shared');
+const { materializeSeed, emptyState, matchesQuery, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CLOSED_STATUSES } = require('./shared');
 
 // File-backed store used when Supabase credentials are absent. Good for a
 // single-node install or evaluation; use Supabase for anything shared.
@@ -30,12 +30,14 @@ class MemoryStore {
       console.warn(`  Store file unreadable (${err.message}); moved to ${bad}`);
     }
     if (!this.db || !this.db.alerts) this.db = this.demo ? { ...emptyState(seed), ...materializeSeed(seed) } : emptyState(seed);
-    for (const k of ['users', 'api_keys', 'audit', 'logs', 'rules', 'investigations', 'assets', 'cves']) if (!Array.isArray(this.db[k])) this.db[k] = [];
+    for (const k of ['users', 'api_keys', 'audit', 'logs', 'rules', 'investigations', 'assets', 'cves', 'alert_notes', 'suppressions']) if (!Array.isArray(this.db[k])) this.db[k] = [];
     this.seq = {
       log: Math.max(0, ...this.db.logs.map((l) => l.id)) + 1,
       audit: Math.max(0, ...this.db.audit.map((a) => a.id)) + 1,
       user: Math.max(0, ...this.db.users.map((u) => u.id)) + 1,
-      key: Math.max(0, ...this.db.api_keys.map((k) => k.id)) + 1
+      key: Math.max(0, ...this.db.api_keys.map((k) => k.id)) + 1,
+      note: Math.max(0, ...this.db.alert_notes.map((n) => n.id)) + 1,
+      supp: Math.max(0, ...this.db.suppressions.map((x) => x.id)) + 1
     };
     this.persist();
   }
@@ -63,7 +65,7 @@ class MemoryStore {
 
   // Replaces telemetry with the demo dataset. Users and API keys are kept.
   async reset() {
-    const keep = { users: this.db.users, api_keys: this.db.api_keys };
+    const keep = { users: this.db.users, api_keys: this.db.api_keys, suppressions: this.db.suppressions };
     this.db = { ...emptyState(seed), ...materializeSeed(seed), ...keep };
     this.seq.log = this.db.logs.length + 1;
     this.seq.audit = 2;
@@ -84,9 +86,10 @@ class MemoryStore {
   get alerts() {
     const s = this;
     return {
-      async list({ severity, status, q, limit = 500 } = {}) {
+      async list({ severity, status, q, ip, assignee, since, limit = 500 } = {}) {
         return s.db.alerts
-          .filter((a) => (!severity || a.severity === severity) && (!status || a.status === status))
+          .filter((a) => (!severity || a.severity === severity) && (!status || a.status === status) && (!since || a.detected_at >= since))
+          .filter((a) => (!ip || a.source_ip === ip || a.dest_ip === ip) && (!assignee || (assignee === 'none' ? a.assignee_id == null : a.assignee_id === Number(assignee))))
           .filter((a) => matchesQuery(q, [a.alert_id, a.signature, a.source_ip, a.dest_ip, a.category, a.sensor]))
           .sort((a, b) => b.detected_at.localeCompare(a.detected_at))
           .slice(0, limit)
@@ -95,7 +98,7 @@ class MemoryStore {
       async get(id) { return s.clone(s.db.alerts.find((a) => a.alert_id === id)); },
       async insert(row) {
         const now = new Date().toISOString();
-        const rec = { detected_at: now, updated_at: now, status: 'NEW', external_ref: null, ...row };
+        const rec = applyLifecycle(null, { detected_at: now, updated_at: now, status: 'NEW', ...ALERT_DEFAULTS, ...row });
         s.db.alerts.push(rec);
         s.persist();
         return s.clone(rec);
@@ -104,18 +107,24 @@ class MemoryStore {
       async insertMany(rows) {
         const have = new Set(s.db.alerts.map((a) => a.alert_id));
         const fresh = rows.filter((r) => !have.has(r.alert_id) && have.add(r.alert_id));
-        s.db.alerts.push(...fresh.map((r) => ({ status: 'NEW', external_ref: null, ...r })));
+        const now = new Date().toISOString();
+        s.db.alerts.push(...fresh.map((r) => applyLifecycle(null, { detected_at: now, updated_at: now, status: 'NEW', ...ALERT_DEFAULTS, ...r })));
         s.persist();
         return { inserted: fresh.map((r) => r.alert_id), duplicates: rows.length - fresh.length };
       },
       async update(id, patch) {
         const row = s.db.alerts.find((a) => a.alert_id === id);
-        return row ? s.touch(row, patch) : null;
+        return row ? s.touch(row, applyLifecycle(row, { status: row.status, ...patch })) : null;
+      },
+      async updateMany(ids, patch) {
+        const want = new Set(ids);
+        return s.db.alerts.filter((a) => want.has(a.alert_id)).map((row) => s.touch(row, applyLifecycle(row, { status: row.status, ...patch })));
       },
       async purgeClosed(before) {
         const gone = new Set(s.db.alerts.filter((a) => CLOSED_STATUSES.includes(a.status) && a.updated_at < before).map((a) => a.alert_id));
         if (!gone.size) return 0;
         s.db.alerts = s.db.alerts.filter((a) => !gone.has(a.alert_id));
+        s.db.alert_notes = s.db.alert_notes.filter((n) => !gone.has(n.alert_id));
         const invs = new Set(s.db.investigations.filter((i) => gone.has(i.alert_id)).map((i) => i.investigation_id));
         s.db.investigations = s.db.investigations.filter((i) => !invs.has(i.investigation_id));
         for (const r of s.db.rules) if (invs.has(r.investigation_id)) r.investigation_id = null;
@@ -204,13 +213,13 @@ class MemoryStore {
   get rules() {
     const s = this;
     return {
-      async list() { return [...s.db.rules].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => s.clone(r)); },
+      async list({ limit = 5000 } = {}) { return [...s.db.rules].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map((r) => s.clone(r)); },
       async get(id) { return s.clone(s.db.rules.find((r) => r.rule_id === id)); },
       async activeFor(ip) { return s.db.rules.filter((r) => r.target_ip === ip && r.is_active).map((r) => s.clone(r)); },
       async active(action) { return s.db.rules.filter((r) => r.is_active && (!action || r.action === action)).map((r) => s.clone(r)); },
       async insert(row) {
         const now = new Date().toISOString();
-        const rec = { created_at: now, updated_at: now, is_active: true, investigation_id: null, enforcement: null, ...row };
+        const rec = { created_at: now, updated_at: now, is_active: true, investigation_id: null, enforcement: null, expires_at: null, ...row };
         s.db.rules.push(rec);
         s.persist();
         return s.clone(rec);
@@ -218,6 +227,63 @@ class MemoryStore {
       async update(id, patch) {
         const row = s.db.rules.find((r) => r.rule_id === id);
         return row ? s.touch(row, patch) : null;
+      },
+      async expiredActive(at) {
+        return s.db.rules.filter((r) => r.is_active && r.expires_at && r.expires_at <= at).map((r) => s.clone(r));
+      }
+    };
+  }
+
+  get notes() {
+    const s = this;
+    return {
+      async list(alertId) {
+        return s.db.alert_notes.filter((n) => n.alert_id === alertId).sort((a, b) => a.id - b.id).map((r) => s.clone(r));
+      },
+      async add(row) {
+        const rec = { id: s.seq.note++, created_at: new Date().toISOString(), kind: 'note', author_id: null, ...row };
+        s.db.alert_notes.push(rec);
+        s.persist();
+        return s.clone(rec);
+      },
+      async addMany(rows) {
+        const now = new Date().toISOString();
+        s.db.alert_notes.push(...rows.map((r) => ({ id: s.seq.note++, created_at: now, kind: 'note', author_id: null, ...r })));
+        s.persist();
+        return rows.length;
+      }
+    };
+  }
+
+  get suppressions() {
+    const s = this;
+    return {
+      async list() { return [...s.db.suppressions].sort((a, b) => b.id - a.id).map((r) => s.clone(r)); },
+      async get(id) { return s.clone(s.db.suppressions.find((x) => x.id === Number(id))); },
+      async insert(row) {
+        const now = new Date().toISOString();
+        const rec = { id: s.seq.supp++, signature: null, source_cidr: null, dest_cidr: null, dest_port: null, enabled: true, expires_at: null, hits: 0, last_hit_at: null, created_at: now, updated_at: now, ...row };
+        s.db.suppressions.push(rec);
+        s.persist();
+        return s.clone(rec);
+      },
+      async update(id, patch) {
+        const row = s.db.suppressions.find((x) => x.id === Number(id));
+        return row ? s.touch(row, patch) : null;
+      },
+      async remove(id) {
+        const n = s.db.suppressions.length;
+        s.db.suppressions = s.db.suppressions.filter((x) => x.id !== Number(id));
+        for (const a of s.db.alerts) if (a.suppressed_by === Number(id)) a.suppressed_by = null;
+        s.persist();
+        return s.db.suppressions.length < n;
+      },
+      async recordHits(counts, at) {
+        for (const [id, n] of Object.entries(counts)) {
+          const row = s.db.suppressions.find((x) => x.id === Number(id));
+          if (row) { row.hits += n; row.last_hit_at = at; }
+        }
+        s.persist();
       }
     };
   }
@@ -225,7 +291,10 @@ class MemoryStore {
   get investigations() {
     const s = this;
     return {
-      async list() { return [...s.db.investigations].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => s.clone(r)); },
+      async list({ since, limit = 500 } = {}) {
+        return s.db.investigations.filter((i) => !since || i.created_at >= since)
+          .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map((r) => s.clone(r));
+      },
       async get(id) { return s.clone(s.db.investigations.find((i) => i.investigation_id === id)); },
       async insert(row) {
         const now = new Date().toISOString();

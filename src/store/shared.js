@@ -30,8 +30,20 @@ function materializeSeed(seed) {
 function emptyState(seed) {
   return {
     alerts: [], assets: [], cves: referenceCves(seed), logs: [], rules: [], investigations: [],
-    config: { ...seed.defaultConfig }, audit: [], users: [], api_keys: []
+    config: { ...seed.defaultConfig }, audit: [], users: [], api_keys: [], alert_notes: [], suppressions: []
   };
+}
+
+// Mirrors the alerts_lifecycle trigger in Postgres: acknowledged is the first
+// time an alert leaves NEW, resolved is entering a closed status (cleared on reopen).
+function applyLifecycle(prev, next) {
+  const now = new Date().toISOString();
+  const out = { ...next };
+  if (out.status && out.status !== 'NEW' && !out.acknowledged_at) out.acknowledged_at = (prev && prev.acknowledged_at) || now;
+  if (out.status && CLOSED_STATUSES.includes(out.status)) {
+    if (!out.resolved_at) out.resolved_at = (prev && prev.resolved_at) || now;
+  } else if (out.status) out.resolved_at = null;
+  return out;
 }
 
 function matchesQuery(q, fields) {
@@ -44,4 +56,6 @@ function matchesQuery(q, fields) {
 const publicUser = (u) => (u ? { id: u.id, email: u.email, name: u.name, role: u.role, disabled: Boolean(u.disabled), created_at: u.created_at, last_login_at: u.last_login_at || null } : null);
 const publicKey = (k) => (k ? { id: k.id, name: k.name, prefix: k.prefix, scopes: k.scopes, created_by: k.created_by, created_at: k.created_at, last_used_at: k.last_used_at || null, revoked_at: k.revoked_at || null } : null);
 
-module.exports = { materializeSeed, emptyState, referenceCves, matchesQuery, minutesAgo, publicUser, publicKey, CLOSED_STATUSES };
+const ALERT_DEFAULTS = { external_ref: null, assignee_id: null, assignee_name: null, acknowledged_at: null, resolved_at: null, suppressed_by: null };
+
+module.exports = { materializeSeed, emptyState, referenceCves, matchesQuery, minutesAgo, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CLOSED_STATUSES };

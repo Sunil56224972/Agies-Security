@@ -11,13 +11,36 @@ const MODE_COPY = {
 };
 export const enforcementCopy = () => MODE_COPY[state.health?.enforcement?.mode] || '';
 
+const initials = (name) => String(name || '?').split(/[\s@.:]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+const OPEN_STATES = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
+const ipLink = (ip) => `<a class="ip ip-link" href="#/ip/${encodeURIComponent(ip)}">${esc(ip)}</a>`;
+
+let assignable = null;
+export async function assignableUsers() {
+  if (!assignable || assignable.at < Date.now() - 60000) assignable = { at: Date.now(), list: await api('/users/assignable') };
+  return assignable.list;
+}
+
+function noteHtml(n) {
+  const event = n.kind === 'event';
+  return `<li class="casefeed__item ${event ? 'casefeed__item--event' : ''}">
+    <span class="casefeed__mark">${event ? icon('dot') : esc(initials(n.author))}</span>
+    <div class="grow"><div class="casefeed__meta"><b>${esc(n.author)}</b><span title="${stamp(n.created_at)}">${ago(n.created_at)}</span></div>
+    <div class="casefeed__body">${esc(n.body)}</div></div></li>`;
+}
+
 export async function openAlert(alertId, navigate) {
   const panel = drawer(`<div class="drawer__head"><div class="grow"><div class="eyebrow">${esc(alertId)}</div><div class="skeleton" style="height:28px;margin-top:8px;width:80%"></div></div><button class="icon-btn icon-btn--bare" data-close aria-label="Close">${icon('x')}</button></div><div class="drawer__body"><div class="skeleton" style="height:120px"></div><div class="skeleton" style="height:160px"></div></div>`);
   let data;
-  try { data = await api(`/alerts/${encodeURIComponent(alertId)}`); } catch (e) { toast('Could not load alert', e.message, 'error'); closeLayer(); return; }
-  const { alert: a, asset, investigations } = data;
+  let people = [];
+  try {
+    [data, people] = await Promise.all([api(`/alerts/${encodeURIComponent(alertId)}`), can('respond') ? assignableUsers().catch(() => []) : []]);
+  } catch (e) { toast('Could not load alert', e.message, 'error'); closeLayer(); return; }
+  const { alert: a, asset, investigations, notes = [], suppression } = data;
   const last = investigations[0];
   const respond = can('respond');
+  const me = state.user || {};
+  const mine = a.assignee_id === me.id;
   panel.innerHTML = `
     <div class="drawer__head">
       <div class="grow">
@@ -28,11 +51,28 @@ export async function openAlert(alertId, navigate) {
       <button class="icon-btn icon-btn--bare" data-close aria-label="Close">${icon('x')}</button>
     </div>
     <div class="drawer__body">
+      ${suppression || a.suppressed_by ? `<div class="notice">${icon('info')}<div class="small">Closed on arrival by suppression rule <b>${esc(suppression ? suppression.name : `#${a.suppressed_by}`)}</b>${suppression && !suppression.enabled ? ' (now paused)' : ''}. Reopen it if the rule is wrong, then fix the rule under Containment.</div></div>` : ''}
+      <section class="owner">
+        <span class="avatar avatar--soft">${a.assignee_name ? esc(initials(a.assignee_name)) : icon('user')}</span>
+        <div class="grow">
+          <div class="small muted">Owner</div>
+          ${respond ? `<select class="select select--bare" id="d-owner" aria-label="Owner">
+            <option value="">Unassigned</option>
+            ${people.map((u) => `<option value="${u.id}" ${u.id === a.assignee_id ? 'selected' : ''}>${esc(u.name)}${u.id === me.id ? ' (you)' : ''}</option>`).join('')}
+            ${a.assignee_id && !people.some((u) => u.id === a.assignee_id) ? `<option value="${a.assignee_id}" selected>${esc(a.assignee_name)}</option>` : ''}
+          </select>` : `<div><b>${esc(a.assignee_name || 'Unassigned')}</b></div>`}
+        </div>
+        ${respond && !mine && me.role !== 'viewer' ? '<button class="btn btn--sm" id="d-take">Take it</button>' : ''}
+        <dl class="owner__times">
+          <dt>First response</dt><dd class="mono">${a.acknowledged_at ? `${durationText(a.detected_at, a.acknowledged_at)}` : OPEN_STATES.includes(a.status) ? `<span class="warn-text">waiting ${durationText(a.detected_at, new Date().toISOString())}</span>` : '-'}</dd>
+          <dt>Resolved</dt><dd class="mono">${a.resolved_at ? durationText(a.detected_at, a.resolved_at) : '-'}</dd>
+        </dl>
+      </section>
       <section>
         <h3 class="section-title">Flow</h3>
         <dl class="dl">
-          <dt>Source</dt><dd class="ip">${esc(a.source_ip)}</dd>
-          <dt>Destination</dt><dd class="ip">${esc(a.dest_ip)}:${esc(a.dest_port)} <span class="muted">${esc(a.protocol)}</span></dd>
+          <dt>Source</dt><dd>${ipLink(a.source_ip)}</dd>
+          <dt>Destination</dt><dd>${ipLink(a.dest_ip)}<span class="ip">:${esc(a.dest_port)}</span> <span class="muted">${esc(a.protocol)}</span></dd>
           <dt>Detected</dt><dd class="mono">${stamp(a.detected_at)}</dd>
           ${asset ? `<dt>Target host</dt><dd>${esc(asset.hostname)} <span class="muted">&middot; ${esc(asset.os_version)} &middot; tier ${esc(asset.criticality.toLowerCase())}</span></dd>` : '<dt>Target host</dt><dd class="muted">Not in the inventory</dd>'}
         </dl>
@@ -50,17 +90,27 @@ export async function openAlert(alertId, navigate) {
           ${icon('arrow')}
         </div>
       </section>` : ''}
+      <section>
+        <div class="row"><h3 class="section-title grow" style="margin:0">Case notes</h3><span class="small muted" id="d-ncount">${notes.length || ''}</span></div>
+        <ol class="casefeed mt-8" id="d-notes">${notes.length ? notes.map(noteHtml).join('') : '<li class="casefeed__empty small muted">Nothing yet. Assignments, status changes and verdicts are logged here automatically.</li>'}</ol>
+        ${respond ? `<form class="note-form" id="d-note-form" novalidate>
+          <textarea class="textarea" id="d-note" rows="2" maxlength="4000" placeholder="What did you check, who did you talk to, what is next?"></textarea>
+          <div class="row"><span class="small muted grow">Ctrl+Enter to post. Notes go into the incident report.</span><button class="btn btn--sm" id="d-note-add">Add note</button></div>
+        </form>` : ''}
+      </section>
     </div>
     <div class="drawer__foot">
       <button class="btn btn--primary" id="d-investigate" ${a.status === 'INVESTIGATING' || !respond ? 'disabled' : ''}>${icon('play')}${last ? 'Re-investigate' : 'Investigate'}</button>
-      ${respond && ['NEW', 'CONFIRMED'].includes(a.status) ? '<button class="btn" id="d-fp">Mark false positive</button>' : ''}
-      ${respond && a.status !== 'CLOSED' && a.status !== 'NEW' ? '<button class="btn btn--ghost" id="d-close">Close alert</button>' : ''}
+      ${respond && ['NEW', 'CONFIRMED'].includes(a.status) ? '<button class="btn" id="d-fp">False positive</button>' : ''}
+      ${respond && a.status !== 'CLOSED' && a.status !== 'NEW' && a.status !== 'INVESTIGATING' ? '<button class="btn btn--ghost" id="d-close">Close</button>' : ''}
       ${respond && (a.status === 'CLOSED' || a.status === 'FALSE_POSITIVE') ? '<button class="btn btn--ghost" id="d-reopen">Reopen</button>' : ''}
+      ${can('configure') && !a.suppressed_by ? `<button class="btn btn--ghost" id="d-suppress" title="Stop alerting on traffic like this">${icon('filter')}Suppress similar</button>` : ''}
       ${!respond ? '<span class="small muted">Read-only role</span>' : ''}
     </div>`;
   $('#copy-payload', panel).onclick = async () => {
     try { await navigator.clipboard.writeText(a.raw_payload); toast('Payload copied'); } catch { toast('Clipboard unavailable', '', 'error'); }
   };
+  $$('.ip-link', panel).forEach((l) => { l.onclick = () => closeLayer(); });
   $('#d-investigate', panel).onclick = () => { closeLayer(); navigate(`investigate/${a.alert_id}`); };
   const oi = $('#open-inv', panel);
   if (oi) oi.onclick = () => { closeLayer(); navigate(`investigate/${a.alert_id}`); };
@@ -77,8 +127,117 @@ export async function openAlert(alertId, navigate) {
   if ($('#d-fp', panel)) $('#d-fp', panel).onclick = setStatus('FALSE_POSITIVE', 'Marked as false positive');
   if ($('#d-close', panel)) $('#d-close', panel).onclick = setStatus('CLOSED', 'Alert closed');
   if ($('#d-reopen', panel)) $('#d-reopen', panel).onclick = setStatus('NEW', 'Alert reopened');
+
+  const assign = async (userId, btn) => busy(btn, async () => {
+    try {
+      const r = await api(`/alerts/${a.alert_id}/assign`, { method: 'POST', body: { user_id: userId } });
+      toast(r.assignee_name ? `Assigned to ${r.assignee_name}` : 'Unassigned', a.alert_id, 'ok');
+      emit('data:changed');
+      openAlert(a.alert_id, navigate);
+    } catch (err) { toast('Could not assign', err.message, 'error'); }
+  });
+  const owner = $('#d-owner', panel);
+  if (owner) owner.onchange = () => assign(owner.value ? Number(owner.value) : null, null);
+  const take = $('#d-take', panel);
+  if (take) take.onclick = () => assign(me.id, take);
+
+  const form = $('#d-note-form', panel);
+  if (form) {
+    const box = $('#d-note', panel);
+    const post = (e) => {
+      e.preventDefault();
+      const body = box.value.trim();
+      if (!body) { box.classList.add('is-invalid'); setTimeout(() => box.classList.remove('is-invalid'), 1200); return; }
+      busy($('#d-note-add', panel), async () => {
+        try {
+          const n = await api(`/alerts/${a.alert_id}/notes`, { method: 'POST', body: { body } });
+          const list = $('#d-notes', panel);
+          $('.casefeed__empty', list)?.remove();
+          list.insertAdjacentHTML('beforeend', noteHtml(n));
+          list.lastElementChild.classList.add('is-new');
+          $('#d-ncount', panel).textContent = String(list.children.length);
+          box.value = '';
+        } catch (err) { toast('Note not saved', err.message, 'error'); }
+      });
+    };
+    form.onsubmit = post;
+    $('#d-note-add', panel).onclick = post;
+    box.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) post(e); };
+  }
+  const sup = $('#d-suppress', panel);
+  if (sup) sup.onclick = () => openSuppress({ name: `Tune: ${a.signature}`.slice(0, 120), signature: a.signature, source_cidr: a.source_ip, dest_port: a.dest_port });
 }
 
+export function durationText(from, to) {
+  const m = Math.max(0, (new Date(to) - new Date(from)) / 60000);
+  if (m < 1) return `${Math.max(1, Math.round(m * 60))}s`;
+  if (m < 90) return `${Math.round(m)}m`;
+  if (m < 2880) return `${Math.floor(m / 60)}h ${Math.round(m % 60)}m`;
+  return `${Math.round(m / 1440)}d`;
+}
+
+// ---- Suppression (tuning) rule -----------------------------------------------
+// Opens with a draft built from an alert or empty. The preview runs against
+// the last 30 days so the analyst sees what the rule would have hidden.
+export function openSuppress(prefill = {}, onSaved) {
+  const panel = modal(`
+    <div class="modal__head"><h2 class="modal__title">Suppression rule</h2><p class="small muted" style="margin:4px 0 0">Matching alerts are still stored, but arrive closed as false positives and skip triage, notifications and auto-containment. Every condition you fill in must match.</p></div>
+    <form class="modal__body" id="sp-form" novalidate>
+      <div class="form-grid">
+        <label class="field span-2"><span>Name</span><input class="input" name="name" required value="${esc(prefill.name || '')}" placeholder="Why this traffic is expected, e.g. Quarterly Qualys scan"></label>
+        <label class="field span-2"><span>Signature contains</span><input class="input" name="signature" value="${esc(prefill.signature || '')}" placeholder="Case-insensitive text, e.g. ET SCAN Qualys"></label>
+        <label class="field"><span>Source address or CIDR</span><input class="input input--mono" name="source_cidr" value="${esc(prefill.source_cidr || '')}" placeholder="64.39.96.0/20"></label>
+        <label class="field"><span>Destination address or CIDR</span><input class="input input--mono" name="dest_cidr" value="${esc(prefill.dest_cidr || '')}" placeholder="any"></label>
+        <label class="field"><span>Destination port</span><input class="input input--mono" name="dest_port" type="number" min="0" max="65535" value="${esc(prefill.dest_port ?? '')}" placeholder="any"></label>
+        <label class="field"><span>Expires</span><select class="select" name="expires_in_days"><option value="7">After 7 days</option><option value="30" selected>After 30 days</option><option value="90">After 90 days</option><option value="">Never</option></select></label>
+        <label class="check span-2"><input type="checkbox" name="apply_to_open" checked><span>Also close open alerts that match right now</span></label>
+      </div>
+      <div class="preview" id="sp-preview" aria-live="polite"><span class="small muted">Checking the last 30 days...</span></div>
+    </form>
+    <div class="modal__foot"><span class="form-error" id="sp-err"></span><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--primary" id="sp-save">Create rule</button></div>`);
+  const form = $('#sp-form', panel);
+  const out = $('#sp-preview', panel);
+  const read = () => {
+    const b = Object.fromEntries(new FormData(form));
+    b.apply_to_open = form.apply_to_open.checked;
+    return b;
+  };
+  let seq = 0;
+  let timer;
+  const preview = async () => {
+    const mine = ++seq;
+    try {
+      const r = await api('/suppressions/preview', { method: 'POST', body: { ...read(), days: 30 } });
+      if (mine !== seq) return;
+      out.classList.toggle('preview--warn', r.critical > 0);
+      out.innerHTML = `
+        <div class="preview__n"><b class="mono">${num(r.matched)}</b><span>of ${num(r.scanned)} alerts in the last ${r.days} days would match${r.open ? `, <b>${r.open}</b> still open` : ''}.</span></div>
+        ${r.critical ? `<div class="small" style="color:var(--crit);margin-top:4px">${r.critical} of them are CRITICAL. Narrow the rule unless you are sure.</div>` : ''}
+        ${r.signatures.length ? `<ul class="preview__list">${r.signatures.map((s) => `<li><span class="truncate">${esc(s.signature)}</span><span class="mono">${s.n}</span></li>`).join('')}</ul>` : ''}`;
+      $('#sp-err', panel).textContent = '';
+    } catch (e) {
+      if (mine !== seq) return;
+      out.classList.remove('preview--warn');
+      out.innerHTML = `<span class="small muted">${esc(e.message)}</span>`;
+    }
+  };
+  form.oninput = () => { clearTimeout(timer); timer = setTimeout(preview, 280); };
+  preview();
+  const go = async (e) => {
+    e.preventDefault();
+    await busy($('#sp-save', panel), async () => {
+      try {
+        const r = await api('/suppressions', { method: 'POST', body: read() });
+        toast('Suppression rule created', r.closed ? `${r.closed} open alert${r.closed === 1 ? '' : 's'} closed as false positive` : r.name, 'ok', 6000);
+        emit('data:changed');
+        closeLayer();
+        if (onSaved) onSaved(r);
+      } catch (err) { $('#sp-err', panel).textContent = err.message; }
+    });
+  };
+  $('#sp-save', panel).onclick = go;
+  form.onsubmit = go;
+}
 // Manual entry for detections that did not come through a sensor
 // (a user report, a vendor notification, a SIEM search hit).
 export async function openNewAlert(navigate) {
@@ -130,7 +289,8 @@ export function openNewRule(prefill = {}) {
       <div class="form-grid">
         <label class="field"><span>Target IP</span><input class="input input--mono" name="target_ip" required value="${esc(prefill.target_ip || '')}" placeholder="IPv4 or IPv6"></label>
         <label class="field"><span>Action</span><select class="select" name="action"><option value="BLOCK" ${prefill.action !== 'ISOLATE' ? 'selected' : ''}>Block at perimeter</option><option value="ISOLATE" ${prefill.action === 'ISOLATE' ? 'selected' : ''}>Isolate host</option></select></label>
-        <label class="field span-2"><span>Reason</span><input class="input" name="reason" required value="${esc(prefill.reason || '')}" placeholder="Why this rule exists (shown to the next shift)"></label>
+        <label class="field"><span>Reason</span><input class="input" name="reason" required value="${esc(prefill.reason || '')}" placeholder="Why this rule exists (shown to the next shift)"></label>
+        <label class="field"><span>Lift automatically</span><select class="select" name="ttl_hours">${[['', 'Never (remove by hand)'], ['1', 'After 1 hour'], ['24', 'After 24 hours'], ['168', 'After 7 days'], ['720', 'After 30 days']].map(([v, t]) => `<option value="${v}" ${String(prefill.ttl_hours ?? '') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       </div>
       <p class="small muted mt-12">${esc(enforcementCopy())}</p>
     </form>

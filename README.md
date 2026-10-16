@@ -130,6 +130,29 @@ Reply `{"status": "failed", "detail": "..."}` to mark the rule FAILED, or `{"id"
 
 **Cloudflare.** Create an API token with *Zone > Firewall Services > Edit*, and set `CF_API_TOKEN` and `CF_ZONE_ID`. ISOLATE rules are recorded only, because the edge cannot quarantine an internal host.
 
+## Case work and reporting
+
+**Ownership and notes.** Every alert has an owner. Take it from the alert drawer, or assign it to someone on the team. Notes are kept with the alert, and assignments, status changes and verdicts are added to the same timeline automatically. *First response* is the time from detection until the alert first leaves `NEW`. A Postgres trigger stamps it, so it cannot be backdated. The alert queue can be filtered to *My queue* or *Unassigned*.
+
+**Bulk triage.** Tick rows in the alert queue to assign, close, mark false positive or reopen up to 200 alerts at once. Alerts under investigation are skipped.
+
+**Suppression rules.** *Suppress similar* in the alert drawer drafts a rule from that alert. A rule matches on signature text, source or destination CIDR, and port. Before you save, the dialog shows how many alerts from the last 30 days it would have matched, and warns you if any of them were CRITICAL. Matching alerts are still stored, but they arrive closed as false positives. They never page anyone, trigger auto-triage or start a block. Each rule counts its hits and can expire after a set number of days. Rules are managed under Containment > Suppression rules.
+
+**Time-boxed blocks.** Manual rules can lift themselves after 1 hour to 30 days. *Automatic block expiry* in Settings applies the same limit to blocks the engine creates. Expired rules leave the firewall feeds on the next pull and are switched off by the retention job.
+
+**Notifications.** Under Settings > Notifications you can add Slack incoming webhooks, Microsoft Teams workflows or generic HTTPS webhooks. Each channel picks a minimum severity and which events it gets: new alerts, containment rules or verdicts. Generic webhooks can be signed with `X-Aegis-Signature: sha256=HMAC(secret, "<X-Aegis-Timestamp>.<body>")`. Every delivery is written to the audit log, and the URL and secret never leave the server.
+
+**IP profile.** Click any address to see every alert it appears in, as source or target, along with its peers, signatures, rules, investigations and host logs. AbuseIPDB reputation is included when it is configured. You can block, isolate or suppress the address from the same page.
+
+**Reports.** For 7, 30 or 90 days, the Reports page shows:
+- MTTA and MTTR medians and p90 per severity, measured against your first-response targets;
+- a list of alerts still waiting past target;
+- MITRE ATT&CK coverage from investigation verdicts;
+- daily volume, with suppressed alerts shown separately;
+- top external sources, verdict mix and workload per analyst.
+
+Reports print cleanly to PDF. You can export alerts and the audit log as CSV, with cells that could run as spreadsheet formulas escaped. Each investigation downloads as a markdown incident report with its case notes and run log.
+
 ## Users and roles
 
 | Role | Can |
@@ -200,7 +223,12 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 | GET / POST / PUT / DELETE | `/api/assets`, `/api/assets/:ip`, `/api/assets/import` | Inventory |
 | GET / POST / DELETE | `/api/cves`, `/api/cves/:id`, `/api/cves/sync` | NVD-backed CVE records |
 | GET | `/api/logs`, `/api/audit`, `/api/search`, `/api/overview` | Read models |
-| GET / PUT | `/api/config` | Response policy |
+| GET / PUT | `/api/config` | Response policy, SLA targets, block expiry |
+| POST / GET | `/api/alerts/:id/assign`, `/api/alerts/:id/notes`, `/api/alerts/bulk` | Ownership, case notes, bulk triage |
+| GET / POST / PATCH / DELETE | `/api/suppressions`, `/api/suppressions/preview` | Suppression rules and dry-run preview |
+| GET / POST / PATCH / DELETE | `/api/notify/channels`, `/channels/:id/test` | Slack, Teams and webhook channels (admin) |
+| GET | `/api/ip/:ip`, `/api/reports/summary?days=30` | IP profile, SLA and ATT&CK report |
+| GET | `/api/export/alerts.csv`, `/api/export/audit.csv`, `/api/investigations/:id/report.md` | Exports |
 
 ## Tests
 
@@ -208,7 +236,7 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 npm test
 ```
 
-There are three suites. Unit tests cover CPE version matching, EVE normalisation, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes about 40 end-to-end checks: auth, roles, CSRF, ingest and de-duplication, feeds, CSV import, enforcement read-back and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
+There are three suites. Unit tests cover CPE version matching, EVE normalisation, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 73 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds and CSV import; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
 
 To run the HTTP suite against the Supabase project in `.env` instead of a temp file, set `AEGIS_TEST_SUPABASE=1`. It empties every Aegis table before and after the run, so use a staging project, never one holding real incidents.
 
@@ -220,6 +248,8 @@ To regenerate the screenshots or the walkthrough video, start a demo server (`AE
 server.js               boot: store, enforcer, intel clients, banner
 src/app.js              HTTP hardening, sessions, auth, users, API keys
 src/routes.js           console API, ingest, feeds, retention
+src/casework.js         ownership, notes, bulk triage, suppressions, reports, exports
+src/notify.js           Slack / Teams / signed webhook delivery
 src/engine/             analysis rules, tools, playbook and LLM investigator
 src/enforce/            record / feed / webhook / Cloudflare adapters
 src/ingest/             EVE, generic alert, log and CSV normalisation

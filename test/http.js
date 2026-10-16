@@ -5,6 +5,8 @@
 // .env instead. It WIPES every Aegis table before and after: never point it
 // at a database that holds real incidents.
 const assert = require('assert');
+const crypto = require('crypto');
+const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -23,8 +25,8 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     const { SupabaseStore } = require('../src/store/supabase');
     store = new SupabaseStore(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY);
     wipe = async () => {
-      for (const [t, c] of [['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'], ['alerts', 'alert_id'],
-        ['assets', 'ip_address'], ['cves', 'cve_id'], ['app_config', 'key'], ['audit_log', 'id'], ['api_keys', 'id'], ['users', 'id']]) {
+      for (const [t, c] of [['alert_notes', 'id'], ['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'], ['alerts', 'alert_id'],
+        ['suppressions', 'id'], ['assets', 'ip_address'], ['cves', 'cve_id'], ['app_config', 'key'], ['audit_log', 'id'], ['api_keys', 'id'], ['users', 'id']]) {
         const { error } = await store.sb.from(t).delete().not(c, 'is', null);
         if (error) throw new Error(`wipe ${t}: ${error.message}`);
       }
@@ -38,6 +40,15 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
   await store.init();
   const env = { SESSION_SECRET: 'x'.repeat(48), AEGIS_SETUP_TOKEN: 'bootstrap-123' };
   const { app, jobs } = createApp({ store, enforcer: new FeedAdapter(), nvd: offlineNvd, env, demo: false, warnings: [] });
+  // Stands in for a SIEM / SOAR webhook endpoint.
+  const received = [];
+  const hook = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => { received.push({ headers: req.headers, body }); res.writeHead(204); res.end(); });
+  });
+  await new Promise((r) => hook.listen(0, '127.0.0.1', r));
+  const hookUrl = `http://127.0.0.1:${hook.address().port}/hooks/T0SOC/aegis-intake-7f3a9c`;
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -148,6 +159,83 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     r = await call('POST', '/api/verify', { body: { target_ip: '185.220.101.45' } });
     ok(r.json.contained === true && r.json.status === 'ENFORCED', 'verify reports enforcement read-back');
 
+    // ---- Case work: ownership, notes, timeline ---------------------------------
+    r = await call('POST', `/api/alerts/${alertId}/assign`, { body: { user_id: adminId } });
+    ok(r.status === 200 && r.json.assignee_name === 'Priya Rao' && r.json.acknowledged_at, 'alert assigned and acknowledged');
+    ok((await call('POST', `/api/alerts/${alertId}/assign`, { body: { user_id: viewerId } })).status === 400, 'viewers cannot own cases');
+    r = await call('POST', `/api/alerts/${alertId}/notes`, { body: { body: 'Confirmed with app team: host patched to 2.17.1' } });
+    ok(r.status === 201 && r.json.kind === 'note', 'analyst note added');
+    r = await call('GET', `/api/alerts/${alertId}`);
+    ok(r.json.notes.some((n) => n.kind === 'event' && /took the case/.test(n.body)) && r.json.notes.some((n) => /Investigation INV-/.test(n.body)), 'timeline holds assignment and verdict events');
+    ok((await call('GET', '/api/alerts?assignee=me')).json.every((a) => a.assignee_id === adminId), 'my-queue filter');
+
+    // ---- Notification channel with HMAC signature -------------------------------
+    const secret = 'whsec_test_0123456789abcdef';
+    r = await call('POST', '/api/notify/channels', { body: { name: 'SOAR intake', kind: 'webhook', url: hookUrl, secret, min_severity: 'HIGH', events: ['alert', 'containment', 'verdict'] } });
+    ok(r.status === 201 && r.json.signed && !r.json.secret && !String(r.json.url_hint).includes('aegis-intake'), 'webhook channel added, secret and URL masked');
+    const channelId = r.json.id;
+    ok(!JSON.stringify((await call('GET', '/api/config')).json).includes(secret), 'config never returns channel secrets');
+    ok((await call('GET', '/api/notify/channels', { as: 'viewer' })).status === 401, 'channels hidden from signed-out users');
+    r = await call('POST', `/api/notify/channels/${channelId}/test`, { body: {} });
+    ok(r.status === 200 && r.json.ok && received.length === 1, 'test message delivered');
+    const sig = (m) => `sha256=${crypto.createHmac('sha256', secret).update(`${m.headers['x-aegis-timestamp']}.${m.body}`).digest('hex')}`;
+    ok(received[0].headers['x-aegis-signature'] === sig(received[0]), 'webhook HMAC signature verifies');
+
+    // ---- Suppression rules -------------------------------------------------------
+    const scan = (n, src) => ({ timestamp: new Date(Date.now() - n * 1000).toISOString(), flow_id: 5000 + n, event_type: 'alert', src_ip: src, src_port: 50000 + n, dest_ip: '10.0.4.15', dest_port: 443, proto: 'TCP',
+      alert: { signature_id: 2010935, rev: 2, signature: 'ET SCAN Qualys vulnerability scanner', category: 'Attempted Information Leak', severity: 2 }, payload_printable: 'GET /qualys HTTP/1.1' });
+    r = await call('POST', '/api/ingest/alerts', { as: null, body: [scan(1, '64.39.96.10'), scan(2, '64.39.96.11')], headers: { Authorization: `Bearer ${ingestKey}` } });
+    ok(r.json.accepted === 2 && received.length === 2 && JSON.parse(received[1].body).event === 'alert', 'new HIGH alerts pushed to the channel');
+    r = await call('POST', '/api/suppressions/preview', { body: { signature: 'Qualys', source_cidr: '64.39.96.0/20' } });
+    ok(r.status === 200 && r.json.matched === 2 && r.json.open === 2, 'suppression preview counts matching alerts');
+    ok((await call('POST', '/api/suppressions', { body: { name: 'too broad', source_cidr: '0.0.0.0/0' } })).status === 400, 'over-broad CIDR rejected');
+    r = await call('POST', '/api/suppressions', { body: { name: 'Quarterly Qualys scan', signature: 'Qualys', source_cidr: '64.39.96.0/20', expires_in_days: 30, apply_to_open: true } });
+    ok(r.status === 201 && r.json.closed === 2 && r.json.hits === 2, 'suppression created and open matches closed');
+    const suppId = r.json.id;
+    r = await call('POST', '/api/ingest/alerts', { as: null, body: [scan(3, '64.39.96.12'), { ...scan(4, '198.51.100.9'), alert: { ...scan(4, '').alert, signature: 'ET SCAN Nmap OS detection' } }], headers: { Authorization: `Bearer ${ingestKey}` } });
+    ok(r.json.accepted === 2 && r.json.suppressed === 1, 'ingest suppresses matching events only');
+    const supp = (await call('GET', '/api/suppressions')).json.find((s) => s.id === suppId);
+    ok(supp.hits === 3 && supp.live, 'suppression hit counter updates');
+    const quiet = (await call('GET', '/api/alerts?q=Qualys')).json;
+    ok(quiet.length === 3 && quiet.every((a) => a.status === 'FALSE_POSITIVE' && a.suppressed_by === suppId), 'suppressed alerts are kept and tagged');
+
+    // ---- Bulk triage --------------------------------------------------------------
+    const nmap = (await call('GET', '/api/alerts?q=Nmap')).json.map((a) => a.alert_id);
+    r = await call('POST', '/api/alerts/bulk', { body: { ids: nmap, action: 'status', status: 'CLOSED' } });
+    ok(r.status === 200 && r.json.updated === 1, 'bulk close');
+    r = await call('GET', `/api/alerts/${nmap[0]}`);
+    ok(r.json.alert.resolved_at && r.json.notes.some((n) => /bulk/.test(n.body)), 'bulk close stamps resolved_at and the timeline');
+
+    // ---- Time-boxed containment ------------------------------------------------------
+    r = await call('POST', '/api/rules', { body: { target_ip: '198.51.100.77', action: 'BLOCK', reason: 'credential stuffing', ttl_hours: 24 } });
+    ok(r.status === 201 && r.json.expires_at, 'block with 24h expiry');
+    ok(received.some((m) => JSON.parse(m.body).event === 'containment'), 'containment pushed to the channel');
+    ok((await call('POST', '/api/rules', { body: { target_ip: '198.51.100.78', action: 'BLOCK', reason: 'bad ttl', ttl_hours: 99999 } })).status === 400, 'out-of-range expiry rejected');
+    await store.rules.update(r.json.rule_id, { expires_at: new Date(Date.now() - 1000).toISOString() });
+    r = await call('GET', '/api/feeds/blocklist.txt', { as: null, headers: { Authorization: `Basic ${basic}` } });
+    ok(!r.text.includes('198.51.100.77') && r.text.includes('185.220.101.45'), 'expired block dropped from the feed');
+    rules = (await call('GET', '/api/rules')).json;
+    ok(rules.find((x) => x.target_ip === '198.51.100.77').is_active === false, 'expired rule switched off');
+
+    // ---- Profiles, reports, exports ---------------------------------------------------
+    r = await call('GET', '/api/ip/185.220.101.45');
+    ok(r.status === 200 && r.json.counts.as_source >= 1 && r.json.rules.length >= 1 && r.json.logs.length === 1, 'IP profile gathers alerts, rules and logs');
+    ok((await call('GET', '/api/search?q=185.220.101.45')).json.ip === '185.220.101.45', 'search offers the IP profile');
+    r = await call('GET', '/api/reports/summary?days=7');
+    const crit = r.json.sla.find((s) => s.severity === 'CRITICAL');
+    ok(r.status === 200 && r.json.totals.suppressed === 3 && r.json.totals.noise_reduction > 0 && crit.acknowledged >= 1, 'report summary: noise reduction and SLA');
+    ok(r.json.mitre.some((t) => t.total > 0) && r.json.top_attackers.some((a) => a.ip === '185.220.101.45' && a.blocked), 'report summary: ATT&CK and top attackers');
+    await call('POST', '/api/alerts', { body: { signature: '=HYPERLINK("http://evil")', source_ip: '203.0.113.9', dest_ip: '10.0.4.15', dest_port: 80, severity: 'LOW', raw_payload: 'x' } });
+    r = await call('GET', '/api/export/alerts.csv?days=7');
+    ok(r.status === 200 && /text\/csv/.test(r.headers.get('content-type')) && r.text.includes(`"'=HYPERLINK(""http://evil"")"`), 'CSV export neutralises formulas');
+    ok((await call('GET', '/api/export/audit.csv')).text.includes('suppression.created'), 'audit CSV export');
+    const invId = (await call('GET', '/api/investigations')).json[0].investigation_id;
+    r = await call('GET', `/api/investigations/${invId}/report.md`);
+    ok(r.status === 200 && r.text.startsWith('# Incident report') && r.text.includes('Case timeline'), 'incident report download');
+    r = await call('PUT', '/api/config', { body: { slaCritical: 10, autoBlockTtlHours: 48 } });
+    ok(r.status === 200 && r.json.slaCritical === 10 && !('notifyChannels' in r.json), 'SLA and TTL policy saved');
+    ok((await call('PUT', '/api/config', { body: { slaHigh: 0 } })).status === 400, 'invalid SLA rejected');
+
     ok((await call('POST', '/api/reset')).status === 403, 'reset disabled outside demo mode');
 
     // Password change revokes the old cookie.
@@ -165,6 +253,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     console.log(`\n${passed} HTTP checks passed`);
   } finally {
     server.close();
+    hook.close();
     jobs.stop();
     await wipe();
   }

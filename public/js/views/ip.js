@@ -1,0 +1,131 @@
+import { $, $$, api, esc, sev, pill, flow, ago, stamp, num, emptyState, can, toast, markPayload } from '../core.js';
+import { icon, hydrateIcons } from '../icons.js';
+import { openAlert, openNewRule, openSuppress } from '../panels.js';
+
+// Everything Aegis knows about one address, on one page.
+let ctx = null;
+const SEV_C = { CRITICAL: 'var(--crit)', HIGH: 'var(--high)', MEDIUM: 'var(--med)', LOW: 'var(--low)' };
+
+export async function render({ el, params, navigate }) {
+  const ip = params[0] || '';
+  ctx = { el, ip, navigate };
+  el.innerHTML = `
+    <div class="page-head">
+      <div class="page-head__text">
+        <div class="eyebrow"><a href="#/alerts">Alerts</a> / address</div>
+        <h1 class="page-title mono">${esc(ip || 'No address')}</h1>
+        <p class="page-sub" id="ip-sub">Loading...</p>
+      </div>
+      <div class="page-actions" id="ip-actions"></div>
+    </div>
+    <div id="ip-body" class="stack"><div class="panel skeleton" style="height:110px"></div><div class="panel skeleton" style="height:300px"></div></div>`;
+  if (!ip) { $('#ip-body', el).innerHTML = emptyState('No address', 'Open a profile from an alert, or search for an IP with /.', 'globe'); return; }
+  await paint();
+}
+
+export function onDataChanged() { if (ctx && document.body.contains(ctx.el)) paint(); }
+
+async function paint() {
+  const { el, ip, navigate } = ctx;
+  let d;
+  try { d = await api(`/ip/${encodeURIComponent(ip)}`); } catch (e) {
+    $('#ip-sub', el).textContent = e.message;
+    $('#ip-body', el).innerHTML = emptyState('Not a valid address', 'Check the URL and try again.', 'alert');
+    return;
+  }
+  const respond = can('respond');
+  const blocked = d.rules.find((r) => r.is_active && r.action === 'BLOCK');
+  const isolated = d.rules.find((r) => r.is_active && r.action === 'ISOLATE');
+  const c = d.counts;
+  $('#ip-sub', el).innerHTML = [
+    d.internal ? 'Internal address' : 'External address',
+    d.asset ? `inventory host <b>${esc(d.asset.hostname)}</b>` : null,
+    d.first_seen ? `first seen ${ago(d.first_seen)}, last ${ago(d.last_seen)}` : 'no alerts on record'
+  ].filter(Boolean).join(' &middot; ');
+
+  $('#ip-actions', el).innerHTML = `
+    ${blocked ? `<span class="tag tag--ok">${icon('lock')}Blocked by ${esc(blocked.rule_id)}</span>` : ''}
+    ${isolated ? `<span class="tag tag--warn">Isolated by ${esc(isolated.rule_id)}</span>` : ''}
+    ${respond && !blocked && !d.internal ? `<button class="btn btn--primary" id="ip-block">${icon('lock')}Block</button>` : ''}
+    ${respond && !isolated && d.internal ? `<button class="btn" id="ip-isolate">Isolate host</button>` : ''}
+    ${can('configure') && c.as_source ? `<button class="btn btn--ghost" id="ip-tune">${icon('filter')}Suppress from this source</button>` : ''}
+    ${d.asset ? `<a class="btn btn--ghost" href="#/telemetry?host=${encodeURIComponent(ip)}">${icon('terminal')}Logs</a>` : ''}`;
+
+  const maxSev = Math.max(1, ...Object.values(c.by_severity));
+  const intel = d.intel;
+  const score = intel && intel.score != null ? intel.score : null;
+  $('#ip-body', el).innerHTML = `
+    <div class="kpis grid grid-kpi reveal">
+      <div class="kpi ${c.open ? 'kpi--alert' : ''}"><div class="kpi__label">Open alerts</div><div class="kpi__value">${c.open}</div><div class="kpi__foot">${c.alerts} total</div></div>
+      <div class="kpi"><div class="kpi__label">As source</div><div class="kpi__value">${c.as_source}</div><div class="kpi__foot">alerts it triggered</div></div>
+      <div class="kpi"><div class="kpi__label">As target</div><div class="kpi__value">${c.as_target}</div><div class="kpi__foot">alerts aimed at it</div></div>
+      <div class="kpi"><div class="kpi__label">Investigations</div><div class="kpi__value">${d.investigations.length}</div><div class="kpi__foot">${d.investigations.filter((i) => i.outcome === 'ATTACK_SUCCEEDED').length} confirmed compromise</div></div>
+      <div class="kpi ${score >= 50 ? 'kpi--alert' : ''}"><div class="kpi__label">Abuse score</div><div class="kpi__value">${score == null ? '-' : `${score}<small>/100</small>`}</div><div class="kpi__foot">${d.internal ? 'internal, not checked' : intel && !intel.error && !intel.skipped ? `${num(intel.reports)} reports, AbuseIPDB` : 'AbuseIPDB not configured'}</div></div>
+    </div>
+
+    <div class="grid grid-2-1">
+      <section class="panel">
+        <div class="panel__head"><h2 class="panel__title">Alerts</h2><span class="panel__meta">${d.alerts.length < c.alerts ? `latest ${d.alerts.length}` : `${c.alerts}`}</span></div>
+        ${d.alerts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th style="width:104px">Severity</th><th>Signature</th><th class="hide-sm">Flow</th><th>Status</th><th class="num">When</th></tr></thead><tbody class="rows-in">
+          ${d.alerts.slice(0, 60).map((a, i) => `<tr class="is-clickable ${['CLOSED', 'FALSE_POSITIVE'].includes(a.status) ? 'is-dim' : ''}" style="--i:${Math.min(i, 20)}" data-alert="${esc(a.alert_id)}">
+            <td>${sev(a.severity)}</td><td><span class="cell-main">${esc(a.signature)}</span><span class="cell-sub mono">${esc(a.alert_id)}</span></td>
+            <td class="hide-sm">${flow(a.source_ip, a.dest_ip, a.dest_port)}</td><td>${pill(a.status)}</td><td class="num small muted" title="${stamp(a.detected_at)}">${ago(a.detected_at)}</td></tr>`).join('')}
+        </tbody></table></div>` : emptyState('No alerts', 'Nothing on record for this address.', 'inbox')}
+      </section>
+      <div class="stack">
+        <section class="panel">
+          <div class="panel__head"><h2 class="panel__title">${d.internal ? 'Host' : 'Reputation'}</h2></div>
+          <div class="panel__body">
+            ${d.asset ? `<dl class="kv"><dt>Hostname</dt><dd>${esc(d.asset.hostname)}</dd><dt>OS</dt><dd>${esc(d.asset.os_version || '-')}</dd><dt>Owner</dt><dd>${esc(d.asset.owner || '-')}</dd><dt>Criticality</dt><dd>${sev(d.asset.criticality)}</dd><dt>WAF</dt><dd>${d.asset.waf_enabled ? 'Yes' : 'No'}</dd></dl>` : ''}
+            ${!d.internal && intel && !intel.error && !intel.skipped ? `<dl class="kv ${d.asset ? 'mt-12' : ''}"><dt>Confidence</dt><dd><span class="meter"><span class="meter__track" style="width:90px"><span class="meter__fill" style="width:${score}%;background:${score >= 75 ? 'var(--crit)' : score >= 25 ? 'var(--high)' : 'var(--ok)'}"></span></span><span class="mono">${score}%</span></span></dd>
+              <dt>Country</dt><dd>${esc(intel.country || '-')}</dd><dt>Network</dt><dd>${esc(intel.isp || '-')}</dd><dt>Usage</dt><dd>${esc(intel.usage || '-')}</dd><dt>Domain</dt><dd class="mono">${esc(intel.domain || '-')}</dd>
+              <dt>Last report</dt><dd>${intel.last_reported ? ago(intel.last_reported) : '-'}</dd></dl>` : ''}
+            ${!d.internal && intel && intel.error ? `<div class="notice notice--warn">${icon('alert')}<div class="small">AbuseIPDB lookup failed: ${esc(intel.error)}</div></div>` : ''}
+            ${!d.asset && (d.internal || !intel || intel.skipped) ? `<p class="small muted" style="margin:0">${d.internal ? 'Internal address with no inventory record. Add it under Assets so exposure and criticality are known.' : 'Set ABUSEIPDB_API_KEY to see reputation, network owner and report history for external addresses.'}</p>` : ''}
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel__head"><h2 class="panel__title">Severity</h2></div>
+          <div class="panel__body">${Object.keys(SEV_C).map((s) => `<div class="hbar">${sev(s)}<div class="hbar__track"><div class="hbar__fill" style="--c:${SEV_C[s]};width:${(c.by_severity[s] / maxSev) * 100}%"></div></div><span class="hbar__n">${c.by_severity[s]}</span></div>`).join('')}</div>
+        </section>
+        <section class="panel">
+          <div class="panel__head"><h2 class="panel__title">Talks to</h2><span class="panel__meta">by alert count</span></div>
+          ${d.peers.length ? `<div class="breakdown panel__body">${d.peers.map((p) => `<div><a class="ip ip-link" href="#/ip/${encodeURIComponent(p.ip)}">${esc(p.ip)}</a><b>${p.n}</b></div>`).join('')}</div>` : '<div class="panel__body small muted">No peers yet.</div>'}
+        </section>
+      </div>
+    </div>
+
+    <div class="grid grid-1-1">
+      <section class="panel">
+        <div class="panel__head"><h2 class="panel__title">Signatures</h2></div>
+        ${d.signatures.length ? `<div class="breakdown panel__body">${d.signatures.map((s) => `<div><span class="truncate">${esc(s.signature)}</span><b>${s.n}</b></div>`).join('')}</div>` : '<div class="panel__body small muted">None.</div>'}
+      </section>
+      <section class="panel">
+        <div class="panel__head"><h2 class="panel__title">Containment history</h2></div>
+        ${d.rules.length ? `<div class="rows-in">${d.rules.map((r, i) => `<div class="list__item" style="--i:${i}">${pill(r.action, r.action === 'BLOCK' ? 'Block' : 'Isolate')}<div style="min-width:0"><div class="list__title truncate">${esc(r.reason)}</div><div class="list__sub"><span class="mono">${esc(r.rule_id)}</span><span>${esc(r.enacted_by || '')}</span><span>${ago(r.created_at)}</span>${r.expires_at ? `<span>${r.is_active ? 'lifts' : 'lifted'} ${stamp(r.expires_at)}</span>` : ''}</div></div>${pill(r.is_active ? (r.enforcement && r.enforcement.status) || 'RECORDED' : 'DISABLED')}</div>`).join('')}</div>` : emptyState('No rules', 'This address has never been blocked or isolated.', 'shield')}
+      </section>
+    </div>
+
+    <section class="panel">
+      <div class="panel__head"><h2 class="panel__title">Investigations</h2></div>
+      ${d.investigations.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Case</th><th>Verdict</th><th class="hide-sm">Tactic</th><th class="num">Confidence</th><th class="num">When</th></tr></thead><tbody class="rows-in">
+        ${d.investigations.map((i, n) => `<tr class="is-clickable" style="--i:${n}" data-inv="${esc(i.alert_id)}"><td><span class="cell-main mono">${esc(i.investigation_id)}</span><span class="cell-sub">${esc(i.alert_id)}</span></td><td>${pill(i.outcome)}</td><td class="hide-sm small">${esc(i.mitre_tactic || '-')}</td><td class="num">${i.confidence}%</td><td class="num small muted">${ago(i.created_at)}</td></tr>`).join('')}
+      </tbody></table></div>` : emptyState('No investigations', 'Run one from any alert involving this address.', 'scan')}
+    </section>
+
+    <section class="panel">
+      <div class="panel__head"><h2 class="panel__title">Server logs</h2><span class="panel__meta">${d.logs.length} lines</span></div>
+      ${d.logs.length ? `<div style="max-height:360px;overflow:auto">${d.logs.map((l) => `<div class="logline"><span class="muted" title="${stamp(l.logged_at)}">${stamp(l.logged_at).slice(5, 16)}</span><span>${esc(l.host_ip)}</span><span class="muted">${esc(l.log_type)}</span><span class="logline__raw">${markPayload(l.raw_entry)}</span></div>`).join('')}</div>` : emptyState('No log lines', 'Ship web or auth logs to /api/ingest/logs to see this address in context.', 'terminal')}
+    </section>`;
+
+  $$('[data-alert]', el).forEach((r) => { r.onclick = () => openAlert(r.dataset.alert, navigate); });
+  $$('[data-inv]', el).forEach((r) => { r.onclick = () => navigate(`investigate/${r.dataset.inv}`); });
+  const blockBtn = $('#ip-block', el);
+  if (blockBtn) blockBtn.onclick = () => openNewRule({ target_ip: ip, action: 'BLOCK', reason: d.signatures[0] ? `Source of ${d.signatures[0].signature}` : '' });
+  const isoBtn = $('#ip-isolate', el);
+  if (isoBtn) isoBtn.onclick = () => openNewRule({ target_ip: ip, action: 'ISOLATE', reason: '' });
+  const tune = $('#ip-tune', el);
+  if (tune) tune.onclick = () => openSuppress({ name: `Expected traffic from ${ip}`, source_cidr: ip });
+  if (intel && intel.error && !ctx.warned) { ctx.warned = true; toast('Reputation lookup failed', intel.error, 'error'); }
+  hydrateIcons(el);
+}

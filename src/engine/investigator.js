@@ -23,6 +23,7 @@ class Investigator {
     this.model = model || 'llama-3.3-70b-versatile';
     this.groq = groqKey ? new Groq({ apiKey: groqKey }) : null;
     this.running = new Set();
+    this.onVerdict = null;
   }
 
   get llmAvailable() { return Boolean(this.groq); }
@@ -267,6 +268,11 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
     for (const a of ctx.actions.filter(x => x.status === 'APPLIED')) await this.store.rules.update(a.rule_id, { investigation_id: id }).catch(() => {});
     await this.store.alerts.update(alert.alert_id, { status });
     await this.store.audit.add({ actor: ctx.engine.startsWith('llm') ? 'Aegis agent' : 'Aegis playbook', action: 'investigation.closed', target: alert.alert_id, detail: `${id} ${v.outcome} ${v.confidence}%` });
+    // Case timeline and outbound notifications. Awaited so they finish inside
+    // the request on serverless hosts; a failure here never fails the run.
+    if (this.onVerdict) {
+      try { await this.onVerdict(inv, alert, status); } catch (err) { console.warn(`  Post-verdict hook failed: ${err.message}`); }
+    }
     ctx.emit({ type: 'verdict', investigation: inv, alert_status: status });
     return inv;
   }

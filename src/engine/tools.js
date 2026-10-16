@@ -80,7 +80,7 @@ function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputa
       return { host_ip, log_type: log_type || 'all', count: logs.length, logs };
     },
 
-    async execute_firewall_action({ action, target_ip, reason, investigation_id = null, actor = 'Aegis playbook' }) {
+    async execute_firewall_action({ action, target_ip, reason, investigation_id = null, actor = 'Aegis playbook', ttl_hours }) {
       if (!target_ip) return { error: 'target_ip is required' };
       if (action === 'UNBLOCK') {
         const active = await store.rules.activeFor(target_ip);
@@ -91,13 +91,17 @@ function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputa
       if (!['BLOCK', 'ISOLATE'].includes(action)) return { error: `Unsupported action ${action}` };
       const existing = (await store.rules.activeFor(target_ip)).find((r) => r.action === action);
       if (existing) return { status: 'ALREADY_ENFORCED', rule: existing };
+      // Engine-created blocks take the policy TTL; callers pass ttl_hours (or null) explicitly.
+      let ttl = ttl_hours;
+      if (ttl === undefined) ttl = action === 'BLOCK' ? Number((await store.config.get()).autoBlockTtlHours) || null : null;
       const draft = {
         rule_id: newId('FW'), target_ip, action, reason: reason || 'No justification supplied',
-        enacted_by: actor, is_active: true, investigation_id
+        enacted_by: actor, is_active: true, investigation_id,
+        expires_at: ttl ? new Date(Date.now() + ttl * 3600000).toISOString() : null
       };
       const enforcement = await enforcer.apply(draft);
       const rule = await store.rules.insert({ ...draft, enforcement });
-      await store.audit.add({ actor, action: `rule.${action.toLowerCase()}`, target: target_ip, detail: `${rule.rule_id} ${enforcement.mode}:${enforcement.status}` });
+      await store.audit.add({ actor, action: `rule.${action.toLowerCase()}`, target: target_ip, detail: `${rule.rule_id} ${enforcement.mode}:${enforcement.status}${rule.expires_at ? ` until ${rule.expires_at}` : ''}` });
       return { status: 'APPLIED', enforcement: enforcement.status, rule };
     },
 

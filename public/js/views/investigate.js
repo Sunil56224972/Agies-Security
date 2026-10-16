@@ -274,7 +274,7 @@ function appendVerdict(area, inv) {
       ${ov ? `<div class="notice mt-12"><div><b>${esc(ov.analyst)}</b> changed this from ${esc(label(ov.previous_outcome))} to ${esc(label(ov.outcome))} ${ago(ov.at)}. <span class="muted">"${esc(ov.notes)}"</span><div class="small muted mt-8">${ov.changes.map(esc).join(' &middot; ')}</div></div></div>` : ''}
     </div>
     <div class="report-wrap">
-      <div class="row"><h3 class="section-title grow" style="margin:0">Report</h3><button class="btn btn--ghost btn--sm" id="copy-report">Copy as markdown</button></div>
+      <div class="row"><h3 class="section-title grow" style="margin:0">Report</h3><a class="btn btn--ghost btn--sm" href="/api/investigations/${encodeURIComponent(inv.investigation_id)}/report.md" download title="Report, case notes and run log as a markdown file">${icon('download')}Download</a><button class="btn btn--ghost btn--sm" id="copy-report">Copy as markdown</button></div>
       <div class="report mt-12">${renderReport(inv.report || '')}</div>
     </div>
     ${can('respond') ? `<div class="override">

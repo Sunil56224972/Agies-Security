@@ -6,6 +6,7 @@ const { isIP, newId, exposureFor, SEVERITY_RANK } = require('./engine/analysis')
 const { normalizeAlert, normalizeLog, normalizeAsset, parseCsv, parseBatch } = require('./ingest/normalize');
 const { CVE_RE } = require('./intel/nvd');
 const { CLOSED_STATUSES } = require('./store/shared');
+const { findSuppression } = require('./engine/suppress');
 
 const SEVERITIES = Object.keys(SEVERITY_RANK);
 const OPEN = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
@@ -14,9 +15,14 @@ const ENF_STATES = ['ENFORCED', 'PENDING', 'RECORDED', 'FAILED'];
 
 const stripCve = ({ match_terms, cpe_matches, ...c }) => ({ ...c, cpe_ranges: (cpe_matches || []).length });
 const isSevere = (c) => c.severity === 'CRITICAL' || Number(c.cvss_score) >= 7;
+// Webhook URLs and signing secrets stay server-side; /api/notify/channels shows masked copies.
+const publicConfig = ({ notifyChannels, ...cfg }) => cfg;
+const intIn = (v, lo, hi) => Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi;
 
 function registerRoutes(app, ctx) {
-  const { store, investigator, enforcer, nvd, reputation, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt } = ctx;
+  const { store, investigator, enforcer, nvd, reputation, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt, notifier } = ctx;
+  const origin = (req) => env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+  const timeline = (alertId, body, req) => store.notes.add({ alert_id: alertId, kind: 'event', author: actor(req), author_id: req.user ? req.user.id : null, body });
   const tools = investigator.tools;
   const bigJson = express.json({ limit: '5mb', type: ['application/json', '*/*+json'] });
   const bigText = express.text({ limit: '5mb', type: ['application/x-ndjson', 'text/plain', 'text/csv'] });
@@ -87,15 +93,22 @@ function registerRoutes(app, ctx) {
 
   // ---- Alerts --------------------------------------------------------------
   app.get('/api/alerts', wrap(async (req, res) => {
-    const { severity, status, q } = req.query;
-    res.json(await store.alerts.list({ severity, status, q, limit: Math.min(Number(req.query.limit) || 500, 2000) }));
+    const { severity, status, q, ip } = req.query;
+    let assignee = req.query.assignee;
+    if (assignee === 'me') assignee = req.user.id;
+    else if (assignee === 'none') assignee = 'none';
+    else if (assignee !== undefined) assignee = Number(assignee) || undefined;
+    res.json(await store.alerts.list({ severity, status, q, ip: ip && isIP(ip) ? ip : undefined, assignee, limit: Math.min(Number(req.query.limit) || 500, 2000) }));
   }));
 
   app.get('/api/alerts/:id', wrap(async (req, res) => {
     const alert = await store.alerts.get(req.params.id);
     if (!alert) return bad(res, 'Alert not found', 404);
-    const [investigations, asset] = await Promise.all([store.investigations.list(), store.assets.get(alert.dest_ip)]);
-    res.json({ alert, asset, investigations: investigations.filter((i) => i.alert_id === alert.alert_id) });
+    const [investigations, asset, notes, suppression] = await Promise.all([
+      store.investigations.list({ limit: 5000 }), store.assets.get(alert.dest_ip), store.notes.list(alert.alert_id),
+      alert.suppressed_by ? store.suppressions.get(alert.suppressed_by) : null
+    ]);
+    res.json({ alert, asset, notes, suppression, investigations: investigations.filter((i) => i.alert_id === alert.alert_id) });
   }));
 
   app.post('/api/alerts', need('respond'), wrap(async (req, res) => {
@@ -120,8 +133,12 @@ function registerRoutes(app, ctx) {
     const allowed = ['NEW', 'CLOSED', 'FALSE_POSITIVE'];
     const status = String((req.body || {}).status || '').toUpperCase();
     if (!allowed.includes(status)) return bad(res, `Status must be one of ${allowed.join(', ')}`);
+    const current = await store.alerts.get(req.params.id);
+    if (!current) return bad(res, 'Alert not found', 404);
+    if (current.status === 'INVESTIGATING') return bad(res, 'An investigation is running on this alert; wait for the verdict', 409);
+    if (current.status === status) return res.json(current);
     const updated = await store.alerts.update(req.params.id, { status });
-    if (!updated) return bad(res, 'Alert not found', 404);
+    await timeline(updated.alert_id, `Status changed from ${current.status} to ${status}`, req);
     await store.audit.add({ actor: actor(req), action: 'alert.status', target: req.params.id, detail: status });
     res.json(updated);
   }));
@@ -167,13 +184,16 @@ function registerRoutes(app, ctx) {
   app.get('/api/rules', wrap(async (req, res) => res.json(await store.rules.list())));
 
   app.post('/api/rules', need('respond'), wrap(async (req, res) => {
-    const { target_ip, action, reason } = req.body || {};
+    const { target_ip, action, reason, ttl_hours } = req.body || {};
     if (!isIP(target_ip)) return bad(res, 'Enter a valid IP address');
     if (!['BLOCK', 'ISOLATE'].includes(action)) return bad(res, 'Action must be BLOCK or ISOLATE');
     if (!reason || String(reason).trim().length < 4) return bad(res, 'Give a reason so the next shift knows why');
-    const result = await tools.execute_firewall_action({ action, target_ip, reason: String(reason).slice(0, 500), actor: actor(req) });
+    const noTtl = ttl_hours === undefined || ttl_hours === null || ttl_hours === '' || Number(ttl_hours) === 0;
+    if (!noTtl && !intIn(ttl_hours, 1, 8760)) return bad(res, 'Expiry must be 1-8760 hours, or empty for a permanent rule');
+    const result = await tools.execute_firewall_action({ action, target_ip, reason: String(reason).slice(0, 500), actor: actor(req), ttl_hours: noTtl ? null : Number(ttl_hours) });
     if (result.error) return bad(res, result.error);
     if (result.status === 'ALREADY_ENFORCED') return bad(res, `${target_ip} already has an active ${action} rule (${result.rule.rule_id})`, 409);
+    await notifier.emit('containment', { rule: result.rule, severity: 'HIGH' }, { origin: origin(req) });
     res.status(201).json(result.rule);
   }));
 
@@ -186,7 +206,9 @@ function registerRoutes(app, ctx) {
       if (clash) return bad(res, `${rule.target_ip} already has an active ${rule.action} rule (${clash.rule_id})`, 409);
     }
     const enforcement = activate ? await enforcer.apply(rule) : await enforcer.remove(rule);
-    const updated = await store.rules.update(rule.rule_id, { is_active: activate, enforcement });
+    // Re-enabling a rule that already ran out makes it permanent; otherwise the next sweep would drop it again.
+    const stale = activate && rule.expires_at && rule.expires_at <= new Date().toISOString();
+    const updated = await store.rules.update(rule.rule_id, { is_active: activate, enforcement, ...(stale ? { expires_at: null } : {}) });
     await store.audit.add({ actor: actor(req), action: activate ? 'rule.enabled' : 'rule.disabled', target: rule.target_ip, detail: `${rule.rule_id} ${enforcement.mode}:${enforcement.status}` });
     res.json(updated);
   }));
@@ -331,11 +353,12 @@ function registerRoutes(app, ctx) {
 
   app.get('/api/search', wrap(async (req, res) => {
     const q = String(req.query.q || '').trim();
-    if (q.length < 2) return res.json({ alerts: [], assets: [], cves: [], rules: [], investigations: [] });
+    if (q.length < 2) return res.json({ ip: null, alerts: [], assets: [], cves: [], rules: [], investigations: [] });
     const needle = q.toLowerCase();
     const has = (...f) => f.some((x) => x != null && String(x).toLowerCase().includes(needle));
     const [alerts, assets, cves, rules, invs] = await Promise.all([store.alerts.list({ q, limit: 6 }), store.assets.list(), store.cves.list(q), store.rules.list(), store.investigations.list()]);
     res.json({
+      ip: isIP(q) ? q : null,
       alerts,
       assets: assets.filter((a) => has(a.ip_address, a.hostname, a.os_version, a.owner)).slice(0, 4),
       cves: cves.slice(0, 4).map(stripCve),
@@ -345,7 +368,7 @@ function registerRoutes(app, ctx) {
   }));
 
   // ---- Settings ------------------------------------------------------------
-  app.get('/api/config', wrap(async (req, res) => res.json(await store.config.get())));
+  app.get('/api/config', wrap(async (req, res) => res.json(publicConfig(await store.config.get()))));
 
   app.put('/api/config', need('configure'), wrap(async (req, res) => {
     const b = req.body || {};
@@ -370,10 +393,19 @@ function registerRoutes(app, ctx) {
       if (!Number.isInteger(n) || n < 7 || n > 730) return bad(res, 'Retention must be 7-730 days');
       next.alertRetentionDays = n;
     }
+    if (b.autoBlockTtlHours !== undefined) {
+      if (!intIn(b.autoBlockTtlHours, 0, 720)) return bad(res, 'Automatic block expiry must be 0-720 hours (0 keeps blocks until removed)');
+      next.autoBlockTtlHours = Number(b.autoBlockTtlHours);
+    }
+    for (const k of ['slaCritical', 'slaHigh', 'slaMedium', 'slaLow']) {
+      if (b[k] === undefined) continue;
+      if (!intIn(b[k], 1, 10080)) return bad(res, 'Response targets must be 1-10080 minutes');
+      next[k] = Number(b[k]);
+    }
     if (!Object.keys(next).length) return bad(res, 'Nothing to change');
     const saved = await store.config.set(next);
     await store.audit.add({ actor: actor(req), action: 'config.updated', target: 'platform', detail: Object.keys(next).join(', ') });
-    res.json(saved);
+    res.json(publicConfig(saved));
   }));
 
   app.post('/api/reset', need('manage'), wrap(async (req, res) => {
@@ -410,18 +442,39 @@ function registerRoutes(app, ctx) {
       else if (r.error) rejected.push({ index, error: r.error });
       else good.push({ ...r.alert, sensor: r.alert.sensor === 'api' ? `key:${req.apiKey.name}`.slice(0, 80) : r.alert.sensor });
     });
+    // Tuning rules close known-benign traffic on arrival. The alert is still stored
+    // (closed as a false positive and tagged with the rule) so nothing disappears silently.
+    const at = new Date().toISOString();
+    const supps = good.length ? (await store.suppressions.list()).filter((s) => s.enabled) : [];
+    const hits = {};
+    for (const a of good) {
+      const s = supps.length ? findSuppression(supps, a, at) : null;
+      if (!s) continue;
+      a.status = 'FALSE_POSITIVE';
+      a.suppressed_by = s.id;
+      hits[s.id] = (hits[s.id] || 0) + 1;
+    }
     const { inserted, duplicates } = good.length ? await store.alerts.insertMany(good) : { inserted: [], duplicates: 0 };
+    const fresh = new Set(inserted);
+    const landed = good.filter((a) => fresh.has(a.alert_id));
+    const quiet = landed.filter((a) => a.suppressed_by);
+    const loud = landed.filter((a) => !a.suppressed_by);
+    if (quiet.length) {
+      const counted = {};
+      for (const a of quiet) counted[a.suppressed_by] = (counted[a.suppressed_by] || 0) + 1;
+      await store.suppressions.recordHits(counted, at);
+    }
     if (inserted.length) {
-      await store.audit.add({ actor: actor(req), action: 'ingest.alerts', target: `${inserted.length} alerts`, detail: rejected.length ? `${rejected.length} rejected` : null });
+      await store.audit.add({ actor: actor(req), action: 'ingest.alerts', target: `${inserted.length} alerts`, detail: [rejected.length && `${rejected.length} rejected`, quiet.length && `${quiet.length} suppressed`].filter(Boolean).join(', ') || null });
       const cfg = await store.config.get();
       if (cfg.autoInvestigate) {
-        const fresh = new Set(inserted);
         const floor = SEVERITY_RANK.HIGH;
-        triageQueue.push(...good.filter((a) => fresh.has(a.alert_id) && SEVERITY_RANK[a.severity] >= floor).map((a) => a.alert_id).slice(0, 50));
+        triageQueue.push(...loud.filter((a) => SEVERITY_RANK[a.severity] >= floor).map((a) => a.alert_id).slice(0, 50));
         setImmediate(drainTriage);
       }
+      if (loud.length) await notifier.emit('alert', { alerts: loud }, { origin: origin(req) });
     }
-    res.status(rejected.length && !inserted.length && !duplicates ? 400 : 202).json({ accepted: inserted.length, duplicates, skipped, rejected: rejected.slice(0, 100) });
+    res.status(rejected.length && !inserted.length && !duplicates ? 400 : 202).json({ accepted: inserted.length, suppressed: quiet.length, duplicates, skipped, rejected: rejected.slice(0, 100) });
   }));
 
   app.post('/api/ingest/logs', requireKey('ingest'), bigJson, bigText, wrap(async (req, res) => {
@@ -442,8 +495,9 @@ function registerRoutes(app, ctx) {
   // Plain text, one address per line: the format PAN-OS EDL, FortiGate external
   // threat feeds and pfSense/OPNsense URL tables all accept.
   const feed = (action) => wrap(async (req, res) => {
-    const rules = await store.rules.active(action);
+    await expireRules();
     const at = new Date().toISOString();
+    const rules = (await store.rules.active(action)).filter((r) => !r.expires_at || r.expires_at > at);
     const pending = rules.filter((r) => enforcer.mode === 'feed' && (!r.enforcement || r.enforcement.status === 'PENDING'));
     for (const r of pending) {
       await store.rules.update(r.rule_id, { enforcement: { mode: 'feed', status: 'ENFORCED', detail: `Pulled by ${req.apiKey.name} at ${at}`, puller: req.apiKey.name, at } });
@@ -456,8 +510,25 @@ function registerRoutes(app, ctx) {
   app.get('/api/feeds/blocklist.txt', requireKey('feed'), feed('BLOCK'));
   app.get('/api/feeds/isolate.txt', requireKey('feed'), feed('ISOLATE'));
 
-  // ---- Retention -------------------------------------------------------------
+  // ---- Expiry and retention ----------------------------------------------------
+  // Time-boxed rules are switched off (and pulled from the enforcement backend) once
+  // they run out. Runs hourly, from the daily cron, and before every feed pull so a
+  // firewall never receives an address whose block has lapsed.
+  async function expireRules() {
+    const now = new Date().toISOString();
+    let due;
+    try { due = await store.rules.expiredActive(now); } catch (err) { console.warn('  Rule expiry failed:', err.message); return 0; }
+    for (const r of due) {
+      let enforcement;
+      try { enforcement = await enforcer.remove(r); } catch (err) { enforcement = { mode: enforcer.mode, status: 'FAILED', detail: `Removal failed: ${err.message}`, at: now }; }
+      await store.rules.update(r.rule_id, { is_active: false, enforcement });
+      await store.audit.add({ actor: 'system', action: 'rule.expired', target: r.target_ip, detail: `${r.rule_id} ${r.action} expired at ${r.expires_at}` });
+    }
+    return due.length;
+  }
+
   async function retention() {
+    const expired = await expireRules();
     try {
       const cfg = await store.config.get();
       const days = Number(cfg.alertRetentionDays) || 90;
@@ -465,10 +536,10 @@ function registerRoutes(app, ctx) {
       const alerts = await store.alerts.purgeClosed(before);
       const logs = await store.logs.purge(before);
       if (alerts || logs) await store.audit.add({ actor: 'system', action: 'retention.purged', target: `${days} days`, detail: `${alerts} closed alerts, ${logs} log lines` });
-      return { alerts, logs };
+      return { alerts, logs, expired_rules: expired };
     } catch (err) {
       console.warn('  Retention job failed:', err.message);
-      return { error: err.message };
+      return { error: err.message, expired_rules: expired };
     }
   }
   const timer = setInterval(retention, 3600000);
@@ -482,7 +553,7 @@ function registerRoutes(app, ctx) {
     if (!secret || given.length !== want.length || !require('crypto').timingSafeEqual(given, want)) return bad(res, 'Forbidden', 403);
     res.json(await retention());
   }));
-  return { retention, stop: () => clearInterval(timer), closedStatuses: CLOSED_STATUSES };
+  return { retention, expireRules, stop: () => clearInterval(timer), closedStatuses: CLOSED_STATUSES };
 }
 
 module.exports = { registerRoutes };

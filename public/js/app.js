@@ -8,6 +8,8 @@ const ROUTES = {
   investigate: { title: 'Investigate', load: () => import('./views/investigate.js') },
   containment: { title: 'Containment', load: () => import('./views/containment.js') },
   assets: { title: 'Assets', load: () => import('./views/assets.js') },
+  reports: { title: 'Reports', load: () => import('./views/reports.js') },
+  ip: { title: 'IP profile', load: () => import('./views/ip.js') },
   telemetry: { title: 'Telemetry', load: () => import('./views/telemetry.js') },
   settings: { title: 'Settings', load: () => import('./views/settings.js') }
 };
@@ -141,6 +143,9 @@ const JUMPS = [
   { label: 'Go to alerts', path: 'alerts', ic: 'bell' },
   { label: 'Open investigation workspace', path: 'investigate', ic: 'scan' },
   { label: 'Containment rules and probe', path: 'containment', ic: 'shield' },
+  { label: 'Suppression rules', path: 'containment?tab=tuning', ic: 'filter' },
+  { label: 'Reports: SLA, ATT&CK coverage, top attackers', path: 'reports', ic: 'chart' },
+  { label: 'My queue', path: 'alerts?mine=1', ic: 'user' },
   { label: 'Assets and CVE knowledge base', path: 'assets', ic: 'server' },
   { label: 'Telemetry', path: 'telemetry', ic: 'terminal' },
   { label: 'Settings', path: 'settings', ic: 'sliders' }
@@ -190,6 +195,7 @@ function openPalette() {
     try { r = await api(`/search?q=${encodeURIComponent(q)}`); } catch { return; }
     if (mine !== seq) return;
     paint([
+      { name: 'Address', rows: r.ip ? [{ lead: icon('globe'), title: `Profile for ${r.ip}`, sub: 'Every alert, rule, investigation and log line for this address', path: `ip/${r.ip}`, tail: '<span class="kbd">Open</span>' }] : [] },
       { name: 'Alerts', rows: r.alerts.map((a) => ({ lead: icon('bell'), title: a.signature, sub: `${a.alert_id} - ${a.source_ip} to ${a.dest_ip}`, tail: sev(a.severity), path: `investigate/${a.alert_id}` })) },
       { name: 'Investigations', rows: r.investigations.map((i) => ({ lead: icon('scan'), title: `${i.investigation_id} - ${i.alert_id}`, sub: i.summary, tail: pill(i.outcome), path: `investigate/${i.alert_id}` })) },
       { name: 'Assets', rows: r.assets.map((a) => ({ lead: icon('server'), title: a.hostname, sub: `${a.ip_address} - ${a.os_version}`, path: `telemetry?host=${a.ip_address}` })) },

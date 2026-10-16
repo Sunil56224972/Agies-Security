@@ -1,4 +1,4 @@
-import { $, $$, api, esc, ago, stamp, toast, busy, emit, state, modal, closeLayer, can, copyText, pill } from '../core.js';
+import { $, $$, api, esc, ago, stamp, toast, busy, emit, state, modal, closeLayer, can, copyText, pill, label } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
 
 let ctx = null;
@@ -9,13 +9,15 @@ export async function render({ el, navigate }) {
   ctx = { el, navigate };
   const manage = can('manage');
   const configure = can('configure');
-  const [config, health, audit, users, keys] = await Promise.all([
+  const [config, health, audit, users, keys, channels] = await Promise.all([
     api('/config'), api('/health'), api('/audit?limit=40'),
-    manage ? api('/users') : Promise.resolve(null), manage ? api('/keys') : Promise.resolve(null)
+    manage ? api('/users') : Promise.resolve(null), manage ? api('/keys') : Promise.resolve(null),
+    configure ? api('/notify/channels').catch(() => []) : Promise.resolve(null)
   ]);
   state.health = health;
   ctx.users = users;
   ctx.keys = keys;
+  ctx.channels = channels;
 
   el.innerHTML = `
     <div class="page-head">
@@ -32,9 +34,10 @@ export async function render({ el, navigate }) {
         ${accountPanel()}
       </div>
       <div class="stack">
+        ${configure ? '<section class="panel" id="st-notify"></section>' : ''}
         ${integrationsPanel(health)}
         <section class="panel">
-          <div class="panel__head"><h2 class="panel__title">Audit log</h2><span class="panel__meta">last ${audit.length}</span></div>
+          <div class="panel__head"><h2 class="panel__title">Audit log</h2><span class="panel__meta">last ${audit.length}</span>${manage ? `<a class="btn btn--sm btn--ghost" style="margin-left:12px" href="/api/export/audit.csv?limit=10000" download>${icon('download')}Export</a>` : ''}</div>
           ${audit.length ? `<div class="feed" style="max-height:440px;overflow:auto">${audit.map((a) => `<div class="feed__item" title="${esc(stamp(a.created_at))}"><span class="feed__time">${new Date(a.created_at).toTimeString().slice(0, 5)}</span><div><div class="feed__text"><b>${esc(a.actor)}</b> <span class="mono small">${esc(a.action)}</span> ${esc(a.target || '')}</div>${a.detail ? `<div class="feed__detail">${esc(String(a.detail).slice(0, 90))}</div>` : ''}</div></div>`).join('')}</div>` : '<div class="empty"><b>Nothing logged yet</b></div>'}
         </section>
       </div>
@@ -42,6 +45,7 @@ export async function render({ el, navigate }) {
 
   if (configure) bindPolicy(config);
   if (manage) { paintTeam(); paintKeys(); }
+  if (configure) paintNotify();
   bindAccount();
   const reset = $('#st-reset', el);
   if (reset) reset.onclick = openReset;
@@ -67,6 +71,10 @@ function policyPanel(health, configure) {
       <input class="input input--mono" type="number" min="4" max="30" name="maxIterations" ${dis}></div>
     <div class="setting"><div><div class="setting__label">Retention</div><div class="setting__help">Closed alerts, their investigations and telemetry older than this are purged hourly (7 to 730 days).</div></div>
       <input class="input input--mono" type="number" min="7" max="730" name="alertRetentionDays" ${dis}></div>
+    <div class="setting"><div><div class="setting__label">Automatic block expiry</div><div class="setting__help">Blocks published by the engine lift themselves after this many hours, so a shared or reassigned address is not shut out forever. 0 keeps them until someone removes them.</div></div>
+      <input class="input input--mono" type="number" min="0" max="720" name="autoBlockTtlHours" ${dis}></div>
+    <div class="setting setting--stack"><div><div class="setting__label">First-response targets</div><div class="setting__help">Minutes from detection to the first owner, note or status change. Reports measure every alert against these.</div></div>
+      <div class="sla-inputs">${[['slaCritical', 'Critical'], ['slaHigh', 'High'], ['slaMedium', 'Medium'], ['slaLow', 'Low']].map(([k, t]) => `<label class="field"><span>${t}</span><input class="input input--mono" type="number" min="1" max="10080" name="${k}" ${dis}></label>`).join('')}</div></div>
   </section>`;
 }
 
@@ -78,7 +86,7 @@ function bindPolicy(config) {
   const dirty = () => { saveBtn.disabled = JSON.stringify(draft) === JSON.stringify(base()); };
   $$('.panel [name]', el).forEach((f) => {
     const k = f.getAttribute('name');
-    if (!(k in draft) && !['autoInvestigate'].includes(k)) return;
+    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours'].includes(k)) return;
     if (f.classList.contains('switch')) {
       f.setAttribute('aria-checked', String(Boolean(draft[k])));
       f.onclick = () => { draft[k] = !draft[k]; f.setAttribute('aria-checked', String(draft[k])); dirty(); };
@@ -92,8 +100,8 @@ function bindPolicy(config) {
   paintEngine();
   saveBtn.onclick = () => busy(saveBtn, async () => {
     try {
-      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays } = draft;
-      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays } });
+      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow } = draft;
+      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow } });
       Object.assign(config, saved);
       state.config = saved;
       toast('Policy saved', 'Applies to the next investigation.', 'ok');
@@ -351,4 +359,105 @@ function openReset() {
       render(ctx);
     } catch (err) { toast('Reset failed', err.message, 'error'); }
   });
+}
+// ---- Notifications -----------------------------------------------------------
+const KIND_TEXT = { slack: 'Slack', teams: 'Microsoft Teams', webhook: 'Webhook' };
+const EVENT_TEXT = { alert: 'New alerts', containment: 'Containment rules', verdict: 'Verdicts' };
+
+function paintNotify() {
+  const box = $('#st-notify', ctx.el);
+  const list = ctx.channels || [];
+  box.innerHTML = `
+    <div class="panel__head"><h2 class="panel__title">Notifications</h2><span class="panel__meta">Slack, Teams or a signed webhook</span><button class="btn btn--sm" style="margin-left:12px" id="n-add">${icon('plus')}Add</button></div>
+    ${list.length ? `<div class="channels">${list.map((c) => `
+      <div class="channel ${c.enabled ? '' : 'is-dim'}" data-cid="${esc(c.id)}">
+        <div class="channel__top">
+          <span class="channel__kind channel__kind--${esc(c.kind)}">${esc(KIND_TEXT[c.kind] || c.kind)}</span>
+          <b class="grow truncate">${esc(c.name)}</b>
+          <button class="switch" role="switch" aria-checked="${c.enabled}" aria-label="Deliver to ${esc(c.name)}" data-n-toggle></button>
+        </div>
+        <div class="channel__url mono small truncate" title="${esc(c.url_hint)}">${esc(c.url_hint)}${c.signed ? ' <span class="tag">signed</span>' : ''}</div>
+        <div class="small muted">${esc(label(c.min_severity))} and above &middot; ${c.events.map((e) => esc(EVENT_TEXT[e] || e)).join(', ')}</div>
+        <div class="channel__foot">
+          <span class="small grow ${c.last ? (c.last.ok ? '' : 'warn-text') : 'muted'}" title="${c.last ? esc(c.last.detail || '') : ''}">${c.last ? `${c.last.ok ? 'Delivered' : 'Failed'} ${ago(c.last.at)} &middot; ${esc(c.last.event)}${c.last.ok ? '' : `: ${esc(String(c.last.detail || '').slice(0, 60))}`}` : 'Nothing sent yet'}</span>
+          <button class="btn btn--sm btn--ghost" data-n-test>${icon('send')}Test</button>
+          <button class="icon-btn icon-btn--bare" title="Remove channel" aria-label="Remove ${esc(c.name)}" data-n-del>${icon('trash')}</button>
+        </div>
+      </div>`).join('')}</div>`
+      : `<div class="empty">${icon('send')}<b>No channels</b><span class="small">Post critical alerts, new blocks and verdicts to the room your on-call team already watches.</span></div>`}`;
+
+  $('#n-add', box).onclick = openNewChannel;
+  $$('[data-cid]', box).forEach((row) => {
+    const c = list.find((x) => x.id === row.dataset.cid);
+    const sw = $('[data-n-toggle]', row);
+    sw.onclick = async () => {
+      sw.disabled = true;
+      try {
+        Object.assign(c, await api(`/notify/channels/${c.id}`, { method: 'PATCH', body: { enabled: !c.enabled } }));
+        toast(c.enabled ? 'Channel resumed' : 'Channel paused', c.name, 'ok');
+        paintNotify();
+      } catch (e) { toast('Not changed', e.message, 'error'); sw.disabled = false; }
+    };
+    const test = $('[data-n-test]', row);
+    test.onclick = () => busy(test, async () => {
+      try {
+        const r = await api(`/notify/channels/${c.id}/test`, { method: 'POST', body: {} });
+        toast('Test delivered', `${c.name}: ${r.detail}`, 'ok');
+      } catch (e) { toast('Test failed', e.message, 'error'); }
+      ctx.channels = await api('/notify/channels').catch(() => ctx.channels);
+      paintNotify();
+    });
+    const del = $('[data-n-del]', row);
+    del.onclick = async () => {
+      if (!del.dataset.armed) {
+        del.dataset.armed = '1';
+        del.classList.add('is-armed');
+        del.title = 'Click again to remove';
+        setTimeout(() => { if (del.isConnected) { delete del.dataset.armed; del.classList.remove('is-armed'); del.title = 'Remove channel'; } }, 3000);
+        return;
+      }
+      try {
+        await api(`/notify/channels/${c.id}`, { method: 'DELETE' });
+        ctx.channels = list.filter((x) => x !== c);
+        toast('Channel removed', c.name, 'ok');
+        paintNotify();
+      } catch (e) { toast('Not removed', e.message, 'error'); }
+    };
+  });
+  hydrateIcons(box);
+}
+
+function openNewChannel() {
+  const m = modal(`
+    <div class="modal__head"><h2 class="modal__title">Add notification channel</h2><p class="small muted" style="margin:4px 0 0">The URL and secret stay on the server. Only a masked hint is shown after saving.</p></div>
+    <form class="modal__body form-grid" id="n-form" novalidate>
+      <label class="field"><span>Name</span><input class="input" name="name" maxlength="60" placeholder="#soc-alerts" autocomplete="off"></label>
+      <label class="field"><span>Type</span><select class="select" name="kind"><option value="slack">Slack incoming webhook</option><option value="teams">Microsoft Teams workflow</option><option value="webhook">Generic webhook (JSON)</option></select></label>
+      <label class="field span-2"><span>Webhook URL</span><input class="input input--mono" name="url" placeholder="https://hooks.slack.com/services/..." autocomplete="off" spellcheck="false"></label>
+      <label class="field span-2" id="n-secret" hidden><span>Signing secret <span class="muted">(optional, 16+ characters)</span></span><input class="input input--mono" name="secret" autocomplete="off" spellcheck="false" placeholder="Used for the X-Aegis-Signature HMAC header"></label>
+      <label class="field"><span>Minimum severity</span><select class="select" name="min_severity">${['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((s) => `<option value="${s}" ${s === 'HIGH' ? 'selected' : ''}>${label(s)} and above</option>`).join('')}</select></label>
+      <div class="field"><span>Send</span><div class="stack" style="gap:4px">${Object.entries(EVENT_TEXT).map(([k, t]) => `<label class="check"><input type="checkbox" name="ev_${k}" checked><span>${t}</span></label>`).join('')}</div></div>
+    </form>
+    <div class="modal__foot"><span class="form-error" id="n-err"></span><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--primary" id="n-go">Add channel</button></div>`);
+  const form = $('#n-form', m);
+  const kind = form.elements.namedItem('kind');
+  const hints = { slack: 'https://hooks.slack.com/services/...', teams: 'https://prod-00.westus.logic.azure.com/workflows/...', webhook: 'https://soar.example.com/hooks/aegis' };
+  kind.onchange = () => { $('#n-secret', m).hidden = kind.value !== 'webhook'; form.elements.namedItem('url').placeholder = hints[kind.value]; };
+  const go = (e) => {
+    e.preventDefault();
+    const v = (n) => form.elements.namedItem(n).value;
+    const body = { name: v('name'), kind: v('kind'), url: v('url').trim(), min_severity: v('min_severity'), events: Object.keys(EVENT_TEXT).filter((k) => form.elements.namedItem(`ev_${k}`).checked) };
+    if (body.kind === 'webhook' && v('secret').trim()) body.secret = v('secret').trim();
+    busy($('#n-go', m), async () => {
+      try {
+        const c = await api('/notify/channels', { method: 'POST', body });
+        ctx.channels = [...(ctx.channels || []), c];
+        closeLayer();
+        toast('Channel added', 'Send a test to confirm it works.', 'ok');
+        paintNotify();
+      } catch (err) { $('#n-err', m).textContent = err.message; }
+    });
+  };
+  form.onsubmit = go;
+  $('#n-go', m).onclick = go;
 }

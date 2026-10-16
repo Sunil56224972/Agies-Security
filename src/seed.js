@@ -129,7 +129,14 @@ const defaultConfig = {
   maxIterations: 12,
   alertRetentionDays: 90,
   autoInvestigate: false,
-  engine: 'playbook'
+  engine: 'playbook',
+  // Hours an automatic BLOCK stays in force; 0 keeps it until someone removes it.
+  autoBlockTtlHours: 0,
+  // Minutes from detection to first analyst action, per severity.
+  slaCritical: 15,
+  slaHigh: 60,
+  slaMedium: 240,
+  slaLow: 1440
 };
 
 module.exports = { assets, cves, alerts, logs, firewallRules, defaultConfig };

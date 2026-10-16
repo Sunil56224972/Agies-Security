@@ -5,6 +5,8 @@ const express = require('express');
 const { Investigator } = require('./engine/investigator');
 const auth = require('./security/auth');
 const { registerRoutes } = require('./routes');
+const { registerCasework } = require('./casework');
+const { Notifier } = require('./notify');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
@@ -229,8 +231,11 @@ function createApp({ store, enforcer, nvd = null, reputation = null, env = proce
     res.json(rec);
   }));
 
-  const ctx = { store, investigator, enforcer, nvd, reputation, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt: Date.now() };
+  const notifier = new Notifier(store, { consoleUrl: env.PUBLIC_URL || null });
+  const ctx = { store, investigator, enforcer, nvd, reputation, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, bootedAt: Date.now() };
   const jobs = registerRoutes(app, ctx);
+  const casework = registerCasework(app, ctx);
+  investigator.onVerdict = casework.onVerdict;
 
   app.use('/api', (req, res) => bad(res, 'Not found', 404));
   // No-cache means "revalidate every time" (a 304 when unchanged). The page, its
@@ -249,7 +254,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, env = proce
     res.status(500).json({ error: env.NODE_ENV === 'production' ? 'Internal error' : err.message || 'Internal error' });
   });
 
-  return { app, investigator, jobs };
+  return { app, investigator, jobs, notifier };
 }
 
 module.exports = { createApp };
