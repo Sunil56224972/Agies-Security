@@ -40,7 +40,9 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | ![Alerts](docs/images/alerts.png) | ![Investigation](docs/images/investigation.png) |
 | Alert queue with severity filters | Live investigation timeline, verdict and report |
 | ![Containment](docs/images/containment.png) | ![Assets](docs/images/assets.png) |
-| Rules with enforcement read-back | Inventory and NVD-backed CVE records |
+| Rules with enforcement read-back | Inventory from Nmap, CMDB or the agent, matched to NVD CVEs |
+| ![IP profile](docs/images/ip-profile.png) | ![Reports](docs/images/reports.png) |
+| IP profile with live blocklist, GreyNoise and Shodan data | SLA, MTTA/MTTR and ATT&CK coverage |
 | ![Settings](docs/images/settings.png) | ![Dark theme](docs/images/overview-dark.png) |
 | Team, API keys, integrations, policy | Dark theme |
 

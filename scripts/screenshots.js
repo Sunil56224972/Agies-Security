@@ -49,6 +49,13 @@ const OUT = path.join(__dirname, '..', 'docs', 'images');
   await shot('telemetry');
   await open('settings', 1500);
   await shot('settings');
+  await open('reports', 2000);
+  await shot('reports');
+  await open('ip/185.220.101.45', 6000);
+  await shot('ip-profile');
+  // Overview again, now that an investigation and rules exist.
+  await open('overview', 1800);
+  await shot('overview');
 
   const darkCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await darkCtx.addCookies([cookie]);
