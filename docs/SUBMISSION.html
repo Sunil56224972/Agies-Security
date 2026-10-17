@@ -61,7 +61,7 @@
   <tr><td>Contain</td><td>BLOCK the source; ISOLATE the host if compromise is confirmed</td><td>Response policy in Settings</td></tr>
   <tr><td>Verify</td><td>Read the rule back from the firewall backend</td><td>Feed pull log, webhook response or Cloudflare API</td></tr>
 </table>
-<p>Two engines run the same tools. The rule-based playbook needs no external service and gives the same verdict for the same evidence. The optional LLM agent (Groq, Llama 3.3 70B) chooses the order of tool calls itself and falls back to the playbook if the model errors. It cannot do anything the playbook cannot.</p>
+<p>Two engines run the same tools. The rule-based playbook needs no external service and gives the same verdict for the same evidence. The optional LLM agent (Groq, gpt-oss-120b by default) chooses the order of tool calls itself and falls back to the playbook if the model errors. It cannot do anything the playbook cannot.</p>
 
 <figure><img src="images/investigation.png" alt="Investigation timeline"><figcaption>An investigation: each tool call, its result, the verdict and the containment read-back.</figcaption></figure>
 

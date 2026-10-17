@@ -20,8 +20,9 @@ class Investigator {
     this.enforcer = enforcer;
     this.reputation = reputation;
     this.tools = createTools(store, { enforcer, nvd, reputation });
-    this.model = model || 'llama-3.3-70b-versatile';
-    this.groq = groqKey ? new Groq({ apiKey: groqKey }) : null;
+    this.model = model || 'openai/gpt-oss-120b';
+    // Short timeout and few retries: a stalled or rate-limited model falls back to the playbook.
+    this.groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000, maxRetries: 1 }) : null;
     this.running = new Set();
     this.onVerdict = null;
   }
@@ -210,7 +211,8 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
 
     for (let i = 0; i < (config.maxIterations || 12); i++) {
       const completion = await this.groq.chat.completions.create({
-        model: this.model, messages, tools: TOOL_DEFINITIONS, tool_choice: 'auto', temperature: 0.1, max_tokens: 1200
+        model: this.model, messages, tools: TOOL_DEFINITIONS, tool_choice: 'auto', temperature: 0.1, max_tokens: 1200,
+        ...(/gpt-oss/.test(this.model) ? { reasoning_effort: 'low' } : {})
       });
       const msg = completion.choices[0].message;
       messages.push(msg);
@@ -233,7 +235,7 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
         if (name === 'verify_defense_state') verification = res;
         if (name === 'execute_firewall_action' && res.rule) ctx.actions.push({ type: res.rule.action, target: res.rule.target_ip, rule_id: res.rule.rule_id, status: res.status, enforcement: res.enforcement || null });
         if (name === 'record_investigation_verdict' && res.accepted) verdictArgs = args;
-        messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(res).slice(0, 6000) });
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: forModel(res) });
       }
     }
     if (!verdictArgs) throw new Error('Model ended without recording a verdict');
@@ -362,6 +364,19 @@ function buildReport(alert, v, actions, id) {
     ...v.recommendations.map(r => `- ${r}`)
   ];
   return lines.join('\n');
+}
+
+// Tool output as the model sees it: bulky fields trimmed so a run stays inside
+// free-tier token budgets. The full result is still kept in the investigation steps.
+function forModel(res) {
+  const slim = JSON.parse(JSON.stringify(res === undefined ? null : res, (k, v) => {
+    if (['references', 'cpe_ranges', 'raw'].includes(k)) return undefined;
+    if (Array.isArray(v) && v.length > 12) return [...v.slice(0, 12), `(+${v.length - 12} more)`];
+    if (typeof v === 'string' && v.length > 300) return `${v.slice(0, 300)}...`;
+    return v;
+  }));
+  const s = JSON.stringify(slim);
+  return s.length > 3000 ? `${s.slice(0, 3000)}...` : s;
 }
 
 module.exports = { Investigator };
