@@ -138,6 +138,18 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok(r.json.imported === 1 && r.json.errors.length === 1, 'CSV import with per-row errors');
     r = await call('GET', '/api/assets');
     ok(r.json[0].exposures.some((e) => e.cve_id === 'CVE-2021-44228'), 'imported host matched to Log4Shell by CPE range');
+    const nmapXml = '<?xml version="1.0"?><nmaprun scanner="nmap" start="1760000000"><host><status state="up"/><address addr="10.0.4.15" addrtype="ipv4"/><ports><port protocol="tcp" portid="8080"><state state="open"/><service name="http" product="Apache Tomcat" version="9.0.31"/></port></ports></host><host><status state="up"/><address addr="10.0.4.30" addrtype="ipv4"/><hostnames><hostname name="db-02" type="PTR"/></hostnames></host></nmaprun>';
+    r = await call('POST', '/api/assets/import', { raw: nmapXml, headers: { 'Content-Type': 'application/xml' } });
+    ok(r.status === 200 && r.json.format === 'nmap' && r.json.created === 1 && r.json.updated === 1, 'Nmap XML import creates and updates hosts');
+    let inv = (await call('GET', '/api/assets')).json;
+    const merged = inv.find((a) => a.ip_address === '10.0.4.15');
+    ok(merged.hostname === 'prod-web-core' && merged.criticality === 'CRITICAL', 'scan keeps hostname and criticality from the CMDB');
+    ok(merged.installed_packages.includes('log4j-core-2.14.1.jar') && merged.installed_packages.includes('Apache Tomcat 9.0.31'), 'scan merges packages instead of replacing them');
+    r = await call('POST', '/api/ingest/assets', { as: null, body: [{ ip_address: '10.0.4.31', hostname: 'build-01', os_family: 'Linux', installed_packages: ['openssl 3.0.2'] }], headers: { Authorization: `Bearer ${ingestKey}` } });
+    ok(r.status === 200 && r.json.created === 1, 'agent inventory push with an ingest key');
+    ok((await call('POST', '/api/ingest/assets', { as: null, body: [{ ip_address: '10.0.4.32', hostname: 'x' }], headers: { Authorization: `Bearer ${feedKey}` } })).status === 403, 'feed key cannot push inventory');
+    inv = (await call('GET', '/api/assets')).json;
+    ok(inv.find((a) => a.ip_address === '10.0.4.31').source === 'agent', 'agent rows are tagged with their source');
     r = await call('POST', '/api/cves/sync', { body: {} });
     ok(r.status === 200 && r.json.updated === 0 && r.json.failed.length > 0, 'NVD sync fails gracefully offline');
 

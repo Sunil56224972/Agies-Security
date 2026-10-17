@@ -45,7 +45,7 @@ function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputa
     async check_ip_reputation({ ip_address }) {
       if (!ip_address) return { error: 'ip_address is required' };
       if (isInternal(ip_address)) return { ip: ip_address, skipped: true, reason: 'Internal address' };
-      if (!reputation || !reputation.available) return { ip: ip_address, skipped: true, reason: 'No reputation provider configured' };
+      if (!reputation || !reputation.available) return { ip: ip_address, skipped: true, reason: 'Threat intel is disabled' };
       try { return await reputation.check(ip_address); } catch (err) { return { error: err.message }; }
     },
 
@@ -142,7 +142,7 @@ const TOOL_DEFINITIONS = [
     alert_id: { type: 'string' } }, ['alert_id']],
   ['lookup_asset_inventory', 'Inventory lookup for an internal host: OS, services, installed packages, WAF, criticality.', {
     ip_address: { type: 'string' } }, ['ip_address']],
-  ['check_ip_reputation', 'Reputation of an external IP from the configured threat-intel provider (AbuseIPDB).', {
+  ['check_ip_reputation', 'Reputation of an external IP: Spamhaus DROP, FireHOL and Tor exit lists, GreyNoise, Shodan InternetDB, geolocation/ASN, and AbuseIPDB when configured. Returns a 0-100 score, verdict and per-source detail.', {
     ip_address: { type: 'string' } }, ['ip_address']],
   ['query_cve_kb', 'Look up a CVE (fetched from NVD if not cached) or search by keyword. Pass asset_ip to get per-asset exposure from CPE version ranges.', {
     cve_id: { type: 'string' }, keyword: { type: 'string' }, asset_ip: { type: 'string' } }, []],

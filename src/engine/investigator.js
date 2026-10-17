@@ -137,9 +137,12 @@ class Investigator {
       outcome = 'RECON_ONLY'; confidence = 70;
       reasons.push('No exposure and no host-side effect observed.');
     }
-    if (rep && rep.score != null && rep.reports) {
-      reasons.push(`AbuseIPDB: ${remoteIp} scores ${rep.score}/100 from ${rep.reports} reports${rep.isp ? ` (${rep.isp}${rep.country ? `, ${rep.country}` : ''})` : ''}.`);
+    if (rep && rep.summary && !rep.skipped) {
+      reasons.push(`Threat intel: ${rep.summary}`);
       if (outcome === 'ATTACK_FAILED' && rep.score >= 75) confidence = Math.min(97, confidence + 4);
+      if (outcome === 'RECON_ONLY' && rep.score >= 60) reasons.push('Source is a known-bad address; consider a time-boxed block.');
+    } else if (rep && rep.score != null && rep.reports) {
+      reasons.push(`AbuseIPDB: ${remoteIp} scores ${rep.score}/100 from ${rep.reports} reports.`);
     }
     this.note(ctx, 'decide', `Verdict: ${outcome.replace('_', ' ').toLowerCase()} (${confidence}%)`, reasons.join(' '), 'verdict');
 

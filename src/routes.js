@@ -7,6 +7,7 @@ const { normalizeAlert, normalizeLog, normalizeAsset, parseCsv, parseBatch } = r
 const { CVE_RE } = require('./intel/nvd');
 const { CLOSED_STATUSES } = require('./store/shared');
 const { findSuppression } = require('./engine/suppress');
+const { parseNmapXml, looksLikeNmap } = require('./ingest/nmap');
 
 const SEVERITIES = Object.keys(SEVERITY_RANK);
 const OPEN = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
@@ -25,7 +26,7 @@ function registerRoutes(app, ctx) {
   const timeline = (alertId, body, req) => store.notes.add({ alert_id: alertId, kind: 'event', author: actor(req), author_id: req.user ? req.user.id : null, body });
   const tools = investigator.tools;
   const bigJson = express.json({ limit: '5mb', type: ['application/json', '*/*+json'] });
-  const bigText = express.text({ limit: '5mb', type: ['application/x-ndjson', 'text/plain', 'text/csv'] });
+  const bigText = express.text({ limit: '5mb', type: ['application/x-ndjson', 'text/plain', 'text/csv', 'application/xml', 'text/xml'] });
 
   // ---- System --------------------------------------------------------------
   app.get('/api/health', wrap(async (req, res) => {
@@ -35,7 +36,7 @@ function registerRoutes(app, ctx) {
       storage: { kind: store.kind, label: store.label, ok: db.ok, detail: db.detail, warning: warnings.find((w) => /supabase|store/i.test(w)) || null },
       engine: { llm: investigator.llmAvailable, model: investigator.llmAvailable ? investigator.model : null },
       enforcement: { ...enforcer.describe(), warning: warnings.find((w) => /ENFORCEMENT/.test(w)) || null },
-      intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available) },
+      intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [] },
       demo,
       tools: TOOL_DEFINITIONS.map((t) => t.function.name),
       uptime_s: Math.round((Date.now() - bootedAt) / 1000)
@@ -280,25 +281,61 @@ function registerRoutes(app, ctx) {
     res.json({ ok: true });
   }));
 
-  app.post('/api/assets/import', canEditAssets, bigJson, bigText, wrap(async (req, res) => {
-    let rows;
-    if (typeof req.body === 'string') {
-      const t = req.body.trim();
-      rows = t.startsWith('[') || t.startsWith('{') ? [].concat(JSON.parse(t)) : parseCsv(t);
-    } else if (Array.isArray(req.body)) rows = req.body;
-    else if (req.body && Array.isArray(req.body.assets)) rows = req.body.assets;
-    else return bad(res, 'Send CSV text or a JSON array of hosts');
-    if (!rows.length) return bad(res, 'No rows found');
+  // CSV, JSON or Nmap XML. Discovery sources (nmap, agent) refresh what they can
+  // observe and keep what an analyst set by hand: owner, criticality and WAF.
+  function readAssetRows(body) {
+    if (typeof body === 'string') {
+      const t = body.trim();
+      if (looksLikeNmap(t)) return { rows: parseNmapXml(t), format: 'nmap' };
+      if (t.startsWith('[') || t.startsWith('{')) {
+        let v;
+        try { v = JSON.parse(t); } catch { return { error: 'Body is not valid JSON' }; }
+        return { rows: Array.isArray(v) ? v : Array.isArray(v.assets) ? v.assets : [v], format: 'json' };
+      }
+      return { rows: parseCsv(t), format: 'csv' };
+    }
+    if (Array.isArray(body)) return { rows: body, format: 'json' };
+    if (body && Array.isArray(body.assets)) return { rows: body.assets, format: 'json' };
+    if (body && typeof body === 'object' && (body.ip_address || body.ip)) return { rows: [body], format: 'json' };
+    return { error: 'Send CSV, a JSON array of hosts, or Nmap XML (nmap -sV -oX)' };
+  }
+
+  async function importAssets(req, res, defaultSource) {
+    const parsed = readAssetRows(req.body);
+    if (parsed.error) return bad(res, parsed.error);
+    const { rows, format } = parsed;
+    if (!rows.length) return bad(res, format === 'nmap' ? 'The scan has no hosts that were up' : 'No rows found');
     if (rows.length > MAX_BATCH) return bad(res, `At most ${MAX_BATCH} hosts per import`);
     const good = []; const errors = [];
     rows.forEach((row, i) => {
-      const r = normalizeAsset({ source: 'import', ...row });
-      if (r.error) errors.push({ row: i + 1, error: r.error }); else good.push(r.asset);
+      const r = normalizeAsset({ source: defaultSource, ...row });
+      if (r.error) errors.push({ row: i + 1, error: r.error });
+      else good.push({ asset: r.asset, given: row });
     });
-    if (good.length) await store.assets.upsert(good);
-    await store.audit.add({ actor: actor(req), action: 'asset.imported', target: `${good.length} hosts`, detail: errors.length ? `${errors.length} rows rejected` : null });
-    res.json({ imported: good.length, errors: errors.slice(0, 50) });
-  }));
+    let created = 0;
+    if (good.length) {
+      const existing = new Map((await store.assets.list()).map((a) => [a.ip_address, a]));
+      const merged = good.map(({ asset, given }) => {
+        const prev = existing.get(asset.ip_address);
+        if (!prev) { created += 1; return asset; }
+        const out = { ...asset };
+        for (const k of ['owner', 'criticality', 'waf_enabled']) {
+          const supplied = given[k] !== undefined && given[k] !== '' || (k === 'waf_enabled' && given.waf !== undefined);
+          if (!supplied) out[k] = prev[k];
+        }
+        // A network scan sees listening services only; keep packages an agent or analyst recorded.
+        if (asset.source === 'nmap') out.installed_packages = [...new Set([...(prev.installed_packages || []), ...asset.installed_packages])].slice(0, 400);
+        if (/^host-/.test(asset.hostname) && prev.hostname) out.hostname = prev.hostname;
+        if (asset.os_version === 'Unknown' && prev.os_version) { out.os_version = prev.os_version; out.os_family = prev.os_family; }
+        return out;
+      });
+      await store.assets.upsert(merged);
+    }
+    await store.audit.add({ actor: actor(req), action: 'asset.imported', target: `${good.length} hosts`, detail: [format, created && `${created} new`, errors.length && `${errors.length} rows rejected`].filter(Boolean).join(', ') });
+    res.json({ imported: good.length, created, updated: good.length - created, format, errors: errors.slice(0, 50) });
+  }
+
+  app.post('/api/assets/import', canEditAssets, bigJson, bigText, wrap((req, res) => importAssets(req, res, 'import')));
 
   // ---- CVEs ----------------------------------------------------------------
   app.get('/api/cves', wrap(async (req, res) => res.json((await store.cves.list(req.query.q)).map(stripCve))));
@@ -497,6 +534,9 @@ function registerRoutes(app, ctx) {
     if (good.length) await store.logs.insertMany(good);
     res.status(rejected.length && !good.length ? 400 : 202).json({ accepted: good.length, rejected: rejected.slice(0, 100) });
   }));
+
+  // Host inventory from the Aegis agent or a scheduled scanner.
+  app.post('/api/ingest/assets', requireKey('ingest'), bigJson, bigText, wrap((req, res) => importAssets(req, res, 'agent')));
 
   // ---- Firewall pull feeds (API key, scope "feed") ----------------------------
   // Plain text, one address per line: the format PAN-OS EDL, FortiGate external

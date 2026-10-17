@@ -7,6 +7,8 @@ const { normalizeNvd } = require('../src/intel/nvd');
 const auth = require('../src/security/auth');
 const { WebhookAdapter, CloudflareAdapter } = require('../src/enforce');
 const seed = require('../src/seed');
+const { parseNetset, parseSpamhaus, cidrRange, ThreatIntel } = require('../src/intel/threatintel');
+const { parseNmapXml, looksLikeNmap } = require('../src/ingest/nmap');
 
 let n = 0;
 const tests = [];
@@ -139,6 +141,48 @@ test('cloudflare adapter creates, verifies and removes', async () => {
   assert.strictEqual((await cf.remove(rule)).status, 'REMOVED');
   assert.strictEqual((await cf.apply({ ...rule, action: 'ISOLATE' })).status, 'RECORDED');
   assert.deepStrictEqual(calls, ['POST ', 'GET /cf1', 'DELETE /cf1'].map((s) => s.replace('POST ', 'POST /')));
+});
+
+test('blocklist parsers: CIDR maths, netset and Spamhaus NDJSON', () => {
+  assert.deepStrictEqual(cidrRange('10.0.0.0/8'), { start: 167772160, end: 184549375 });
+  assert.deepStrictEqual(cidrRange('192.168.1.77/24'), { start: 3232235776, end: 3232236031 });
+  assert.strictEqual(cidrRange('not-an-ip/8'), null);
+  assert.strictEqual(cidrRange('10.0.0.0/33'), null);
+  const fh = parseNetset('# FireHOL\n1.2.3.0/24\n5.6.7.8 # single\n\nbad line\n');
+  assert.strictEqual(fh.ranges.length, 1);
+  assert.ok(fh.exact.has('5.6.7.8'));
+  const sh = parseSpamhaus('{"cidr":"1.10.16.0/20","sblid":"SBL256894","rir":"apnic"}\n{"type":"metadata","timestamp":1}\nnot json\n');
+  assert.strictEqual(sh.ranges.length, 1);
+  assert.strictEqual(sh.ranges[0].label, '1.10.16.0/20 SBL256894');
+});
+
+test('threat intel offline mode refuses lookups', async () => {
+  const ti = new ThreatIntel({ offline: true });
+  assert.strictEqual(ti.available, false);
+});
+
+test('nmap XML becomes asset rows with services, packages and OS', () => {
+  const xml = `<?xml version="1.0"?><nmaprun scanner="nmap" start="1760000000">
+<host><status state="up"/><address addr="10.0.4.22" addrtype="ipv4"/><address addr="00:11:22:33:44:55" addrtype="mac" vendor="Dell"/>
+<hostnames><hostname name="web-01.corp" type="PTR"/></hostnames>
+<ports><port protocol="tcp" portid="80"><state state="open"/><service name="http" product="Apache httpd" version="2.4.49"><cpe>cpe:/a:apache:http_server:2.4.49</cpe></service></port>
+<port protocol="tcp" portid="22"><state state="closed"/><service name="ssh"/></port></ports>
+<os><osmatch name="Linux 5.4" accuracy="96"/></os></host>
+<host><status state="down"/><address addr="10.0.4.23" addrtype="ipv4"/></host>
+<host><status state="up"/><address addr="10.0.4.24" addrtype="ipv4"/></host>
+<runstats><hosts up="2" down="1" total="3"/></runstats></nmaprun>`;
+  assert.ok(looksLikeNmap(xml));
+  assert.ok(!looksLikeNmap('ip_address,hostname\n10.0.0.1,a'));
+  const rows = parseNmapXml(xml);
+  assert.strictEqual(rows.length, 2);
+  const [web, bare] = rows;
+  assert.strictEqual(web.hostname, 'web-01.corp');
+  assert.strictEqual(web.os_family, 'Linux');
+  assert.deepStrictEqual(web.running_services, [{ port: 80, service: 'Apache httpd 2.4.49' }]);
+  assert.ok(web.installed_packages.includes('Apache httpd 2.4.49'));
+  assert.strictEqual(web.last_scanned, new Date(1760000000 * 1000).toISOString());
+  assert.strictEqual(bare.hostname, 'host-10-0-4-24');
+  assert.ok(exposureFor(web, httpd).exposed, 'scanned Apache 2.4.49 should match CVE-2021-41773');
 });
 
 (async () => {

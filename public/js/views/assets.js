@@ -38,8 +38,8 @@ async function paint() {
     ctx.assets = await api('/assets');
     if (!ctx.assets.length) {
       body.innerHTML = `<div class="empty">${icon('server')}<b>No hosts in the inventory</b>
-        <span class="small">Exposure checks and investigation context depend on it. Add hosts one at a time or import a CSV export from your CMDB or scanner.</span>
-        ${can('respond') ? `<div class="row mt-12"><button class="btn" id="e-import">${icon('upload')}Import CSV</button><button class="btn btn--primary" id="e-add">${icon('plus')}Add host</button></div>` : ''}</div>`;
+        <span class="small">Exposure checks and investigation context depend on it. Import an Nmap scan or a CMDB export, run the Aegis agent on your servers (Settings, API keys), or add hosts by hand.</span>
+        ${can('respond') ? `<div class="row mt-12"><button class="btn" id="e-import">${icon('upload')}Import scan or CSV</button><button class="btn btn--primary" id="e-add">${icon('plus')}Add host</button></div>` : ''}</div>`;
       if ($('#e-add', body)) { $('#e-add', body).onclick = () => openAssetForm(null); $('#e-import', body).onclick = () => openAssetImport(); }
       hydrateIcons(body);
       return;

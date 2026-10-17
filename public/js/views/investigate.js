@@ -92,7 +92,7 @@ async function openCase(id, autoRun = false, quiet = false) {
         <div class="row wrap">${sev(a.severity)}<span id="case-status">${pill(a.status)}</span>${flow(a.source_ip, a.dest_ip, a.dest_port)}${asset ? `<span class="tag">${esc(asset.hostname)}</span>` : '<span class="tag tag--warn">not in CMDB</span>'}</div>
       </div>
       <div class="case-head__actions">
-        ${llm ? `<div class="seg" id="engine-seg" title="Investigation engine"><button data-e="playbook" class="${engine !== 'llm' ? 'is-on' : ''}">Playbook</button><button data-e="llm" class="${engine === 'llm' ? 'is-on' : ''}">LLM</button></div>` : ''}
+        ${llm ? `<div class="seg" id="engine-seg" title="Investigation engine"><button data-e="playbook" class="${engine !== 'llm' ? 'is-on' : ''}">Rules</button><button data-e="llm" class="${engine === 'llm' ? 'is-on' : ''}">LLM</button></div>` : ''}
         ${can('respond') ? `<button class="btn btn--primary btn--lg" id="run-btn" ${a.status === 'INVESTIGATING' ? 'disabled' : ''}>${inv ? 'Re-run' : 'Run investigation'}</button>` : '<span class="tag">read only</span>'}
       </div>
     </div>

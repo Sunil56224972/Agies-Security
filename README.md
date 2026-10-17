@@ -11,15 +11,19 @@ Express on Node, with Supabase Postgres or a local file for storage. There is no
 ```
  Suricata / Zeek / any IDS --POST /api/ingest/alerts-->  +--------+  --feed / webhook / Cloudflare-->  firewall
  nginx, auth, EDR logs     --POST /api/ingest/logs---->  | Aegis  |  <--GET /api/feeds/blocklist.txt-- (pull)
- CMDB / scanner export     --Assets > Import---------->  +--------+  <--NVD CVE API 2.0 (CPE ranges, CISA KEV)
+ Nmap XML, CMDB CSV, agent --/api/ingest/assets------>  +--------+  <--NVD CVE API 2.0 (CPE ranges, CISA KEV)
+                                                              ^
+                       Spamhaus DROP, FireHOL, Tor exits, GreyNoise, Shodan InternetDB, AbuseIPDB (IP reputation)
 ```
+
+The quickest way to feed a Linux server in is the bundled agent, `public/agent/aegis-agent.js` (served at `/agent/aegis-agent.js`). It is a single file with no dependencies. It tails Suricata `eve.json` and your access, auth and syslog files, and pushes a host inventory every hour: OS, listening ports with versions, and installed packages from dpkg, rpm or apk.
 
 Every investigation runs six phases, streamed live to the console:
 
 | Phase | What happens |
 | --- | --- |
 | Triage | Load the alert and classify the payload (JNDI, traversal, SQLi, brute force, beaconing) |
-| Enrich | Find the target in the inventory and test its installed versions against NVD CPE ranges. Optionally check the source IP on AbuseIPDB |
+| Enrich | Find the target in the inventory and test its installed versions against NVD CPE ranges. Score the source IP against live blocklists and reputation services |
 | Correlate | Read the target's ingested HTTP, auth and EDR logs for the attacker's address |
 | Decide | Weigh exposure against host evidence and record a verdict with confidence and a MITRE mapping |
 | Contain | Create a BLOCK rule for the source, and an ISOLATE rule for the host when compromise is confirmed |
@@ -27,7 +31,7 @@ Every investigation runs six phases, streamed live to the console:
 
 Aegis never marks an alert *contained* until the backend has confirmed the rule. A rule that is only published shows as `PENDING`, and one the firewall rejected shows as `FAILED`. Both appear under Containment > Needs attention.
 
-The **playbook** engine is deterministic and needs no API key. The optional **LLM agent** drives the same tools through Groq tool calling, so it cannot do anything the playbook cannot. It falls back to the playbook if the model errors.
+The **rule-based playbook** needs no API key: the same evidence always gives the same verdict, which is what you want for an audit trail. The optional **LLM agent** drives the same tools through Groq tool calling, so it cannot do anything the playbook cannot. It falls back to the playbook if the model errors.
 
 ## Screens
 
@@ -62,7 +66,11 @@ AEGIS_DEMO=1 AEGIS_DATA_FILE=.data/demo.json npm start
 
 ### 1. Inventory
 
-Assets > Add host, or Assets > Import with a CSV or JSON export from your CMDB or scanner. Columns:
+Three ways in, and they merge by IP address:
+
+- **Nmap.** Run `nmap -sV -O -oX scan.xml 10.0.0.0/24` and drop `scan.xml` on Assets > Import, or POST it to `/api/ingest/assets` with `Content-Type: application/xml`. Open ports, service versions, CPEs and the OS guess are recorded. Packages, owner and criticality already on the host are kept.
+- **The agent.** `node aegis-agent.js` (see section 3) reports what the host itself knows, including packages a network scan cannot see.
+- **CSV or JSON** from a CMDB, Lansweeper or a spreadsheet, through Assets > Import or `/api/ingest/assets`. Columns:
 
 ```
 ip_address,hostname,os_version,owner,criticality,waf_enabled,services,installed_packages
@@ -77,7 +85,19 @@ Assets > CVE records > Add from NVD fetches a CVE by id: CVSS, CWE, CPE ranges, 
 
 ### 3. Sensor alerts
 
-Create an API key with the `ingest` scope under Settings > API keys. The key is shown once, with ready-to-paste commands. Aegis accepts Suricata EVE JSON as NDJSON, a JSON array, or `{"events": [...]}`, up to 5000 events per request. Non-alert EVE records are skipped, and events that were already sent are de-duplicated.
+Create an API key with the `ingest` scope under Settings > API keys. The key is shown once, with ready-to-paste commands.
+
+On a Linux host with Node 18 or newer, the agent covers alerts, logs and inventory in one process:
+
+```bash
+curl -fsSLO https://aegis.example.com/agent/aegis-agent.js
+sudo AEGIS_URL=https://aegis.example.com AEGIS_KEY=$AEGIS_KEY node aegis-agent.js \
+  --eve /var/log/suricata/eve.json --access /var/log/nginx/access.log --auth /var/log/auth.log
+```
+
+It remembers file positions in `--state`, follows log rotation, batches up to 500 lines, retries with backoff and stops on a revoked key. `--dry-run` prints what it would send; `--help` lists every flag. The Settings dialog also gives you a systemd unit.
+
+Without the agent: Aegis accepts Suricata EVE JSON as NDJSON, a JSON array, or `{"events": [...]}`, up to 5000 events per request. Non-alert EVE records are skipped, and events that were already sent are de-duplicated.
 
 ```bash
 # Stream Suricata alerts as they happen
@@ -197,6 +217,20 @@ Set these in Project Settings > Environment Variables, then redeploy:
 
 Rate limits are kept per function instance, so they are looser on Vercel than on a single server. Investigations stream over one request; a long LLM run is bounded by the function's max duration.
 
+## Threat intel
+
+Source IPs are scored during every investigation and on the IP profile page, with no key required:
+
+| Source | What it adds |
+| --- | --- |
+| Spamhaus DROP, FireHOL level 1, Tor exit list | Downloaded and cached for 6 hours, matched locally by CIDR |
+| GreyNoise community | Known scanner or benign service (for example a search engine crawler) |
+| Shodan InternetDB | Open ports, hostnames and CVEs Shodan has seen on the address |
+| ipwho.is | Country, ASN and network owner |
+| AbuseIPDB | Abuse confidence and report count, when `ABUSEIPDB_API_KEY` is set |
+
+Each lookup returns a 0-100 score, a verdict and the sources that answered. A source that is down is reported as such and does not block the investigation. Set `AEGIS_INTEL=off` on an air-gapped install.
+
 ## What Aegis does not do for you
 
 - It does not capture traffic. Alerts come from your IDS, and evidence comes from the logs you ship. A host that sends no logs gets a lower-confidence verdict.
@@ -214,7 +248,7 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 | GET / POST | `/api/auth/state`, `/setup`, `/login`, `/logout`, `/password` | Sessions |
 | GET / POST / PATCH | `/api/users`, `/api/users/:id` | Team management (admin) |
 | GET / POST | `/api/keys`, `/api/keys/:id/revoke` | API keys (admin) |
-| POST | `/api/ingest/alerts`, `/api/ingest/logs` | Sensor ingest (`ingest` key) |
+| POST | `/api/ingest/alerts`, `/api/ingest/logs`, `/api/ingest/assets` | Sensor and inventory ingest (`ingest` key) |
 | GET | `/api/feeds/blocklist.txt`, `/api/feeds/isolate.txt` | Firewall feeds (`feed` key) |
 | GET / POST | `/api/alerts`, `/api/alerts/:id/status` | Alert queue |
 | POST | `/api/investigations/stream` | Run an investigation (server-sent events) |
@@ -236,7 +270,7 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 npm test
 ```
 
-There are three suites. Unit tests cover CPE version matching, EVE normalisation, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 73 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds and CSV import; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
+There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 79 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
 
 To run the HTTP suite against the Supabase project in `.env` instead of a temp file, set `AEGIS_TEST_SUPABASE=1`. It empties every Aegis table before and after the run, so use a staging project, never one holding real incidents.
 
@@ -252,8 +286,9 @@ src/casework.js         ownership, notes, bulk triage, suppressions, reports, ex
 src/notify.js           Slack / Teams / signed webhook delivery
 src/engine/             analysis rules, tools, playbook and LLM investigator
 src/enforce/            record / feed / webhook / Cloudflare adapters
-src/ingest/             EVE, generic alert, log and CSV normalisation
-src/intel/              NVD CVE API 2.0 client, AbuseIPDB
+src/ingest/             EVE, generic alert, log, CSV and Nmap XML normalisation
+src/intel/              NVD CVE API 2.0 client, blocklists and IP reputation
+public/agent/           zero-dependency sensor agent for Linux hosts
 src/security/           scrypt, signed sessions, API keys, rate limits
 src/store/              Supabase and local file backends
 supabase/migrations/    Postgres schema

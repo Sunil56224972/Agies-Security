@@ -7,7 +7,7 @@ const express = require('express');
 const { createStore } = require('./src/store');
 const { createEnforcer } = require('./src/enforce');
 const { NvdClient } = require('./src/intel/nvd');
-const { Reputation } = require('./src/intel/reputation');
+const { ThreatIntel } = require('./src/intel/threatintel');
 const { createApp } = require('./src/app');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -17,7 +17,7 @@ async function build() {
   const { store, warning: storeWarning, demo } = await createStore(process.env);
   const { enforcer, warning: enforceWarning } = createEnforcer(process.env);
   const nvd = new NvdClient({ apiKey: process.env.NVD_API_KEY });
-  const reputation = new Reputation({ apiKey: process.env.ABUSEIPDB_API_KEY });
+  const reputation = new ThreatIntel({ abuseKey: process.env.ABUSEIPDB_API_KEY, offline: /^(0|off|false|no)$/i.test(String(process.env.AEGIS_INTEL || '')) });
   const warnings = [storeWarning, enforceWarning].filter(Boolean);
   const { app, investigator } = createApp({ store, enforcer, nvd, reputation, env: process.env, demo, warnings });
   return { app, investigator, store, enforcer, reputation, warnings, demo };
@@ -50,8 +50,8 @@ async function main() {
     console.log(`\n  Aegis Security  http://localhost:${PORT}`);
     line('Storage', store.label);
     line('Enforcement', `${enforcer.label} (${enforcer.mode})`);
-    line('Engine', investigator.llmAvailable ? `playbook + ${investigator.model}` : 'playbook (set GROQ_API_KEY for the LLM agent)');
-    line('Intel', `NVD${process.env.NVD_API_KEY ? ' (keyed)' : ' (public quota)'}${reputation.available ? ', AbuseIPDB' : ''}`);
+    line('Engine', investigator.llmAvailable ? `rule-based playbook + ${investigator.model}` : 'rule-based playbook (add GROQ_API_KEY to enable the LLM agent)');
+    line('Intel', `NVD${process.env.NVD_API_KEY ? ' (keyed)' : ' (public quota)'}, ${reputation.describe().sources.length} reputation sources`);
     if (demo) line('Mode', 'DEMO dataset loaded (AEGIS_DEMO=1)');
     for (const w of warnings) line('Warning', w);
     if (!users) line('Setup', `No users yet. Open http://localhost:${PORT} to create the first administrator.`);

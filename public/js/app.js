@@ -121,7 +121,7 @@ async function refreshChrome() {
     $('#sys-store').textContent = health.storage.kind === 'supabase' ? 'Supabase' : 'Local file';
     $('#sys-store').title = health.storage.detail || '';
     $('#brand-env').textContent = health.demo ? 'demo' : health.storage.kind === 'supabase' ? 'supabase' : 'local';
-    $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Playbook';
+    $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Rule-based';
     $('#nav-open').textContent = count.open ? String(count.open) : '';
   } catch {
     $('#sys-dot').className = 'live-dot live-dot--off';

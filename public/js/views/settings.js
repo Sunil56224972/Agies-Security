@@ -65,8 +65,8 @@ function policyPanel(health, configure) {
       <button class="switch" role="switch" name="isolateOnCompromise" aria-label="Isolate compromised hosts" ${dis}></button></div>
     <div class="setting"><div><div class="setting__label">Investigate ingested alerts</div><div class="setting__help">Run the engine in the background for every HIGH or CRITICAL alert that arrives through the ingest API.</div></div>
       <button class="switch" role="switch" name="autoInvestigate" aria-label="Investigate ingested alerts" ${dis}></button></div>
-    <div class="setting"><div><div class="setting__label">Investigation engine</div><div class="setting__help">The playbook is deterministic. The LLM agent drives the same tools through Groq and falls back to the playbook on error.</div></div>
-      <div class="seg" id="st-engine"><button data-e="playbook" ${dis}>Playbook</button><button data-e="llm" ${health.engine.llm && configure ? '' : 'disabled'} ${health.engine.llm ? '' : 'title="Set GROQ_API_KEY to enable"'}>LLM agent</button></div></div>
+    <div class="setting"><div><div class="setting__label">Investigation engine</div><div class="setting__help">The rule-based playbook runs the same steps every time and needs no external service. The LLM agent drives the same tools through Groq and falls back to the playbook on error.</div></div>
+      <div class="seg" id="st-engine"><button data-e="playbook" ${dis}>Rule-based playbook</button><button data-e="llm" ${health.engine.llm && configure ? '' : 'disabled'} ${health.engine.llm ? '' : 'title="Set GROQ_API_KEY to enable"'}>LLM agent</button></div></div>
     <div class="setting"><div><div class="setting__label">Max agent iterations</div><div class="setting__help">Upper bound on model round-trips per LLM run (4 to 30).</div></div>
       <input class="input input--mono" type="number" min="4" max="30" name="maxIterations" ${dis}></div>
     <div class="setting"><div><div class="setting__label">Retention</div><div class="setting__help">Closed alerts, their investigations and telemetry older than this are purged hourly (7 to 730 days).</div></div>
@@ -121,8 +121,8 @@ function integrationsPanel(h) {
     ${row(`Enforcement: ${esc(e.label || e.mode)}`, e.mode === 'record' ? 'warn' : e.warning ? 'warn' : true, esc(e.warning || e.detail || ''), 'ENFORCEMENT_MODE=feed | webhook | cloudflare | record')}
     ${row(`Storage: ${isSb ? 'Supabase Postgres' : 'Local JSON file'}`, h.storage.ok ? (isSb ? true : 'warn') : false, esc(h.storage.warning || h.storage.detail || (h.storage.ok ? 'Connected' : 'Unavailable')) + (isSb ? '' : '. Fine for one node; use Supabase for anything shared.'), isSb ? '' : 'SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY')}
     ${row('NVD CVE API', h.intel.nvd_key ? true : 'warn', h.intel.nvd_key ? 'API key set: 50 requests per 30 s.' : 'No key: NVD allows 5 requests per 30 s, so sync is slow.', 'NVD_API_KEY')}
-    ${row('AbuseIPDB reputation', h.intel.reputation ? true : 'warn', h.intel.reputation ? 'Source IPs are checked during enrichment.' : 'Off. Enrichment relies on your own logs and alert history only.', 'ABUSEIPDB_API_KEY')}
-    ${row('LLM agent (Groq)', h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}.` : 'Off. The deterministic playbook handles every run.', 'GROQ_API_KEY')}
+    ${row('IP reputation', h.intel.reputation ? true : 'warn', h.intel.reputation ? `Checked live against ${esc((h.intel.sources || []).join(', '))}.${h.intel.abuseipdb ? '' : ' Add an AbuseIPDB key for community report counts.'}` : 'Off (AEGIS_INTEL=off).', 'ABUSEIPDB_API_KEY (optional)')}
+    ${row('LLM agent (Groq)', h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}.` : 'Off. The rule-based playbook handles every run. Add a free key from console.groq.com to turn it on.', 'GROQ_API_KEY')}
     ${h.demo && can('manage') ? `<div class="setting"><div><div class="setting__label">Demo mode</div><div class="setting__help">AEGIS_DEMO=1 is set. Sample data can be restored; never enable this in production.</div></div><button class="btn btn--danger btn--sm" id="st-reset">Reset sample data</button></div>` : ''}
   </section>`;
 }
@@ -292,7 +292,7 @@ function openNewKey() {
     <form class="modal__body" id="k-form" novalidate>
       <label class="field"><span>Name</span><input class="input" name="name" required maxlength="60" placeholder="suricata-dmz-01" autocomplete="off"></label>
       <div class="field mt-12"><span>Scope</span>
-        <label class="row small"><input type="checkbox" name="ingest" checked> <b>ingest</b><span class="muted">post alerts and logs to /api/ingest/*</span></label>
+        <label class="row small"><input type="checkbox" name="ingest" checked> <b>ingest</b><span class="muted">post alerts, logs and inventory to /api/ingest/*</span></label>
         <label class="row small mt-8"><input type="checkbox" name="feed"> <b>feed</b><span class="muted">pull /api/feeds/blocklist.txt and isolate.txt</span></label>
       </div>
     </form>
@@ -319,7 +319,10 @@ function showKey(m, rec) {
   const o = location.origin;
   const snippets = [];
   if (rec.scopes.includes('ingest')) {
-    snippets.push(['Stream Suricata EVE alerts', `tail -F /var/log/suricata/eve.json | grep --line-buffered '"event_type":"alert"' | \\\n  while read -r line; do printf '%s\\n' "$line" | curl -sS -X POST ${o}/api/ingest/alerts \\\n    -H "Authorization: Bearer ${rec.key}" -H "Content-Type: application/x-ndjson" --data-binary @-; done`]);
+    snippets.push(['Install the Aegis agent on a Linux host (Node 18+)', `curl -fsSLO ${o}/agent/aegis-agent.js\nsudo AEGIS_URL=${o} AEGIS_KEY=${rec.key} \\\n  node aegis-agent.js --eve /var/log/suricata/eve.json \\\n  --access /var/log/nginx/access.log --auth /var/log/auth.log \\\n  --criticality HIGH --owner Platform`]);
+    snippets.push(['Run it as a service (systemd)', `# /etc/systemd/system/aegis-agent.service\n[Unit]\nDescription=Aegis sensor agent\nAfter=network-online.target\n\n[Service]\nEnvironment=AEGIS_URL=${o}\nEnvironment=AEGIS_KEY=${rec.key}\nExecStart=/usr/bin/node /opt/aegis/aegis-agent.js --eve /var/log/suricata/eve.json --auth /var/log/auth.log --state /var/lib/aegis-agent.json\nRestart=always\n\n[Install]\nWantedBy=multi-user.target`]);
+    snippets.push(['Push an Nmap scan into the inventory', `nmap -sV -O -oX scan.xml 10.0.0.0/24\ncurl -sS -X POST ${o}/api/ingest/assets \\\n  -H "Authorization: Bearer ${rec.key}" -H "Content-Type: application/xml" \\\n  --data-binary @scan.xml`]);
+    snippets.push(['Stream Suricata EVE alerts (without the agent)', `tail -F /var/log/suricata/eve.json | grep --line-buffered '"event_type":"alert"' | \\\n  while read -r line; do printf '%s\\n' "$line" | curl -sS -X POST ${o}/api/ingest/alerts \\\n    -H "Authorization: Bearer ${rec.key}" -H "Content-Type: application/x-ndjson" --data-binary @-; done`]);
     snippets.push(['Send a batch of alerts (JSON)', `curl -sS -X POST ${o}/api/ingest/alerts \\\n  -H "Authorization: Bearer ${rec.key}" -H "Content-Type: application/json" \\\n  --data @alerts.json`]);
     snippets.push(['Send host logs', `curl -sS -X POST "${o}/api/ingest/logs?host_ip=10.0.0.5" \\\n  -H "Authorization: Bearer ${rec.key}" -H "Content-Type: text/plain" \\\n  --data-binary @/var/log/nginx/access.log`]);
   }

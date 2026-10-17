@@ -60,7 +60,7 @@ async function paint() {
       <div class="kpi"><div class="kpi__label">As source</div><div class="kpi__value">${c.as_source}</div><div class="kpi__foot">alerts it triggered</div></div>
       <div class="kpi"><div class="kpi__label">As target</div><div class="kpi__value">${c.as_target}</div><div class="kpi__foot">alerts aimed at it</div></div>
       <div class="kpi"><div class="kpi__label">Investigations</div><div class="kpi__value">${d.investigations.length}</div><div class="kpi__foot">${d.investigations.filter((i) => i.outcome === 'ATTACK_SUCCEEDED').length} confirmed compromise</div></div>
-      <div class="kpi ${score >= 50 ? 'kpi--alert' : ''}"><div class="kpi__label">Abuse score</div><div class="kpi__value">${score == null ? '-' : `${score}<small>/100</small>`}</div><div class="kpi__foot">${d.internal ? 'internal, not checked' : intel && !intel.error && !intel.skipped ? `${num(intel.reports)} reports, AbuseIPDB` : 'AbuseIPDB not configured'}</div></div>
+      <div class="kpi ${score >= 50 ? 'kpi--alert' : ''}"><div class="kpi__label">Threat score</div><div class="kpi__value">${score == null ? '-' : `${score}<small>/100</small>`}</div><div class="kpi__foot">${d.internal ? 'internal, not checked' : intel && !intel.error && !intel.skipped ? `${esc(intel.verdict || '')}, ${(intel.sources_ok || []).length} sources` : intel && intel.error ? 'lookup failed' : 'intel off'}</div></div>
     </div>
 
     <div class="grid grid-2-1">
@@ -77,11 +77,9 @@ async function paint() {
           <div class="panel__head"><h2 class="panel__title">${d.internal ? 'Host' : 'Reputation'}</h2></div>
           <div class="panel__body">
             ${d.asset ? `<dl class="kv"><dt>Hostname</dt><dd>${esc(d.asset.hostname)}</dd><dt>OS</dt><dd>${esc(d.asset.os_version || '-')}</dd><dt>Owner</dt><dd>${esc(d.asset.owner || '-')}</dd><dt>Criticality</dt><dd>${sev(d.asset.criticality)}</dd><dt>WAF</dt><dd>${d.asset.waf_enabled ? 'Yes' : 'No'}</dd></dl>` : ''}
-            ${!d.internal && intel && !intel.error && !intel.skipped ? `<dl class="kv ${d.asset ? 'mt-12' : ''}"><dt>Confidence</dt><dd><span class="meter"><span class="meter__track" style="width:90px"><span class="meter__fill" style="width:${score}%;background:${score >= 75 ? 'var(--crit)' : score >= 25 ? 'var(--high)' : 'var(--ok)'}"></span></span><span class="mono">${score}%</span></span></dd>
-              <dt>Country</dt><dd>${esc(intel.country || '-')}</dd><dt>Network</dt><dd>${esc(intel.isp || '-')}</dd><dt>Usage</dt><dd>${esc(intel.usage || '-')}</dd><dt>Domain</dt><dd class="mono">${esc(intel.domain || '-')}</dd>
-              <dt>Last report</dt><dd>${intel.last_reported ? ago(intel.last_reported) : '-'}</dd></dl>` : ''}
-            ${!d.internal && intel && intel.error ? `<div class="notice notice--warn">${icon('alert')}<div class="small">AbuseIPDB lookup failed: ${esc(intel.error)}</div></div>` : ''}
-            ${!d.asset && (d.internal || !intel || intel.skipped) ? `<p class="small muted" style="margin:0">${d.internal ? 'Internal address with no inventory record. Add it under Assets so exposure and criticality are known.' : 'Set ABUSEIPDB_API_KEY to see reputation, network owner and report history for external addresses.'}</p>` : ''}
+            ${!d.internal && intel && !intel.error && !intel.skipped ? intelBlock(intel, score, Boolean(d.asset)) : ''}
+            ${!d.internal && intel && intel.error ? `<div class="notice notice--warn">${icon('alert')}<div class="small">Reputation lookup failed: ${esc(intel.error)}</div></div>` : ''}
+            ${!d.asset && (d.internal || !intel || intel.skipped) ? `<p class="small muted" style="margin:0">${d.internal ? 'Internal address with no inventory record. Add it under Assets so exposure and criticality are known.' : 'Threat intel is switched off on this server (AEGIS_INTEL=off).'}</p>` : ''}
           </div>
         </section>
         <section class="panel">
@@ -128,4 +126,24 @@ async function paint() {
   if (tune) tune.onclick = () => openSuppress({ name: `Expected traffic from ${ip}`, source_cidr: ip });
   if (intel && intel.error && !ctx.warned) { ctx.warned = true; toast('Reputation lookup failed', intel.error, 'error'); }
   hydrateIcons(el);
+}
+function intelBlock(intel, score, gap) {
+  const g = intel.geo || {};
+  const gn = intel.greynoise;
+  const sh = intel.shodan;
+  const ab = intel.abuseipdb;
+  const color = score >= 75 ? 'var(--crit)' : score >= 40 ? 'var(--high)' : 'var(--ok)';
+  const where = [g.city, g.country].filter(Boolean).join(', ');
+  return `<dl class="kv ${gap ? 'mt-12' : ''}">
+    <dt>Score</dt><dd><span class="meter"><span class="meter__track" style="width:90px"><span class="meter__fill" style="width:${score || 0}%;background:${color}"></span></span><span class="mono">${score ?? '-'}</span></span> <span class="small muted">${esc(intel.verdict || '')}</span></dd>
+    <dt>Blocklists</dt><dd>${intel.listed && intel.listed.length ? intel.listed.map((l) => `<span class="tag tag--warn" title="${esc(l.detail)}">${esc(l.list)}</span>`).join(' ') : '<span class="muted">not listed</span>'}</dd>
+    <dt>GreyNoise</dt><dd>${gn ? (gn.unseen ? '<span class="muted">not seen scanning</span>' : `${esc(gn.classification)}${gn.noise ? ', scanning the internet' : ''}${gn.riot ? ', known business service' : ''}${gn.last_seen ? ` <span class="muted small">last ${esc(gn.last_seen)}</span>` : ''}`) : '-'}</dd>
+    ${ab ? `<dt>AbuseIPDB</dt><dd>${ab.score}/100 from ${num(ab.reports)} reports${ab.last_reported ? ` <span class="muted small">last ${ago(ab.last_reported)}</span>` : ''}</dd>` : ''}
+    <dt>Network</dt><dd>${esc(g.org || intel.isp || '-')}${g.asn ? ` <span class="mono muted small">${esc(g.asn)}</span>` : ''}</dd>
+    <dt>Location</dt><dd>${esc(where || '-')}</dd>
+    ${sh && sh.ports.length ? `<dt>Open ports</dt><dd class="mono small">${sh.ports.slice(0, 14).map(esc).join(', ')}${sh.ports.length > 14 ? ' ...' : ''}</dd>` : ''}
+    ${sh && sh.hostnames.length ? `<dt>Hostnames</dt><dd class="mono small truncate">${esc(sh.hostnames.slice(0, 3).join(', '))}</dd>` : ''}
+    ${sh && sh.vulns.length ? `<dt>CVEs seen</dt><dd>${sh.vulns.slice(0, 6).map((v) => `<span class="tag">${esc(v)}</span>`).join(' ')}${sh.vulns.length > 6 ? ` <span class="small muted">+${sh.vulns.length - 6}</span>` : ''}</dd>` : ''}
+  </dl>
+  <p class="small muted" style="margin:8px 0 0">${esc((intel.sources_ok || []).join(', '))}${intel.sources_failed && intel.sources_failed.length ? `. Unavailable: ${esc(intel.sources_failed.map((f) => f.source).join(', '))}` : ''}. ${intel.cached ? 'Cached' : 'Checked'} ${ago(intel.checked_at)}.</p>`;
 }

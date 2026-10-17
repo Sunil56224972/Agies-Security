@@ -360,14 +360,15 @@ const CSV_HEAD = 'ip_address,hostname,os_version,owner,criticality,waf_enabled,s
 
 export function openAssetImport() {
   const panel = modal(`
-    <div class="modal__head"><h2 class="modal__title">Import hosts</h2><p class="small muted" style="margin:4px 0 0">CSV with a header row, or a JSON array. Existing IPs are updated in place.</p></div>
+    <div class="modal__head"><h2 class="modal__title">Import hosts</h2><p class="small muted" style="margin:4px 0 0">An Nmap XML scan, CSV with a header row, or a JSON array. Existing IPs are updated in place.</p></div>
     <div class="modal__body">
       <div class="row wrap" style="margin-bottom:10px">
-        <label class="btn btn--sm">${icon('upload')}Choose file<input type="file" id="imp-file" accept=".csv,.json,text/csv,application/json" hidden></label>
+        <label class="btn btn--sm">${icon('upload')}Choose file<input type="file" id="imp-file" accept=".xml,.csv,.json,text/xml,text/csv,application/json" hidden></label>
         <span class="small muted grow truncate" id="imp-name">or paste below</span>
       </div>
       <textarea class="textarea" id="imp-text" rows="9" spellcheck="false" placeholder="${CSV_HEAD}&#10;10.20.0.5,web-01,Ubuntu 22.04,Payments,HIGH,true,&quot;443/nginx 1.24.0; 22/OpenSSH 8.9p1&quot;,log4j-core-2.17.1.jar"></textarea>
-      <p class="small muted mt-8">Columns: <code>${CSV_HEAD}</code>. Separate multiple services or packages with <code>;</code>. Exports from Nmap, Lansweeper or a CMDB can be mapped to these columns.</p>
+      <p class="small muted mt-8">Columns: <code style="word-break:break-all">${CSV_HEAD}</code>. Separate multiple services or packages with <code>;</code>. CMDB or Lansweeper exports map to these columns.</p>
+      <p class="small muted">Network scan: run <code>nmap -sV -O -oX scan.xml 10.0.0.0/24</code> and drop <code>scan.xml</code> here. Open ports, service versions and OS guesses are merged into existing hosts; owner and criticality you set by hand are kept.</p>
       <div id="imp-result"></div>
     </div>
     <div class="modal__foot"><span class="form-error" id="imp-err"></span><button class="btn btn--ghost" data-close>Close</button><button class="btn btn--primary" id="imp-go">${icon('upload')}Import</button></div>`);
@@ -383,11 +384,11 @@ export function openAssetImport() {
     $('#imp-err', panel).textContent = '';
     const text = ta.value.trim();
     if (!text) { $('#imp-err', panel).textContent = 'Nothing to import'; return; }
-    const json = text.startsWith('[') || text.startsWith('{');
+    const type = text.startsWith('<') ? 'application/xml' : text.startsWith('[') || text.startsWith('{') ? 'application/json' : 'text/csv';
     try {
-      const r = await api('/assets/import', { method: 'POST', raw: text, type: json ? 'application/json' : 'text/csv' });
+      const r = await api('/assets/import', { method: 'POST', raw: text, type });
       $('#imp-result', panel).innerHTML = `
-        <div class="notice ${r.errors.length ? 'notice--warn' : ''} mt-12">${icon(r.errors.length ? 'alert' : 'check')}<div><b>${num(r.imported)} hosts imported</b>${r.errors.length ? `, ${r.errors.length} rows skipped` : ''}
+        <div class="notice ${r.errors.length ? 'notice--warn' : ''} mt-12">${icon(r.errors.length ? 'alert' : 'check')}<div><b>${num(r.imported)} ${r.imported === 1 ? 'host' : 'hosts'} imported</b> <span class="muted">(${num(r.created || 0)} new, ${num(r.updated || 0)} updated${r.format === 'nmap' ? ' from Nmap' : ''})</span>${r.errors.length ? `, ${r.errors.length} rows skipped` : ''}
         ${r.errors.length ? `<ul class="small" style="margin:6px 0 0;padding-left:16px">${r.errors.slice(0, 8).map((x) => `<li>Row ${x.row}: ${esc(x.error)}</li>`).join('')}</ul>` : ''}</div></div>`;
       if (r.imported) emit('data:changed');
     } catch (err) { $('#imp-err', panel).textContent = err.message; }
