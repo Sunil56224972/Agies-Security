@@ -51,6 +51,10 @@ const ACT = {
   'export.alerts': ['', 'exported'],
   'export.audit': ['', 'exported audit log,'],
   'export.report': ['', 'downloaded report'],
+  'detect.raised': ['crit', 'raised'],
+  'kev.synced': ['ok', 'checked CVEs against'],
+  'cve.discovered': ['', 'looked up CVEs for'],
+  'intel.bulk': ['', 'checked reputation of'],
   'demo.seeded': ['ok', 'seeded'],
   'demo.reset': ['warn', 'reset']
 };

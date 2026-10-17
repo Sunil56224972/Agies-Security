@@ -73,6 +73,10 @@ function policyPanel(health, configure) {
       <input class="input input--mono" type="number" min="7" max="730" name="alertRetentionDays" ${dis}></div>
     <div class="setting"><div><div class="setting__label">Automatic block expiry</div><div class="setting__help">Blocks published by the engine lift themselves after this many hours, so a shared or reassigned address is not shut out forever. 0 keeps them until someone removes them.</div></div>
       <input class="input input--mono" type="number" min="0" max="720" name="autoBlockTtlHours" ${dis}></div>
+    <div class="setting"><div><div class="setting__label">Built-in detections</div><div class="setting__help">Raise alerts from ingested SSH and web server logs: brute force, login after failures, exploit strings and scanners. Rules can be switched one by one under Threat intel.</div></div>
+      <button class="switch" role="switch" name="detectEnabled" aria-label="Built-in detections" ${dis}></button></div>
+    <div class="setting setting--stack"><div><div class="setting__label">Detection thresholds</div><div class="setting__help">Failed SSH logins, or 403/404 answers, from one address inside the window before an alert is raised.</div></div>
+      <div class="sla-inputs">${[['detectSshThreshold', 'SSH failures', 2, 1000], ['detectScanThreshold', '403/404s', 3, 5000], ['detectWindowMin', 'Window (min)', 1, 1440]].map(([k, t, lo, hi]) => `<label class="field"><span>${t}</span><input class="input input--mono" type="number" min="${lo}" max="${hi}" name="${k}" ${dis}></label>`).join('')}</div></div>
     <div class="setting setting--stack"><div><div class="setting__label">First-response targets</div><div class="setting__help">Minutes from detection to the first owner, note or status change. Reports measure every alert against these.</div></div>
       <div class="sla-inputs">${[['slaCritical', 'Critical'], ['slaHigh', 'High'], ['slaMedium', 'Medium'], ['slaLow', 'Low']].map(([k, t]) => `<label class="field"><span>${t}</span><input class="input input--mono" type="number" min="1" max="10080" name="${k}" ${dis}></label>`).join('')}</div></div>
   </section>`;
@@ -86,7 +90,7 @@ function bindPolicy(config) {
   const dirty = () => { saveBtn.disabled = JSON.stringify(draft) === JSON.stringify(base()); };
   $$('.panel [name]', el).forEach((f) => {
     const k = f.getAttribute('name');
-    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours'].includes(k)) return;
+    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours', 'detectEnabled'].includes(k)) return;
     if (f.classList.contains('switch')) {
       f.setAttribute('aria-checked', String(Boolean(draft[k])));
       f.onclick = () => { draft[k] = !draft[k]; f.setAttribute('aria-checked', String(draft[k])); dirty(); };
@@ -100,8 +104,8 @@ function bindPolicy(config) {
   paintEngine();
   saveBtn.onclick = () => busy(saveBtn, async () => {
     try {
-      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow } = draft;
-      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow } });
+      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled, detectSshThreshold, detectScanThreshold, detectWindowMin } = draft;
+      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled: detectEnabled !== false, detectSshThreshold: detectSshThreshold || 5, detectScanThreshold: detectScanThreshold || 20, detectWindowMin: detectWindowMin || 10 } });
       Object.assign(config, saved);
       state.config = saved;
       toast('Policy saved', 'Applies to the next investigation.', 'ok');

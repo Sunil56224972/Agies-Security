@@ -1,5 +1,5 @@
 import { $, $$, api, esc, sev, pill, ago, stamp, markPayload, drawer, modal, closeLayer, toast, busy, emit, num, label, state, can } from './core.js';
-import { icon } from './icons.js';
+import { icon, hydrateIcons } from './icons.js';
 
 // Overlays reused by several views.
 
@@ -411,7 +411,8 @@ export function openAsset(a, navigate) {
         ${a.running_services.length ? `<div class="table-wrap"><table class="table"><tbody>${a.running_services.map((s) => `<tr><td class="mono" style="width:70px">${s.port}</td><td>${esc(s.service)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted small" style="margin:0">None recorded.</p>'}
       </section>
       <section><h3 class="section-title">Installed packages</h3>${a.installed_packages.length ? `<div class="row wrap">${a.installed_packages.map((p) => `<span class="tag">${esc(p)}</span>`).join('')}</div>` : '<p class="muted small" style="margin:0">None recorded. Add versioned packages to get CVE matching.</p>'}</section>
-      <section><h3 class="section-title">Known exposure</h3>
+      <section><h3 class="section-title row">Known exposure${respond ? `<span class="grow"></span><button class="btn btn--sm" id="a-disc" title="Look up every CVE NVD lists for the versions on this host">${icon('search')}Find CVEs in NVD</button>` : ''}</h3>
+        <div id="a-disc-out"></div>
         ${a.exposures.length ? a.exposures.map((c) => `<div class="row wrap" style="padding:6px 0">${sev(c.severity)}<b class="mono">${esc(c.cve_id)}</b>${c.kev ? '<span class="tag tag--kev" title="CISA Known Exploited Vulnerabilities">KEV</span>' : ''}<span class="muted small">CVSS ${c.cvss_score}</span>${c.evidence ? `<span class="small muted grow truncate" title="${esc(c.evidence)}">matched ${esc(c.evidence)}</span>` : ''}</div>`).join('') : '<p class="muted small" style="margin:0">No match against the CVE records in Aegis.</p>'}
       </section>
       <section><h3 class="section-title">Recent telemetry</h3><div id="asset-logs"><div class="skeleton" style="height:80px"></div></div></section>
@@ -429,6 +430,18 @@ export function openAsset(a, navigate) {
   $('#a-logs', panel).onclick = () => { closeLayer(); navigate(`telemetry?host=${a.ip_address}`); };
   if (!respond) return;
   $('#a-edit', panel).onclick = () => openAssetForm(a);
+  $('#a-disc', panel).onclick = (e) => busy(e.currentTarget, async () => {
+    const out = $('#a-disc-out', panel);
+    out.innerHTML = '<p class="small muted" style="margin:0 0 8px">Asking NVD about each versioned product. Without an NVD API key this takes about 7 seconds per product.</p>';
+    try {
+      const r = await api(`/assets/${encodeURIComponent(a.ip_address)}/discover`, { method: 'POST', body: {} });
+      out.innerHTML = `<div class="notice ${r.matched ? 'notice--warn' : ''}" style="margin-bottom:8px">${icon(r.matched ? 'alert' : 'check')}<div><b>${r.imported} CVE${r.imported === 1 ? '' : 's'} imported</b>, ${r.matched} matched to this host${r.kev ? `, ${r.kev} on the CISA KEV list` : ''}.
+        <div class="small muted mt-8">${r.products.map((p) => `${esc(p.product)} ${esc(p.version)}: ${p.error ? esc(p.error) : `${p.total} in NVD, ${p.kept} kept (CVSS 7+ or KEV)`}`).join('<br>')}${r.skipped ? `<br>${r.skipped} more products not checked; set NVD_API_KEY for a higher quota.` : ''}</div>
+        <div class="small muted mt-8">Distribution packages often carry backported fixes, so confirm against the vendor advisory before patching.</div></div></div>`;
+      hydrateIcons(out);
+      emit('data:changed');
+    } catch (err) { out.innerHTML = `<div class="notice notice--warn" style="margin-bottom:8px">${icon('alert')}<div>${esc(err.message)}</div></div>`; hydrateIcons(out); }
+  });
   $('#a-iso', panel).onclick = () => openNewRule({ target_ip: a.ip_address, action: 'ISOLATE', reason: `Manual isolation of ${a.hostname}` });
   let armed = false;
   $('#a-del', panel).onclick = (e) => {

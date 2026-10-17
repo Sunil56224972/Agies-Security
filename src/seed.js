@@ -136,7 +136,13 @@ const defaultConfig = {
   slaCritical: 15,
   slaHigh: 60,
   slaMedium: 240,
-  slaLow: 1440
+  slaLow: 1440,
+  // Built-in detections on ingested telemetry (src/engine/detect.js).
+  detectEnabled: true,
+  detectSshThreshold: 5,
+  detectScanThreshold: 20,
+  detectWindowMin: 10,
+  detectDisabled: []
 };
 
 module.exports = { assets, cves, alerts, logs, firewallRules, defaultConfig };

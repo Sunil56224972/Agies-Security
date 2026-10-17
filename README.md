@@ -43,8 +43,11 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | Rules with enforcement read-back | Inventory from Nmap, CMDB or the agent, matched to NVD CVEs |
 | ![IP profile](docs/images/ip-profile.png) | ![Reports](docs/images/reports.png) |
 | IP profile with live blocklist, GreyNoise and Shodan data | SLA, MTTA/MTTR and ATT&CK coverage |
-| ![Settings](docs/images/settings.png) | ![Dark theme](docs/images/overview-dark.png) |
-| Team, API keys, integrations, policy | Dark theme |
+| ![Detections](docs/images/intel-detect.png) | ![Exploited CVEs](docs/images/intel-kev.png) |
+| Built-in detection rules and the rule tester | CISA KEV catalog matched against your hosts |
+| ![IOC check](docs/images/intel-ioc.png) | ![Settings](docs/images/settings.png) |
+| Bulk IOC check against six live sources | Team, API keys, integrations, policy |
+| ![Dark theme](docs/images/overview-dark.png) | |
 
 ## Quick start
 
@@ -122,6 +125,28 @@ curl -sS -X POST "https://aegis.example.com/api/ingest/logs?host_ip=10.20.0.5&lo
 ```
 
 The log types are `http_access`, `auth_log`, `edr_process` and `system`. Plain lines, NDJSON and JSON arrays are all accepted. When `log_type` is left out, Aegis infers it from the line's format.
+
+### Built-in detections
+
+You do not need Suricata to get alerts. Every batch sent to `/api/ingest/logs` is run through Aegis' own rules, together with the last 1000 lines already stored for each client address:
+
+| Rule | Fires on | Severity |
+| --- | --- | --- |
+| `ssh-bruteforce` | 5 failed passwords or invalid users from one address within 10 minutes | HIGH |
+| `ssh-success-after` | A successful login from an address that crossed the brute-force threshold | CRITICAL |
+| `web-exploit` | Request lines with JNDI lookups, path traversal, command or SQL injection, XSS, or reads of `.env`/`.git` | HIGH or CRITICAL |
+| `web-scanner` | 20 or more 403/404 answers to one client inside the window, or a known scanner user agent | MEDIUM |
+
+Thresholds, the window and per-rule switches live under Settings > Response policy. Alerts get a stable `DET-` id per rule, client and 10-minute bucket, so a re-sent log does not raise twice. They go through the same suppression, auto-triage and notification path as sensor alerts.
+
+Try it against a real server, or paste the same lines into Threat intel > Detections > Rule tester, which runs the rules without storing anything:
+
+```bash
+for i in 1 2 3 4 5 6; do echo "Oct 17 09:41:0$i web01 sshd[2211]: Failed password for root from 203.0.113.50 port 5111$i ssh2"; done | \
+  curl -sS -X POST "https://aegis.example.com/api/ingest/logs?host_ip=10.20.0.5&log_type=auth_log" \
+    -H "Authorization: Bearer $AEGIS_KEY" -H "Content-Type: text/plain" --data-binary @-
+# -> {"accepted":6, ..., "detections":{"raised":1,"ids":["DET-..."]}}
+```
 
 ### 5. Enforcement
 
@@ -233,6 +258,13 @@ Source IPs are scored during every investigation and on the IP profile page, wit
 
 Each lookup returns a 0-100 score, a verdict and the sources that answered. A source that is down is reported as such and does not block the investigation. Set `AEGIS_INTEL=off` on an air-gapped install.
 
+The Threat intel page adds four tools on top of that:
+
+- **IOC check.** Paste up to 100 addresses in any shape (a list, CSV, firewall log lines, defanged `203.0.113[.]7`). Each one is scored against the sources above, cross-referenced with your alerts and block rules, and the result can be exported as CSV.
+- **Exploited CVEs.** The CISA Known Exploited Vulnerabilities catalog is downloaded and cached for 12 hours. The page lists the latest additions and every CVE record of yours that is on the list, with the hosts exposed to it. Flag CVE records writes the KEV flag back to stored CVEs.
+- **Find CVEs on a host.** In an asset's drawer, Find CVEs in NVD maps each versioned package to an NVD CPE and pulls the CVEs that match, keeping CVSS 7.0 or higher and anything on KEV. Without `NVD_API_KEY` it checks 4 packages per run (about 7 seconds each because of the NVD rate limit); with a key, 12. NVD matches on upstream versions, so a distribution package with backported fixes can show CVEs that are already patched.
+- **Attack origins.** The external sources behind your alerts in the chosen window, geolocated, with their reputation and how many alerts are still open.
+
 ## What Aegis does not do for you
 
 - It does not capture traffic. Alerts come from your IDS, and evidence comes from the logs you ship. A host that sends no logs gets a lower-confidence verdict.
@@ -264,6 +296,11 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 | GET / POST / PATCH / DELETE | `/api/suppressions`, `/api/suppressions/preview` | Suppression rules and dry-run preview |
 | GET / POST / PATCH / DELETE | `/api/notify/channels`, `/channels/:id/test` | Slack, Teams and webhook channels (admin) |
 | GET | `/api/ip/:ip`, `/api/reports/summary?days=30` | IP profile, SLA and ATT&CK report |
+| GET / POST | `/api/detect/rules`, `/api/detect/test` | Built-in rules with hit counts; dry-run rule tester |
+| GET / POST | `/api/intel/kev`, `/api/intel/kev/sync` | CISA KEV status, overlap with your CVEs, flag records |
+| POST | `/api/intel/bulk` | Score up to 100 IOCs |
+| GET | `/api/intel/origins?days=30` | Geolocated alert sources |
+| GET / POST | `/api/assets/:ip/software`, `/api/assets/:ip/discover` | Packages mapped to CPEs; pull matching CVEs from NVD |
 | GET | `/api/export/alerts.csv`, `/api/export/audit.csv`, `/api/investigations/:id/report.md` | Exports |
 
 ## Tests

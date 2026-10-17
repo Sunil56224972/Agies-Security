@@ -10,6 +10,7 @@ const ROUTES = {
   assets: { title: 'Assets', load: () => import('./views/assets.js') },
   reports: { title: 'Reports', load: () => import('./views/reports.js') },
   ip: { title: 'IP profile', load: () => import('./views/ip.js') },
+  intel: { title: 'Threat intel', load: () => import('./views/intel.js') },
   telemetry: { title: 'Telemetry', load: () => import('./views/telemetry.js') },
   settings: { title: 'Settings', load: () => import('./views/settings.js') }
 };

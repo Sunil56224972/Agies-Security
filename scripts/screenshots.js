@@ -51,6 +51,18 @@ const OUT = path.join(__dirname, '..', 'docs', 'images');
   await shot('settings');
   await open('reports', 2000);
   await shot('reports');
+  await open('intel?tab=detect', 1800);
+  await page.click('#dt-sample');
+  await page.click('#dt-run');
+  await page.waitForTimeout(1500);
+  await shot('intel-detect');
+  await open('intel?tab=kev', 6000);
+  await shot('intel-kev');
+  await open('intel?tab=ioc', 1200);
+  await page.fill('#ioc-in', '185.220.101.45\n45.95.147.236\n8.8.8.8');
+  await page.click('#ioc-go');
+  await page.waitForTimeout(8000);
+  await shot('intel-ioc');
   await open('ip/185.220.101.45', 6000);
   await shot('ip-profile');
   // Overview again, now that an investigation and rules exist.

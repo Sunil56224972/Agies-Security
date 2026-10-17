@@ -6,6 +6,8 @@ const { Investigator } = require('./engine/investigator');
 const auth = require('./security/auth');
 const { registerRoutes } = require('./routes');
 const { registerCasework } = require('./casework');
+const { registerIntel } = require('./intel-routes');
+const { KevCatalog } = require('./intel/kev');
 const { Notifier } = require('./notify');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -40,7 +42,9 @@ function validateNewUser({ email, name, password, role }, { needPassword = true 
   return null;
 }
 
-function createApp({ store, enforcer, nvd = null, reputation = null, env = process.env, demo = false, warnings = [] }) {
+function createApp({ store, enforcer, nvd = null, reputation = null, kev = null, env = process.env, demo = false, warnings = [] }) {
+  // The KEV catalog is public; it follows the same on/off switch as the reputation sources.
+  kev = kev || new KevCatalog({ offline: !(reputation && reputation.available) });
   const investigator = new Investigator(store, { groqKey: env.GROQ_API_KEY, model: env.GROQ_MODEL, enforcer, nvd, reputation });
   const secret = auth.loadSecret(env);
   const secureCookie = /^(1|true|yes)$/i.test(String(env.COOKIE_SECURE || ''));
@@ -232,9 +236,10 @@ function createApp({ store, enforcer, nvd = null, reputation = null, env = proce
   }));
 
   const notifier = new Notifier(store, { consoleUrl: env.PUBLIC_URL || null });
-  const ctx = { store, investigator, enforcer, nvd, reputation, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, bootedAt: Date.now() };
+  const ctx = { store, investigator, enforcer, nvd, reputation, kev, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, bootedAt: Date.now() };
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
+  registerIntel(app, ctx);
   investigator.onVerdict = casework.onVerdict;
 
   app.use('/api', (req, res) => bad(res, 'Not found', 404));

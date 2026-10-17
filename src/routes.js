@@ -8,6 +8,7 @@ const { CVE_RE } = require('./intel/nvd');
 const { CLOSED_STATUSES } = require('./store/shared');
 const { findSuppression } = require('./engine/suppress');
 const { parseNmapXml, looksLikeNmap } = require('./ingest/nmap');
+const detect = require('./engine/detect');
 
 const SEVERITIES = Object.keys(SEVERITY_RANK);
 const OPEN = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
@@ -446,6 +447,17 @@ function registerRoutes(app, ctx) {
       if (!intIn(b[k], 1, 10080)) return bad(res, 'Response targets must be 1-10080 minutes');
       next[k] = Number(b[k]);
     }
+    if (b.detectEnabled !== undefined) next.detectEnabled = Boolean(b.detectEnabled);
+    for (const [k, lo, hi, what] of [['detectSshThreshold', 2, 1000, 'SSH failure threshold'], ['detectScanThreshold', 3, 5000, 'Scanner threshold'], ['detectWindowMin', 1, 1440, 'Detection window']]) {
+      if (b[k] === undefined) continue;
+      if (!intIn(b[k], lo, hi)) return bad(res, `${what} must be ${lo}-${hi}`);
+      next[k] = Number(b[k]);
+    }
+    if (b.detectDisabled !== undefined) {
+      const ids = detect.RULES.map((r) => r.id);
+      if (!Array.isArray(b.detectDisabled) || b.detectDisabled.some((x) => !ids.includes(x))) return bad(res, `detectDisabled must list rule ids from: ${ids.join(', ')}`);
+      next.detectDisabled = [...new Set(b.detectDisabled)];
+    }
     if (!Object.keys(next).length) return bad(res, 'Nothing to change');
     const saved = await store.config.set(next);
     await store.audit.add({ actor: actor(req), action: 'config.updated', target: 'platform', detail: Object.keys(next).join(', ') });
@@ -486,6 +498,13 @@ function registerRoutes(app, ctx) {
       else if (r.error) rejected.push({ index, error: r.error });
       else good.push({ ...r.alert, sensor: r.alert.sensor === 'api' ? `key:${req.apiKey.name}`.slice(0, 80) : r.alert.sensor });
     });
+    const { inserted, duplicates, quiet } = await landAlerts(good, req, { action: 'ingest.alerts', note: rejected.length ? `${rejected.length} rejected` : null });
+    res.status(rejected.length && !inserted.length && !duplicates ? 400 : 202).json({ accepted: inserted.length, suppressed: quiet.length, duplicates, skipped, rejected: rejected.slice(0, 100) });
+  }));
+
+  // Suppression, idempotent insert, background triage and notification for alerts from
+  // any source (sensors through the ingest API, or Aegis' own log detections).
+  async function landAlerts(good, req, { action, note = null }) {
     // Tuning rules close known-benign traffic on arrival. The alert is still stored
     // (closed as a false positive and tagged with the rule) so nothing disappears silently.
     const at = new Date().toISOString();
@@ -509,7 +528,7 @@ function registerRoutes(app, ctx) {
       await store.suppressions.recordHits(counted, at);
     }
     if (inserted.length) {
-      await store.audit.add({ actor: actor(req), action: 'ingest.alerts', target: `${inserted.length} alerts`, detail: [rejected.length && `${rejected.length} rejected`, quiet.length && `${quiet.length} suppressed`].filter(Boolean).join(', ') || null });
+      await store.audit.add({ actor: actor(req), action, target: `${inserted.length} alerts`, detail: [note, quiet.length && `${quiet.length} suppressed`].filter(Boolean).join(', ') || null });
       const cfg = await store.config.get();
       if (cfg.autoInvestigate) {
         const floor = SEVERITY_RANK.HIGH;
@@ -518,8 +537,29 @@ function registerRoutes(app, ctx) {
       }
       if (loud.length) await notifier.emit('alert', { alerts: loud }, { origin: origin(req) });
     }
-    res.status(rejected.length && !inserted.length && !duplicates ? 400 : 202).json({ accepted: inserted.length, suppressed: quiet.length, duplicates, skipped, rejected: rejected.slice(0, 100) });
-  }));
+    return { inserted, duplicates, quiet, loud };
+  }
+  ctx.landAlerts = landAlerts;
+
+  // Built-in detections: judge each client that appears in the batch against its stored
+  // history, so a brute force split over many agent posts is still seen as one burst.
+  async function runDetection(batch, req) {
+    const cfg = await store.config.get();
+    if (cfg.detectEnabled === false) return { raised: 0, ids: [] };
+    const clients = [...new Set(batch.map((l) => l.client_ip).filter(Boolean))].slice(0, 100);
+    const hosts = new Set(batch.map((l) => l.host_ip));
+    if (!clients.length) return { raised: 0, ids: [] };
+    const history = [];
+    for (let i = 0; i < clients.length; i += 10) {
+      const part = await Promise.all(clients.slice(i, i + 10).map((c) => store.logs.list({ client_ip: c, limit: 1000 })));
+      for (const rows of part) history.push(...rows.filter((l) => hosts.has(l.host_ip)));
+    }
+    const now = Math.max(...batch.map((l) => new Date(l.logged_at).getTime()));
+    const found = detect.evaluate(history, cfg, { now });
+    if (!found.length) return { raised: 0, ids: [] };
+    const { inserted } = await landAlerts(found, req, { action: 'detect.raised', note: [...new Set(found.map((a) => a.external_ref.split(' ')[0].replace('aegis:', '')))].join(', ') });
+    return { raised: inserted.length, ids: inserted };
+  }
 
   app.post('/api/ingest/logs', requireKey('ingest'), bigJson, bigText, wrap(async (req, res) => {
     const events = parseBatch(req);
@@ -531,8 +571,12 @@ function registerRoutes(app, ctx) {
       const r = normalizeLog(e, defaults);
       if (r.error) rejected.push({ index, error: r.error }); else good.push(r.log);
     });
-    if (good.length) await store.logs.insertMany(good);
-    res.status(rejected.length && !good.length ? 400 : 202).json({ accepted: good.length, rejected: rejected.slice(0, 100) });
+    let detections = { raised: 0, ids: [] };
+    if (good.length) {
+      await store.logs.insertMany(good);
+      try { detections = await runDetection(good, req); } catch (err) { console.warn('  Detection failed:', err.message); detections = { raised: 0, ids: [], error: err.message }; }
+    }
+    res.status(rejected.length && !good.length ? 400 : 202).json({ accepted: good.length, rejected: rejected.slice(0, 100), detections });
   }));
 
   // Host inventory from the Aegis agent or a scheduled scanner.

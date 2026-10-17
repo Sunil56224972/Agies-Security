@@ -14,7 +14,7 @@ const { MemoryStore } = require('../src/store/memory');
 const { FeedAdapter } = require('../src/enforce');
 const { createApp } = require('../src/app');
 
-const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline test)'); } };
+const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline test)'); }, async request() { throw new Error('fetch failed (offline test)'); } };
 
 (async () => {
   const live = process.env.AEGIS_TEST_SUPABASE === '1';
@@ -247,6 +247,41 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     r = await call('PUT', '/api/config', { body: { slaCritical: 10, autoBlockTtlHours: 48 } });
     ok(r.status === 200 && r.json.slaCritical === 10 && !('notifyChannels' in r.json), 'SLA and TTL policy saved');
     ok((await call('PUT', '/api/config', { body: { slaHigh: 0 } })).status === 400, 'invalid SLA rejected');
+
+    // Built-in detections on ingested logs
+    const sshd = (i, who = 'root') => `sshd[9${i}]: Failed password for ${who} from 203.0.113.77 port 5${i}000 ssh2`;
+    const authHeaders = { Authorization: `Bearer ${ingestKey}`, 'Content-Type': 'text/plain' };
+    r = await call('POST', '/api/ingest/logs?host_ip=10.0.4.102&log_type=auth_log', { as: null, raw: [1, 2, 3].map((i) => sshd(i)).join('\n'), headers: authHeaders });
+    ok(r.status === 202 && r.json.detections.raised === 0, 'three failed SSH logins stay under the threshold');
+    r = await call('POST', '/api/ingest/logs?host_ip=10.0.4.102&log_type=auth_log', { as: null, raw: [sshd(4, 'invalid user oracle'), sshd(5), 'sshd[99]: Accepted password for deploy from 203.0.113.77 port 59000 ssh2'].join('\n'), headers: authHeaders });
+    ok(r.json.detections.raised === 2, 'brute force across two batches raises SSH alerts');
+    let det = (await call('GET', '/api/alerts?q=aegis-detect')).json;
+    ok(det.some((a) => a.severity === 'CRITICAL' && /succeeded as deploy/.test(a.signature) && a.source_ip === '203.0.113.77' && a.dest_ip === '10.0.4.102'), 'login after failures raised as CRITICAL with the real flow');
+    ok(det.some((a) => /brute force: 5 failed logins/.test(a.signature) && /oracle/.test(a.signature)), 'brute-force alert counts failures and names users');
+    r = await call('POST', '/api/ingest/logs?host_ip=10.0.4.102&log_type=auth_log', { as: null, raw: sshd(6), headers: authHeaders });
+    ok(r.json.detections.raised === 0, 'the same burst is not raised twice');
+    r = await call('POST', '/api/ingest/logs?host_ip=10.0.4.15', { as: null, raw: '198.51.100.40 - - [17/Oct/2026:09:00:00 +0000] "GET /cgi-bin/.%2e/%2e%2e/etc/passwd HTTP/1.1" 400 0 "-" "curl/8"\n', headers: authHeaders });
+    ok(r.json.detections.raised === 1, 'path traversal in an access log raises an alert');
+    r = await call('GET', '/api/detect/rules');
+    ok(r.status === 200 && r.json.rules.find((x) => x.id === 'ssh-bruteforce').hits_30d === 1 && r.json.recent.length === 3, 'rule list reports hits');
+    r = await call('POST', '/api/detect/test', { body: { host_ip: '10.0.0.1', lines: '45.1.1.1 - - "GET /?a=${jndi:ldap://x/a} HTTP/1.1" 200 1' } });
+    ok(r.status === 200 && r.json.findings.length === 1 && r.json.findings[0].ref === 'CVE-2021-44228', 'rule tester finds Log4Shell without storing');
+    ok((await call('GET', '/api/alerts?q=45.1.1.1')).json.length === 0, 'rule tester stores nothing');
+    ok((await call('PUT', '/api/config', { body: { detectDisabled: ['nope'] } })).status === 400, 'unknown rule id rejected');
+    r = await call('PUT', '/api/config', { body: { detectDisabled: ['web-exploit'], detectSshThreshold: 8 } });
+    ok(r.status === 200 && r.json.detectSshThreshold === 8, 'detection settings saved');
+    r = await call('POST', '/api/ingest/logs?host_ip=10.0.4.15', { as: null, raw: '198.51.100.41 - - "GET /x?id=1%27%20OR%201=1 HTTP/1.1" 200 1\n', headers: authHeaders });
+    ok(r.json.detections.raised === 0, 'disabled rule stays quiet');
+
+    // Intel endpoints offline: clear errors, no invented data
+    r = await call('GET', '/api/intel/kev');
+    ok(r.status === 200 && r.json.status.loaded === false && r.json.recent.length === 0, 'KEV view reports an unloaded catalog offline');
+    ok((await call('POST', '/api/intel/bulk', { body: { ips: '1.2.3.4' } })).status === 503, 'bulk IOC check refuses when intel is off');
+    r = await call('GET', '/api/intel/origins');
+    ok(r.status === 200 && r.json.intel === false && r.json.sources >= 1, 'origins lists sources without locating them offline');
+    r = await call('POST', '/api/assets/10.0.4.15/discover', { body: {} });
+    ok(r.status === 200 && r.json.imported === 0 && r.json.products[0].error, 'host CVE discovery reports NVD failures per product');
+    ok((await call('GET', '/api/assets/10.0.4.15/software')).json.some((s) => s.product === 'log4j'), 'host software mapped to NVD products');
 
     ok((await call('POST', '/api/reset')).status === 403, 'reset disabled outside demo mode');
 

