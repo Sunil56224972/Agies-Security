@@ -42,6 +42,7 @@ function registerRoutes(app, ctx) {
         feeds: hub && hub.available, vt_key: Boolean(env.VT_API_KEY), abusech_key: Boolean(env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY) },
       sigma: sigma ? (({ loaded, loading, entries, version, loaded_at, error }) => ({ enabled: sigma.available, loaded, loading, rules: entries, version, loaded_at, error }))(sigma.status()) : { enabled: false },
       demo,
+      pending_migration: store.pending ? store.pending.migration : null,
       tools: TOOL_DEFINITIONS.map((t) => t.function.name),
       uptime_s: Math.round((Date.now() - bootedAt) / 1000)
     });
@@ -461,6 +462,19 @@ function registerRoutes(app, ctx) {
       if (!Array.isArray(b.detectDisabled) || b.detectDisabled.some((x) => !ids.includes(x))) return bad(res, `detectDisabled must list rule ids from: ${ids.join(', ')}`);
       next.detectDisabled = [...new Set(b.detectDisabled)];
     }
+    if (b.approvalMode !== undefined) {
+      if (!['auto', 'confidence', 'manual'].includes(b.approvalMode)) return bad(res, 'Approval mode must be auto, confidence or manual');
+      next.approvalMode = b.approvalMode;
+    }
+    for (const k of ['approvalAutoAt', 'approvalQuickAt', 'approvalReviewAt']) {
+      if (b[k] === undefined) continue;
+      if (!intIn(b[k], 1, 100)) return bad(res, 'Confidence bands must be 1-100');
+      next[k] = Number(b[k]);
+    }
+    if (b.approvalExpiryHours !== undefined) {
+      if (!intIn(b.approvalExpiryHours, 1, 720)) return bad(res, 'Approval expiry must be 1-720 hours');
+      next.approvalExpiryHours = Number(b.approvalExpiryHours);
+    }
     if (b.sigmaEnabled !== undefined) next.sigmaEnabled = Boolean(b.sigmaEnabled);
     if (b.sigmaMinLevel !== undefined) {
       if (!['low', 'medium', 'high', 'critical'].includes(b.sigmaMinLevel)) return bad(res, 'Sigma minimum level must be low, medium, high or critical');
@@ -471,6 +485,8 @@ function registerRoutes(app, ctx) {
       next.sigmaDisabled = [...new Set(b.sigmaDisabled)];
     }
     if (!Object.keys(next).length) return bad(res, 'Nothing to change');
+    const bands = { ...(await store.config.get()), ...next };
+    if (!(bands.approvalAutoAt > bands.approvalQuickAt && bands.approvalQuickAt > bands.approvalReviewAt)) return bad(res, 'Confidence bands must descend: auto > quick review > analyst review');
     const saved = await store.config.set(next);
     await store.audit.add({ actor: actor(req), action: 'config.updated', target: 'platform', detail: Object.keys(next).join(', ') });
     res.json(publicConfig(saved));
@@ -645,6 +661,7 @@ function registerRoutes(app, ctx) {
 
   async function retention() {
     const expired = await expireRules();
+    const lapsed = ctx.approvals ? await ctx.approvals.expire().catch((err) => { console.warn('  Approval expiry failed:', err.message); return 0; }) : 0;
     try {
       const cfg = await store.config.get();
       const days = Number(cfg.alertRetentionDays) || 90;
@@ -652,7 +669,7 @@ function registerRoutes(app, ctx) {
       const alerts = await store.alerts.purgeClosed(before);
       const logs = await store.logs.purge(before);
       if (alerts || logs) await store.audit.add({ actor: 'system', action: 'retention.purged', target: `${days} days`, detail: `${alerts} closed alerts, ${logs} log lines` });
-      return { alerts, logs, expired_rules: expired };
+      return { alerts, logs, expired_rules: expired, expired_approvals: lapsed };
     } catch (err) {
       console.warn('  Retention job failed:', err.message);
       return { error: err.message, expired_rules: expired };

@@ -318,4 +318,4 @@ mark { background: var(--crit-soft); color: var(--crit); padding: 0 1px; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 12.5px; }
 .kv dt { color: var(--ink-3); }
 .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-[data-readonly] .needs-respond, [data-readonly] .needs-configure { display: none !important; }
+[data-readonly] .needs-respond, [data-readonly] .needs-configure { display: none !important; }.pill--AWAITING_APPROVAL, .pill--PENDING_APPROVAL { --c: var(--med); --cs: var(--med-soft); }

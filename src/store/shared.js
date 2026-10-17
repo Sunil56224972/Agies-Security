@@ -30,7 +30,8 @@ function materializeSeed(seed) {
 function emptyState(seed) {
   return {
     alerts: [], assets: [], cves: referenceCves(seed), logs: [], rules: [], investigations: [],
-    config: { ...seed.defaultConfig }, audit: [], users: [], api_keys: [], alert_notes: [], suppressions: []
+    config: { ...seed.defaultConfig }, audit: [], users: [], api_keys: [], alert_notes: [], suppressions: [],
+    cases: [], case_alerts: [], case_tasks: [], case_iocs: [], case_events: [], approvals: [], hunts: [], hunt_runs: []
   };
 }
 
@@ -57,5 +58,6 @@ const publicUser = (u) => (u ? { id: u.id, email: u.email, name: u.name, role: u
 const publicKey = (k) => (k ? { id: k.id, name: k.name, prefix: k.prefix, scopes: k.scopes, created_by: k.created_by, created_at: k.created_at, last_used_at: k.last_used_at || null, revoked_at: k.revoked_at || null } : null);
 
 const ALERT_DEFAULTS = { external_ref: null, assignee_id: null, assignee_name: null, acknowledged_at: null, resolved_at: null, suppressed_by: null };
+const CASE_DEFAULTS = { description: '', severity: 'MEDIUM', status: 'OPEN', assignee_id: null, assignee_name: null, tags: [], mitre: [], related: [], resolution: null, escalated: false, escalated_at: null, source: 'manual', closed_at: null };
 
-module.exports = { materializeSeed, emptyState, referenceCves, matchesQuery, minutesAgo, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CLOSED_STATUSES };
+module.exports = { materializeSeed, emptyState, referenceCves, matchesQuery, minutesAgo, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CASE_DEFAULTS, CLOSED_STATUSES };

@@ -104,6 +104,7 @@ export async function openAlert(alertId, navigate) {
       ${respond && ['NEW', 'CONFIRMED'].includes(a.status) ? '<button class="btn" id="d-fp">False positive</button>' : ''}
       ${respond && a.status !== 'CLOSED' && a.status !== 'NEW' && a.status !== 'INVESTIGATING' ? '<button class="btn btn--ghost" id="d-close">Close</button>' : ''}
       ${respond && (a.status === 'CLOSED' || a.status === 'FALSE_POSITIVE') ? '<button class="btn btn--ghost" id="d-reopen">Reopen</button>' : ''}
+      ${respond ? `<button class="btn btn--ghost" id="d-case">${icon('file')}Add to case</button>` : ''}
       ${can('configure') && !a.suppressed_by ? `<button class="btn btn--ghost" id="d-suppress" title="Stop alerting on traffic like this">${icon('filter')}Suppress similar</button>` : ''}
       ${!respond ? '<span class="small muted">Read-only role</span>' : ''}
     </div>`;
@@ -164,6 +165,14 @@ export async function openAlert(alertId, navigate) {
     $('#d-note-add', panel).onclick = post;
     box.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) post(e); };
   }
+  const dc = $('#d-case', panel);
+  if (dc) dc.onclick = () => openAddToCase([a.alert_id], { title: a.signature, severity: a.severity });
+  api(`/alerts/${encodeURIComponent(a.alert_id)}/cases`).then((cs) => {
+    if (!cs.length || !panel.isConnected) return;
+    const head = $('.drawer__head .row', panel);
+    if (head) head.insertAdjacentHTML('beforeend', cs.map((c) => ` <a class="tag" href="#/cases/${encodeURIComponent(c.case_id)}" title="${esc(c.title)}">${esc(c.case_id)}</a>`).join(''));
+    $$('.drawer__head .row a.tag', panel).forEach((l) => { l.onclick = () => closeLayer(); });
+  }).catch(() => {});
   const sup = $('#d-suppress', panel);
   if (sup) sup.onclick = () => openSuppress({ name: `Tune: ${a.signature}`.slice(0, 120), signature: a.signature, source_cidr: a.source_ip, dest_port: a.dest_port });
 }
@@ -459,3 +468,67 @@ export function openAsset(a, navigate) {
 }
 
 export { num, label };
+// Adds alerts to an open case, or opens a new case around them.
+export async function openAddToCase(alertIds, prefill = {}, onDone) {
+  const ids = [...new Set(alertIds)].filter(Boolean);
+  if (!ids.length) return;
+  const panel = modal(`
+    <div class="modal__head"><h2 class="modal__title">Add ${ids.length === 1 ? esc(ids[0]) : `${ids.length} alerts`} to a case</h2></div>
+    <div class="modal__body">
+      <div class="seg" id="atc-mode"><button data-m="existing" class="is-on">Existing case</button><button data-m="new">New case</button></div>
+      <div id="atc-existing" class="mt-12"><div class="skeleton" style="height:36px"></div></div>
+      <form id="atc-new" class="form-grid mt-12" hidden novalidate>
+        <label class="field span-2"><span>Title</span><input class="input" name="title" maxlength="200" value="${esc(prefill.title || '')}" placeholder="What is going on, in one line"></label>
+        <label class="field"><span>Severity</span><select class="select" name="severity">${['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((s) => `<option ${s === (prefill.severity || 'MEDIUM') ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+        <label class="field"><span>Tags</span><input class="input" name="tags" placeholder="comma separated"></label>
+        <label class="field span-2"><span>Description</span><textarea class="textarea" name="description" rows="3" maxlength="8000" placeholder="Scope, what you know so far"></textarea></label>
+      </form>
+    </div>
+    <div class="modal__foot"><span class="form-error" id="atc-err"></span><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--primary" id="atc-go">${icon('file')}Add to case</button></div>`);
+  let mode = 'existing';
+  let cases = [];
+  const box = $('#atc-existing', panel);
+  try {
+    cases = await api('/cases?status=OPEN,IN_PROGRESS,CONTAINED&limit=200');
+  } catch (e) { box.innerHTML = `<div class="small muted">${esc(e.message)}</div>`; }
+  if (!panel.isConnected) return;
+  const setMode = (m) => {
+    mode = m;
+    $$('#atc-mode button', panel).forEach((b) => b.classList.toggle('is-on', b.dataset.m === m));
+    box.hidden = m !== 'existing';
+    $('#atc-new', panel).hidden = m !== 'new';
+    $('#atc-go', panel).lastChild.textContent = m === 'new' ? 'Open case' : 'Add to case';
+  };
+  $$('#atc-mode button', panel).forEach((b) => { b.onclick = () => setMode(b.dataset.m); });
+  if (cases.length) {
+    box.innerHTML = `<label class="field"><span>Case</span><select class="select" id="atc-case">${cases.map((c) => `<option value="${esc(c.case_id)}">${esc(c.case_id)} - ${esc(c.title)} (${c.alerts} alert${c.alerts === 1 ? '' : 's'})</option>`).join('')}</select></label>`;
+  } else {
+    box.innerHTML = '<div class="small muted">No open cases. Start a new one.</div>';
+    setMode('new');
+  }
+  const go = async (e) => {
+    e.preventDefault();
+    $('#atc-err', panel).textContent = '';
+    await busy($('#atc-go', panel), async () => {
+      try {
+        let caseId;
+        if (mode === 'existing') {
+          caseId = $('#atc-case', panel)?.value;
+          if (!caseId) throw new Error('Pick a case');
+          const r = await api(`/cases/${encodeURIComponent(caseId)}/alerts`, { method: 'POST', body: { alert_ids: ids } });
+          toast(r.added ? `Added to ${caseId}` : 'Already in that case', r.skipped ? `${r.skipped} already linked` : '', r.added ? 'ok' : 'info');
+        } else {
+          const f = Object.fromEntries(new FormData($('#atc-new', panel)));
+          const c = await api('/cases', { method: 'POST', body: { ...f, tags: f.tags ? f.tags.split(',').map((s) => s.trim()).filter(Boolean) : [], alert_ids: ids } });
+          caseId = c.case_id;
+          toast(`Opened ${c.case_id}`, c.title, 'ok');
+        }
+        closeLayer();
+        emit('data:changed');
+        if (onDone) onDone(caseId); else location.hash = `#/cases/${encodeURIComponent(caseId)}`;
+      } catch (err) { $('#atc-err', panel).textContent = err.message; }
+    });
+  };
+  $('#atc-go', panel).onclick = go;
+  $('#atc-new', panel).onsubmit = go;
+}

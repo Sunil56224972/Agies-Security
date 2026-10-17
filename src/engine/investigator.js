@@ -5,6 +5,7 @@ const { SEVERITY_RANK, classifyPayload, exposureFor, assessLogs, isInternal, new
 const { createTools, TOOL_DEFINITIONS } = require('./tools');
 const { RecordAdapter } = require('../enforce');
 const { fromPayload } = require('../intel/indicator');
+const { routeFor, ROUTE_TEXT } = require('./approvals');
 
 const OUTCOME_STATUS = {
   ATTACK_SUCCEEDED: 'CONFIRMED',
@@ -27,6 +28,33 @@ class Investigator {
     this.groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000, maxRetries: 1 }) : null;
     this.running = new Set();
     this.onVerdict = null;
+    // Set by the app: the approval queue for actions that need a human.
+    this.approvals = null;
+  }
+
+  // Executes a containment action, or queues it when policy routes it to a human.
+  async contain(ctx, alert, { action, target_ip, reason, confidence, title }) {
+    const decision = this.approvals ? routeFor(confidence, ctx.config || {}) : { route: 'auto', execute: true };
+    if (decision.execute) {
+      const r = await this.call(ctx, 'contain', 'execute_firewall_action', { action, target_ip, reason }, title);
+      if (r.rule) ctx.actions.push({ type: action, target: target_ip, rule_id: r.rule.rule_id, status: r.status, enforcement: r.enforcement || (r.rule.enforcement && r.rule.enforcement.status) || null });
+      return r;
+    }
+    const started = Date.now();
+    ctx.emit({ type: 'step', state: 'running', phase: 'contain', tool: 'request_approval', title: `Request approval: ${title}` });
+    let r;
+    try {
+      r = await this.approvals.request({ action, target_ip, reason, alert_id: alert.alert_id, investigation_id: ctx.invId, confidence, route: decision.route, requested_by: ctx.engine && ctx.engine.startsWith('llm') ? 'Aegis agent' : 'Aegis playbook' });
+    } catch (err) { r = { error: err.message }; }
+    const out = r.error ? { error: r.error } : r.already ? { status: 'ALREADY_ENFORCED', rule_id: r.already.rule_id } : { status: 'PENDING_APPROVAL', approval_id: r.approval.approval_id, route: r.approval.route, duplicate: Boolean(r.duplicate) };
+    const step = { phase: 'contain', tool: 'request_approval', title: `Request approval: ${title}`, args: { action, target_ip, confidence }, ms: Date.now() - started, ok: !out.error, error: out.error || null };
+    ctx.steps.push(step);
+    ctx.emit({ type: 'step', state: out.error ? 'error' : 'done', ...step, result: out });
+    if (out.status === 'PENDING_APPROVAL') {
+      ctx.actions.push({ type: action, target: target_ip, rule_id: null, approval_id: out.approval_id, status: 'PENDING_APPROVAL', enforcement: 'AWAITING_APPROVAL', route: out.route });
+      this.note(ctx, 'contain', `Held for ${ROUTE_TEXT[out.route].toLowerCase()}`, `Policy routes ${confidence == null ? 'unscored' : `${confidence}%`} verdicts to ${ROUTE_TEXT[out.route].toLowerCase()}. ${action} ${target_ip} waits in the approval queue as ${out.approval_id}.`, 'policy');
+    }
+    return out;
   }
 
   get llmAvailable() { return Boolean(this.groq); }
@@ -52,11 +80,12 @@ class Investigator {
   async run(alertId, emit = () => {}, { engine, pace = 260 } = {}) {
     if (this.running.has(alertId)) throw new Error(`${alertId} is already under investigation`);
     this.running.add(alertId);
-    const ctx = { alertId, emit, steps: [], actions: [], pace, started: Date.now() };
+    const ctx = { alertId, emit, steps: [], actions: [], pace, started: Date.now(), invId: newId('INV') };
     try {
       const alert = await this.store.alerts.get(alertId);
       if (!alert) throw new Error(`Alert ${alertId} not found`);
       const config = await this.store.config.get();
+      ctx.config = config;
       await this.store.alerts.update(alertId, { status: 'INVESTIGATING' });
 
       const useLlm = (engine || config.engine) === 'llm' && this.llmAvailable;
@@ -175,12 +204,10 @@ class Investigator {
     const shouldIsolate = outcome === 'ATTACK_SUCCEEDED' && config.isolateOnCompromise && threshold !== 'OFF';
 
     if (shouldBlock) {
-      const r = await this.call(ctx, 'contain', 'execute_firewall_action', { action: 'BLOCK', target_ip: remoteIp, reason: `${alert.alert_id}: ${outcome.toLowerCase()} - ${technique ? technique.label : alert.category}` }, `Block ${remoteIp} at perimeter`);
-      if (r.rule) ctx.actions.push({ type: 'BLOCK', target: remoteIp, rule_id: r.rule.rule_id, status: r.status, enforcement: r.enforcement || (r.rule.enforcement && r.rule.enforcement.status) || null });
+      await this.contain(ctx, alert, { action: 'BLOCK', target_ip: remoteIp, confidence, reason: `${alert.alert_id}: ${outcome.toLowerCase()} - ${technique ? technique.label : alert.category}`, title: `Block ${remoteIp} at perimeter` });
     }
     if (shouldIsolate) {
-      const r = await this.call(ctx, 'contain', 'execute_firewall_action', { action: 'ISOLATE', target_ip: hostIp, reason: `${alert.alert_id}: confirmed compromise, quarantine pending forensics` }, `Isolate ${hostIp}`);
-      if (r.rule) ctx.actions.push({ type: 'ISOLATE', target: hostIp, rule_id: r.rule.rule_id, status: r.status, enforcement: r.enforcement || (r.rule.enforcement && r.rule.enforcement.status) || null });
+      await this.contain(ctx, alert, { action: 'ISOLATE', target_ip: hostIp, confidence, reason: `${alert.alert_id}: confirmed compromise, quarantine pending forensics`, title: `Isolate ${hostIp}` });
     }
     if (!shouldBlock && !shouldIsolate) {
       const why = outcome === 'FALSE_POSITIVE' ? 'False positive: no containment, avoiding collateral blocking.'
@@ -191,8 +218,9 @@ class Investigator {
 
     // --- Verify -----------------------------------------------------------
     let verification = null;
-    if (ctx.actions.length) {
-      const first = ctx.actions[0];
+    const executed = ctx.actions.filter((a) => a.rule_id);
+    if (executed.length) {
+      const first = executed[0];
       verification = await this.call(ctx, 'verify', 'verify_defense_state', { target_ip: first.target }, `Read back ${first.rule_id} from ${this.enforcer.label.toLowerCase()}`);
       if (verification.status === 'FAILED') {
         this.note(ctx, 'adapt', 'Enforcement backend did not confirm the rule, retrying once', verification.message, 'adaptation');
@@ -251,6 +279,13 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
         }
         const phase = { get_packet_metadata: 'triage', ingest_nids_alerts: 'triage', lookup_asset_inventory: 'enrich', query_cve_kb: 'enrich', check_ip_reputation: 'enrich', lookup_indicator: 'enrich',
           query_server_logs: 'correlate', execute_firewall_action: 'contain', verify_defense_state: 'verify', record_investigation_verdict: 'decide' }[name];
+        // Containment the model asks for goes through the same approval policy.
+        // The model has not scored its verdict yet, so in confidence mode it is reviewed.
+        if (name === 'execute_firewall_action' && ['BLOCK', 'ISOLATE'].includes(args.action) && this.approvals && !routeFor(null, config).execute) {
+          const held = await this.contain(ctx, alert, { action: args.action, target_ip: args.target_ip, reason: args.reason || `${alert.alert_id}: requested by the agent`, confidence: null, title: labelFor(name, args) });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: forModel(held) });
+          continue;
+        }
         const res = await this.call(ctx, phase, name, { ...args, actor: name === 'execute_firewall_action' ? 'Aegis agent' : undefined }, labelFor(name, args));
         if (name === 'lookup_asset_inventory' && !res.error) assetRes = res;
         if (name === 'verify_defense_state') verification = res;
@@ -279,8 +314,8 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
   }
 
   async finish(ctx, alert, v) {
-    const id = newId('INV');
-    const contained = ctx.actions.length > 0 && Boolean(v.verification && v.verification.contained);
+    const id = ctx.invId || newId('INV');
+    const contained = ctx.actions.some((a) => a.rule_id) && Boolean(v.verification && v.verification.contained);
     let status = OUTCOME_STATUS[v.outcome] || 'CLOSED';
     if (v.outcome === 'ATTACK_SUCCEEDED' && contained) status = 'CONTAINED';
 
@@ -379,7 +414,7 @@ function buildReport(alert, v, actions, id) {
     ...v.reasons.map(r => `- ${r}`),
     '',
     '### Response',
-    ...(actions.length ? actions.map(a => `- ${a.type} ${a.target} (${a.rule_id}, ${String(a.enforcement || a.status || '').toLowerCase()})`) : ['- No containment applied']),
+    ...(actions.length ? actions.map(a => (a.rule_id ? `- ${a.type} ${a.target} (${a.rule_id}, ${String(a.enforcement || a.status || '').toLowerCase()})` : `- ${a.type} ${a.target}: awaiting approval (${a.approval_id})`)) : ['- No containment applied']),
     ...(v.verification ? [`- Verification: ${v.verification.message}`] : []),
     '',
     '### Next steps',

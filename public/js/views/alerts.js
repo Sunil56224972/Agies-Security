@@ -1,6 +1,6 @@
 import { $, $$, api, esc, sev, pill, flow, ago, stamp, emptyState, can, state, toast, busy, emit } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
-import { openAlert, openNewAlert, assignableUsers } from '../panels.js';
+import { openAlert, openNewAlert, assignableUsers, openAddToCase } from '../panels.js';
 
 const SEVS = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 const STATUSES = [['OPEN', 'Open'], ['', 'Any status'], ['NEW', 'New'], ['INVESTIGATING', 'Investigating'], ['CONFIRMED', 'Confirmed'], ['CONTAINED', 'Contained'], ['MITIGATED', 'Mitigated'], ['FALSE_POSITIVE', 'False positive'], ['CLOSED', 'Closed']];
@@ -142,6 +142,7 @@ async function paintBulk() {
     <button class="btn btn--sm" data-bk="CLOSED">Close</button>
     <button class="btn btn--sm" data-bk="FALSE_POSITIVE">False positive</button>
     <button class="btn btn--sm btn--ghost" data-bk="NEW">Reopen</button>
+    <button class="btn btn--sm btn--ghost" id="bk-case">Add to case</button>
     <button class="btn btn--sm btn--ghost bulkbar__clear" id="bk-clear">Clear</button>`;
   const run = (btn, body, msg) => busy(btn, async () => {
     try {
@@ -160,5 +161,6 @@ async function paintBulk() {
   $$('[data-bk]', bar).forEach((b) => {
     b.onclick = () => run(b, { action: 'status', status: b.dataset.bk }, (n) => `${n} alert${n === 1 ? '' : 's'} set to ${b.textContent.toLowerCase()}`);
   });
+  $('#bk-case', bar).onclick = () => openAddToCase([...picked], {}, (id) => { picked.clear(); ctx.navigate(`cases/${encodeURIComponent(id)}`); });
   $('#bk-clear', bar).onclick = () => { picked.clear(); paint(); };
 }

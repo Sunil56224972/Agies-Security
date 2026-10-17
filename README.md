@@ -53,6 +53,12 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | One indicator against abuse.ch, MISP, RDAP, BGP and passive DNS | Feed status and the SigmaHQ rule browser |
 | ![IOC check](docs/screens/intel-ioc.png) | ![Settings](docs/screens/settings.png) |
 | Bulk IOC check: IPs, domains, URLs and hashes | Team, API keys, integrations, policy |
+| ![Cases](docs/screens/cases.png) | ![Case detail](docs/screens/case-detail.png) |
+| Case queue with ownership, checklist progress and time to close | One case: timeline, linked alerts, indicators, containment, checklist |
+| ![Approvals](docs/screens/approvals.png) | ![Threat hunting](docs/screens/hunting.png) |
+| Containment held for a human, routed by verdict confidence | Hunt across logs, alerts and investigations; every hit links to its record |
+| ![ATT&CK rollup](docs/screens/attack-rollup.png) | ![MCP server](docs/screens/mcp.png) |
+| Techniques seen in your own detections, per tactic | MCP endpoint and client config in Settings |
 | ![Dark theme](docs/screens/overview-dark.png) | ![Sign in](docs/screens/sign-in.png) |
 | Dark theme | Sign-in screen |
 
@@ -209,6 +215,76 @@ Reply `{"status": "failed", "detail": "..."}` to mark the rule FAILED, or `{"id"
 
 Reports print cleanly to PDF. You can export alerts and the audit log as CSV, with cells that could run as spreadsheet formulas escaped. Each investigation downloads as a markdown incident report with its case notes and run log.
 
+## Cases, approvals and hunting
+
+**Cases.** When an incident spans more than one alert, open a case. Do it from the alert drawer or the bulk bar (*Add to case*), from *New case*, or from *From kill chain*. That last one takes an attacker address and pulls in every alert and investigation that involves it, and orders the tactics it reached. Each case has:
+- an owner;
+- a response checklist split by phase (triage, investigate, contain, eradicate, recover), seeded from the alert category and editable;
+- a timeline of comments, evidence and dated entries;
+- linked alerts;
+- indicators, each extracted from free text and checked against the intel hub one at a time or all at once;
+- related cases that share an alert or indicator.
+
+Closing a case with open tasks needs an explicit force. Escalating a case records the reason and marks it for a lead. The case metrics come from the stored cases themselves: open, escalated, unassigned, mean and median time to close, and checklist completion.
+
+**Approvals.** Settings > Response policy > *Approval policy* decides whether containment runs at once:
+
+| Mode | Behaviour |
+| --- | --- |
+| Run everything at once | The original behaviour. Every proposed block or isolation executes straight away |
+| By confidence | Verdicts at or above *Auto at* execute. The rest go to quick review, analyst review or escalation, depending on the bands |
+| Always ask | Every action waits in the queue |
+
+A held action shows up under Approvals with its evidence, the case or alert it came from, and an expiry countdown. Approving it creates the real rule, and the rule then goes through the same enforcement read-back as any other. Rejecting it needs a note. Requests that nobody decides on expire after the configured number of hours, instead of being approved late against stale evidence. The investigation timeline, the alert notes and the case all record the outcome.
+
+**Hunting.** A hunt is a set of criteria run against what Aegis has stored:
+- text or `/regex/flags`;
+- an address or CIDR;
+- an ATT&CK technique;
+- a list of indicators (defanged is fine);
+- log sources, a time window and a minimum severity.
+
+Two optional sweeps go further: one runs every loaded SigmaHQ rule over the logs in the window, and the other checks the window's external addresses against the reputation feeds. A run returns findings, each linked to its record, plus facets by source, host, remote address and technique. Saved hunts remember their last result, so a re-run marks only what is new. Every run is kept with its criteria and can be replayed. The ATT&CK rollup counts techniques per tactic from your own alerts and investigations. When an alert carries no explicit technique id, the payload classifier supplies one (T1190 for JNDI, traversal and SQLi; T1110.003 for spraying; T1071.001 for beacons). *Hunt* on any technique opens the builder with it filled in.
+
+## MCP server
+
+Aegis is also an MCP server, so Claude, Cursor or any other MCP client can triage alerts and work cases through the same API the console uses.
+
+1. Settings > API keys > *New key*, with the `mcp` scope (read only) or `mcp:write` (also response actions). The key dialog shows a ready-made client config.
+2. Point the client at `https://<your-host>/mcp` (Streamable HTTP, JSON-RPC 2.0, stateless):
+
+```json
+{
+  "mcpServers": {
+    "aegis": {
+      "type": "http",
+      "url": "https://agiessecurity.vercel.app/mcp",
+      "headers": { "Authorization": "Bearer aeg_..." }
+    }
+  }
+}
+```
+
+For clients that only speak stdio, the repo ships a bridge that forwards to the same endpoint:
+
+```json
+{
+  "mcpServers": {
+    "aegis": {
+      "command": "npx",
+      "args": ["-y", "github:Sunil56224972/Agies-Security"],
+      "env": { "AEGIS_URL": "https://agiessecurity.vercel.app", "AEGIS_API_KEY": "aeg_..." }
+    }
+  }
+}
+```
+
+With an `mcp` key you get 15 read tools: `overview`, `list_alerts`, `get_alert`, `get_investigation`, `search`, `ip_profile`, `lookup_indicator`, `bulk_check`, `detect_test`, `list_rules`, `list_cases`, `get_case`, `list_approvals`, `list_hunts` and `technique_rollup`.
+
+An `mcp:write` key adds 15 more: `investigate_alert`, `set_alert_status`, `block_ip`, `approve_action`, `reject_action`, `create_case`, `create_case_from_killchain`, `update_case`, `add_alert_to_case`, `add_case_ioc`, `add_case_task`, `update_case_task`, `add_case_comment`, `close_case` and `run_hunt`.
+
+`block_ip` follows the approval policy like everything else, so under *Always ask* an agent can only propose. Every call is written to the audit log as `mcp:<key name>`, with the tool name, its outcome and how long it took. `MCP_RATE_LIMIT` caps calls per minute per address (default 300).
+
 ## Users and roles
 
 | Role | Can |
@@ -217,7 +293,7 @@ Reports print cleanly to PDF. You can export alerts and the audit log as CSV, wi
 | Analyst | Investigate, override verdicts, create and toggle rules, edit inventory |
 | Read only | View everything, change nothing |
 
-Passwords are hashed with scrypt. Sessions are HMAC-signed, HttpOnly, SameSite=Strict cookies that last 12 hours. Changing a password or role, or disabling a user, ends that user's other sessions at once. Cookie-authenticated writes must carry an `X-Aegis-Client` header, which blocks cross-site form posts. API keys are stored as SHA-256 hashes and scoped to `ingest` or `feed`. Login attempts are rate limited, and failed sign-ins are written to the audit log. Behind HTTPS, set `COOKIE_SECURE=1`. Behind a reverse proxy, also set `TRUST_PROXY`.
+Passwords are hashed with scrypt. Sessions are HMAC-signed, HttpOnly, SameSite=Strict cookies that last 12 hours. Changing a password or role, or disabling a user, ends that user's other sessions at once. Cookie-authenticated writes must carry an `X-Aegis-Client` header, which blocks cross-site form posts. API keys are stored as SHA-256 hashes and scoped to `ingest`, `feed`, `mcp` or `mcp:write`. Login attempts are rate limited, and failed sign-ins are written to the audit log. Behind HTTPS, set `COOKIE_SECURE=1`. Behind a reverse proxy, also set `TRUST_PROXY`.
 
 ## Supabase backend
 
@@ -336,6 +412,12 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 | GET | `/api/intel/origins?days=30` | Geolocated alert sources |
 | GET / POST | `/api/assets/:ip/software`, `/api/assets/:ip/discover` | Packages mapped to CPEs; pull matching CVEs from NVD |
 | GET | `/api/export/alerts.csv`, `/api/export/audit.csv`, `/api/investigations/:id/report.md` | Exports |
+| GET / POST / PATCH | `/api/cases`, `/api/cases/:id`, `/cases/metrics`, `/cases/from-killchain` | Cases, metrics, kill-chain case builder |
+| POST / PATCH / DELETE | `/api/cases/:id/{close,reopen,escalate,alerts,tasks,iocs,events}` | Case lifecycle, checklist, indicators, timeline |
+| GET / POST | `/api/approvals`, `/approvals/count`, `/approvals/:id/approve`, `/approvals/:id/reject` | Approval queue and decisions |
+| GET / POST / PATCH / DELETE | `/api/hunts`, `/hunts/adhoc`, `/hunts/:id/run`, `/hunts/runs`, `/hunts/runs/:id/replay` | Saved and ad-hoc hunts, run history |
+| GET | `/api/hunts/techniques?days=30` | ATT&CK technique rollup |
+| POST | `/mcp` (alias `/api/mcp`) | MCP JSON-RPC endpoint (`mcp` or `mcp:write` key) |
 
 ## Tests
 
@@ -343,7 +425,7 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 npm test
 ```
 
-There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, abuse.ch and MISP feed parsers, indicator extraction, the Sigma compiler, the intel hub verdict, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 102 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
+There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, abuse.ch and MISP feed parsers, indicator extraction, the Sigma compiler, the intel hub verdict, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 147 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention; cases, approvals under every policy mode, hunts and replay, the ATT&CK rollup, and the MCP server with its key scopes. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
 
 To run the HTTP suite against the Supabase project in `.env` instead of a temp file, set `AEGIS_TEST_SUPABASE=1`. It empties every Aegis table before and after the run, so use a staging project, never one holding real incidents.
 
@@ -356,6 +438,9 @@ server.js               boot: store, enforcer, intel clients, banner
 src/app.js              HTTP hardening, sessions, auth, users, API keys
 src/routes.js           console API, ingest, feeds, retention
 src/casework.js         ownership, notes, bulk triage, suppressions, reports, exports
+src/cases.js            cases, approvals and hunts: service layer and routes
+src/mcp.js              MCP server (JSON-RPC over HTTP), tool registry and scopes
+bin/aegis-mcp.js        stdio bridge for MCP clients without HTTP transport
 src/notify.js           Slack / Teams / signed webhook delivery
 src/engine/             analysis rules, tools, playbook and LLM investigator
 src/enforce/            record / feed / webhook / Cloudflare adapters

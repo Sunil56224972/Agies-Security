@@ -11,10 +11,16 @@ const { KevCatalog } = require('./intel/kev');
 const { createHub } = require('./intel/hub');
 const { SigmaEngine } = require('./engine/sigma');
 const { Notifier } = require('./notify');
+const { Approvals } = require('./engine/approvals');
+const { HuntEngine } = require('./engine/hunt');
+const { registerCases } = require('./cases');
+const { registerMcp } = require('./mcp');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// mcp is read-only tool access; mcp:write adds response actions (investigate, contain, cases).
+const KEY_SCOPES = ['ingest', 'feed', 'mcp', 'mcp:write'];
 const PUBLIC_API = new Set(['/health', '/auth/state', '/auth/login', '/auth/setup', '/auth/logout', '/cron/retention']);
 
 const CSP = [
@@ -90,7 +96,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   // (the last two use API keys). Cookie-authenticated writes must carry the client
   // header, which a cross-site form or image tag cannot set.
   app.use('/api', (req, res, next) => {
-    if (PUBLIC_API.has(req.path) || /^\/(ingest|feeds)\//.test(req.path)) return next();
+    if (PUBLIC_API.has(req.path) || /^\/(ingest|feeds)\//.test(req.path) || req.path === '/mcp') return next();
     if (!req.user) return bad(res, 'Sign in required', 401);
     if (!['GET', 'HEAD'].includes(req.method) && req.get('x-aegis-client') !== 'web') return bad(res, 'Missing X-Aegis-Client header', 403);
     next();
@@ -226,8 +232,8 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
     const b = req.body || {};
     const name = String(b.name || '').trim();
     if (name.length < 3) return bad(res, 'Name the key after the sensor or firewall that will use it');
-    const scopes = [...new Set((Array.isArray(b.scopes) ? b.scopes : ['ingest']).filter((s) => ['ingest', 'feed'].includes(s)))];
-    if (!scopes.length) return bad(res, 'Pick at least one scope: ingest or feed');
+    const scopes = [...new Set((Array.isArray(b.scopes) ? b.scopes : ['ingest']).filter((s) => KEY_SCOPES.includes(s)))];
+    if (!scopes.length) return bad(res, `Pick at least one scope: ${KEY_SCOPES.join(', ')}`);
     const k = auth.generateApiKey();
     const rec = await store.apiKeys.insert({ name: name.slice(0, 60), prefix: k.prefix, hash: k.hash, scopes, created_by: actor(req) });
     await store.audit.add({ actor: actor(req), action: 'key.created', target: rec.name, detail: `${rec.prefix}... ${scopes.join('+')}` });
@@ -242,10 +248,15 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   }));
 
   const notifier = new Notifier(store, { consoleUrl: env.PUBLIC_URL || null });
-  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, bootedAt: Date.now() };
+  const approvals = new Approvals(store, { tools: investigator.tools, notifier });
+  investigator.approvals = approvals;
+  const hunter = new HuntEngine(store, { sigma, reputation, hub });
+  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, bootedAt: Date.now() };
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
   registerIntel(app, ctx);
+  const cases = registerCases(app, ctx);
+  registerMcp(app, ctx, cases);
   investigator.onVerdict = casework.onVerdict;
 
   app.use('/api', (req, res) => bad(res, 'Not found', 404));
@@ -265,7 +276,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
     res.status(500).json({ error: env.NODE_ENV === 'production' ? 'Internal error' : err.message || 'Internal error' });
   });
 
-  return { app, investigator, jobs, notifier, hub, sigma };
+  return { app, investigator, jobs, notifier, hub, sigma, approvals, cases };
 }
 
 module.exports = { createApp };

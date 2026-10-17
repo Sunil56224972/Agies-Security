@@ -3,13 +3,15 @@
 const fs = require('fs');
 const path = require('path');
 const seed = require('../seed');
-const { materializeSeed, emptyState, matchesQuery, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CLOSED_STATUSES } = require('./shared');
+const { materializeSeed, emptyState, matchesQuery, publicUser, publicKey, applyLifecycle, ALERT_DEFAULTS, CASE_DEFAULTS, CLOSED_STATUSES } = require('./shared');
 const OPEN_STATUSES = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
 
 // File-backed store used when Supabase credentials are absent. Good for a
 // single-node install or evaluation; use Supabase for anything shared.
 const DEFAULT_FILE = path.join(__dirname, '..', '..', '.data', 'aegis.json');
 const LOG_CAP = 50000;
+const CASE_TABLES = ['cases', 'case_alerts', 'case_tasks', 'case_iocs', 'case_events', 'approvals', 'hunts', 'hunt_runs'];
+const byNewest = (k) => (a, b) => String(b[k]).localeCompare(String(a[k]));
 
 class MemoryStore {
   constructor({ file = DEFAULT_FILE, demo = false } = {}) {
@@ -31,7 +33,7 @@ class MemoryStore {
       console.warn(`  Store file unreadable (${err.message}); moved to ${bad}`);
     }
     if (!this.db || !this.db.alerts) this.db = this.demo ? { ...emptyState(seed), ...materializeSeed(seed) } : emptyState(seed);
-    for (const k of ['users', 'api_keys', 'audit', 'logs', 'rules', 'investigations', 'assets', 'cves', 'alert_notes', 'suppressions']) if (!Array.isArray(this.db[k])) this.db[k] = [];
+    for (const k of ['users', 'api_keys', 'audit', 'logs', 'rules', 'investigations', 'assets', 'cves', 'alert_notes', 'suppressions', ...CASE_TABLES]) if (!Array.isArray(this.db[k])) this.db[k] = [];
     this.seq = {
       log: Math.max(0, ...this.db.logs.map((l) => l.id)) + 1,
       audit: Math.max(0, ...this.db.audit.map((a) => a.id)) + 1,
@@ -40,6 +42,7 @@ class MemoryStore {
       note: Math.max(0, ...this.db.alert_notes.map((n) => n.id)) + 1,
       supp: Math.max(0, ...this.db.suppressions.map((x) => x.id)) + 1
     };
+    for (const k of CASE_TABLES) this.seq[k] = Math.max(0, ...this.db[k].map((x) => Number(x.id) || 0)) + 1;
     this.persist();
   }
 
@@ -66,7 +69,7 @@ class MemoryStore {
 
   // Replaces telemetry with the demo dataset. Users and API keys are kept.
   async reset() {
-    const keep = { users: this.db.users, api_keys: this.db.api_keys, suppressions: this.db.suppressions };
+    const keep = { users: this.db.users, api_keys: this.db.api_keys, suppressions: this.db.suppressions, hunts: this.db.hunts };
     this.db = { ...emptyState(seed), ...materializeSeed(seed), ...keep };
     this.seq.log = this.db.logs.length + 1;
     this.seq.audit = 2;
@@ -190,9 +193,9 @@ class MemoryStore {
   get logs() {
     const s = this;
     return {
-      async list({ host_ip, log_type, client_ip, limit = 50 } = {}) {
+      async list({ host_ip, log_type, client_ip, since, limit = 50 } = {}) {
         return s.db.logs
-          .filter((l) => (!host_ip || l.host_ip === host_ip) && (!log_type || l.log_type === log_type) && (!client_ip || l.client_ip === client_ip))
+          .filter((l) => (!host_ip || l.host_ip === host_ip) && (!log_type || l.log_type === log_type) && (!client_ip || l.client_ip === client_ip) && (!since || l.logged_at >= since))
           .sort((a, b) => b.logged_at.localeCompare(a.logged_at))
           .slice(0, limit)
           .map((r) => s.clone(r));
@@ -376,6 +379,159 @@ class MemoryStore {
         k.revoked_at = new Date().toISOString();
         s.persist();
         return publicKey(k);
+      }
+    };
+  }
+
+  // ---- Cases, approvals and hunts ------------------------------------------
+  // Generic row helpers for the tables that share the same shape of access.
+  table(name, key = 'id') {
+    const s = this;
+    const find = (id) => s.db[name].find((r) => String(r[key]) === String(id));
+    return {
+      rows: () => s.db[name],
+      find,
+      async get(id) { return s.clone(find(id)); },
+      async insert(row) {
+        const now = new Date().toISOString();
+        const rec = { created_at: now, updated_at: now, ...row };
+        if (key === 'id') rec.id = s.seq[name]++;
+        s.db[name].push(rec);
+        s.persist();
+        return s.clone(rec);
+      },
+      async update(id, patch) { const row = find(id); return row ? s.touch(row, patch) : null; },
+      async remove(id) {
+        const n = s.db[name].length;
+        s.db[name] = s.db[name].filter((r) => String(r[key]) !== String(id));
+        s.persist();
+        return s.db[name].length < n;
+      }
+    };
+  }
+
+  get cases() {
+    const s = this;
+    const t = s.table('cases', 'case_id');
+    return {
+      ...t,
+      async list({ status, q, limit = 500 } = {}) {
+        const want = status ? [].concat(status) : null;
+        return t.rows().filter((c) => !want || want.includes(c.status))
+          .filter((c) => matchesQuery(q, [c.case_id, c.title, c.description, c.assignee_name, ...(c.tags || [])]))
+          .sort(byNewest('updated_at')).slice(0, limit).map((r) => s.clone(r));
+      },
+      async insert(row) { return t.insert({ ...CASE_DEFAULTS, ...row }); },
+      async remove(id) {
+        for (const k of ['case_alerts', 'case_tasks', 'case_iocs', 'case_events']) s.db[k] = s.db[k].filter((r) => r.case_id !== id);
+        for (const a of s.db.approvals) if (a.case_id === id) a.case_id = null;
+        return t.remove(id);
+      }
+    };
+  }
+
+  get caseAlerts() {
+    const s = this;
+    return {
+      async list(caseId) { return s.db.case_alerts.filter((r) => r.case_id === caseId).sort((a, b) => a.id - b.id).map((r) => s.clone(r)); },
+      async forAlert(alertId) { return s.db.case_alerts.filter((r) => r.alert_id === alertId).map((r) => s.clone(r)); },
+      async all() { return s.db.case_alerts.map(({ case_id, alert_id }) => ({ case_id, alert_id })); },
+      async add(caseId, alertIds, by) {
+        const have = new Set(s.db.case_alerts.filter((r) => r.case_id === caseId).map((r) => r.alert_id));
+        const known = new Set(s.db.alerts.map((a) => a.alert_id));
+        const now = new Date().toISOString();
+        const rows = [...new Set(alertIds)].filter((id) => known.has(id) && !have.has(id)).map((alert_id) => ({ id: s.seq.case_alerts++, case_id: caseId, alert_id, added_by: by, added_at: now }));
+        s.db.case_alerts.push(...rows);
+        s.persist();
+        return rows.map((r) => s.clone(r));
+      },
+      async remove(caseId, alertId) {
+        const n = s.db.case_alerts.length;
+        s.db.case_alerts = s.db.case_alerts.filter((r) => !(r.case_id === caseId && r.alert_id === alertId));
+        s.persist();
+        return s.db.case_alerts.length < n;
+      }
+    };
+  }
+
+  get caseTasks() {
+    const s = this;
+    const t = s.table('case_tasks');
+    return {
+      ...t,
+      async list(caseId) { return t.rows().filter((r) => r.case_id === caseId).sort((a, b) => a.id - b.id).map((r) => s.clone(r)); },
+      async all() { return t.rows().map(({ case_id, status }) => ({ case_id, status })); },
+      async insert(row) { return t.insert({ phase: null, status: 'TODO', assignee_name: null, due_at: null, done_at: null, ...row }); }
+    };
+  }
+
+  get caseIocs() {
+    const s = this;
+    const t = s.table('case_iocs');
+    return {
+      ...t,
+      async list(caseId) { return t.rows().filter((r) => r.case_id === caseId).sort((a, b) => a.id - b.id).map((r) => s.clone(r)); },
+      async all({ limit = 5000 } = {}) { return t.rows().slice(-limit).map((r) => s.clone(r)); },
+      // Returns null when the case already holds this value.
+      async insert(row) {
+        if (t.rows().some((r) => r.case_id === row.case_id && r.value === row.value)) return null;
+        return t.insert({ note: null, verdict: null, score: null, summary: null, checked_at: null, ...row });
+      }
+    };
+  }
+
+  get caseEvents() {
+    const s = this;
+    const t = s.table('case_events');
+    return {
+      async list(caseId) { return t.rows().filter((r) => r.case_id === caseId).sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)) || a.id - b.id).map((r) => s.clone(r)); },
+      async add(row) {
+        const now = new Date().toISOString();
+        const { updated_at, ...rec } = await t.insert({ title: null, sha256: null, author_id: null, occurred_at: now, ...row });
+        return rec;
+      }
+    };
+  }
+
+  get approvals() {
+    const s = this;
+    const t = s.table('approvals', 'approval_id');
+    return {
+      ...t,
+      async list({ status, limit = 500 } = {}) {
+        const want = status ? [].concat(status) : null;
+        return t.rows().filter((a) => !want || want.includes(a.status)).sort(byNewest('created_at')).slice(0, limit).map((r) => s.clone(r));
+      },
+      async count(status = 'PENDING') { return t.rows().filter((a) => a.status === status).length; },
+      async insert(row) { return t.insert({ status: 'PENDING', decided_by: null, decided_at: null, decision_note: null, rule_id: null, result: null, ttl_hours: null, alert_id: null, investigation_id: null, case_id: null, confidence: null, ...row }); }
+    };
+  }
+
+  get hunts() {
+    const s = this;
+    const t = s.table('hunts', 'hunt_id');
+    return {
+      ...t,
+      async list() { return [...t.rows()].sort(byNewest('updated_at')).map((r) => s.clone(r)); },
+      async insert(row) { return t.insert({ technique: null, runs: 0, last_run_at: null, last_hits: null, ...row }); },
+      async remove(id) { s.db.hunt_runs = s.db.hunt_runs.filter((r) => r.hunt_id !== id); return t.remove(id); }
+    };
+  }
+
+  get huntRuns() {
+    const s = this;
+    const t = s.table('hunt_runs');
+    return {
+      get: t.get,
+      async list({ hunt_id, limit = 50 } = {}) {
+        return t.rows().filter((r) => !hunt_id || r.hunt_id === hunt_id).sort(byNewest('created_at')).slice(0, limit)
+          .map(({ findings, ...r }) => ({ ...s.clone(r), findings_count: (findings || []).length }));
+      },
+      async insert(row) {
+        const { updated_at, ...rec } = await t.insert(row);
+        // Keep the newest 200 runs; findings carry evidence and add up.
+        if (t.rows().length > 200) s.db.hunt_runs = [...t.rows()].sort(byNewest('created_at')).slice(0, 200);
+        return rec;
       }
     };
   }

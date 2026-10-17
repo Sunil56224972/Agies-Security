@@ -3,6 +3,9 @@
   "version": "4.0.0",
   "description": "Incident response console: alert triage, evidence correlation, automated containment and analyst override, backed by Supabase.",
   "main": "server.js",
+  "bin": {
+    "aegis-mcp": "bin/aegis-mcp.js"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",

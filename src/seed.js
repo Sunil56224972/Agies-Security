@@ -145,7 +145,15 @@ const defaultConfig = {
   detectDisabled: [],
   sigmaEnabled: true,
   sigmaMinLevel: 'medium',
-  sigmaDisabled: []
+  sigmaDisabled: [],
+  // Response approvals (src/engine/approvals.js). 'auto' executes proposed
+  // containment at once, 'confidence' routes by verdict confidence, 'manual'
+  // queues every action for a human.
+  approvalMode: 'auto',
+  approvalAutoAt: 90,
+  approvalQuickAt: 85,
+  approvalReviewAt: 70,
+  approvalExpiryHours: 24
 };
 
 module.exports = { assets, cves, alerts, logs, firewallRules, defaultConfig };

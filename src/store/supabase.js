@@ -54,16 +54,21 @@ class SupabaseStore {
     // Fails fast if either migration is missing.
     // Every probe runs at once; a cold start should cost one round trip, not ten.
     const probe = (table, col) => this.sb.from(table).select(col).limit(1);
-    const [base, enf, cases, { count }] = await Promise.all([
+    const [base, enf, cases, work, { count }] = await Promise.all([
       Promise.all([['alerts', 'alert_id'], ['users', 'id'], ['api_keys', 'id']].map(([t, c]) => probe(t, c))),
       probe('firewall_rules', 'enforcement'),
       Promise.all([['alert_notes', 'id'], ['suppressions', 'id'], ['firewall_rules', 'expires_at'], ['alerts', 'assignee_id']].map(([t, c]) => probe(t, c))),
+      Promise.all([['cases', 'case_id'], ['case_alerts', 'id'], ['case_tasks', 'id'], ['case_iocs', 'id'], ['case_events', 'id'], ['approvals', 'approval_id'], ['hunts', 'hunt_id'], ['hunt_runs', 'id']].map(([t, c]) => probe(t, c))),
       this.sb.from('cves').select('cve_id', { count: 'exact', head: true })
     ]);
     const failed = (list) => list.find((r) => r.error);
     if (failed(base)) throw new Error(`${failed(base).error.message}. Apply every file in supabase/migrations first.`);
     if (enf.error) throw new Error(`${enf.error.message}. Apply supabase/migrations/20261016010000_real_integrations.sql.`);
     if (failed(cases)) throw new Error(`${failed(cases).error.message}. Apply supabase/migrations/20261017000000_cases_tuning_expiry.sql.`);
+    // Casework tables are optional at boot: the core console keeps running and
+    // /api/cases, /api/approvals and /api/hunts answer 503 until they exist.
+    this.pending = failed(work) ? { migration: '20261018000000_cases_approvals_hunts.sql', error: failed(work).error.message } : null;
+    if (this.pending) console.warn(`  Casework disabled: ${this.pending.error}. Apply supabase/migrations/${this.pending.migration}.`);
     if (!count) unwrap(await this.sb.from('cves').upsert(referenceCves(seed)));
     if (this.demo) {
       const { count: alerts } = await this.sb.from('alerts').select('alert_id', { count: 'exact', head: true });
@@ -97,7 +102,7 @@ class SupabaseStore {
 
   // Demo reset: wipes telemetry and reloads the demo dataset. Users and API keys stay.
   async reset() {
-    for (const [table, col] of [['alert_notes', 'id'], ['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'],
+    for (const [table, col] of [['case_events', 'id'], ['case_iocs', 'id'], ['case_tasks', 'id'], ['case_alerts', 'id'], ['approvals', 'approval_id'], ['cases', 'case_id'], ['hunt_runs', 'id'], ['alert_notes', 'id'], ['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'],
       ['alerts', 'alert_id'], ['assets', 'ip_address'], ['app_config', 'key'], ['audit_log', 'id']]) {
       unwrap(await this.sb.from(table).delete().not(col, 'is', null));
     }
@@ -188,12 +193,15 @@ class SupabaseStore {
   get logs() {
     const sb = this.sb;
     return {
-      async list({ host_ip, log_type, client_ip, limit = 50 } = {}) {
-        let query = sb.from('server_logs').select('*').order('logged_at', { ascending: false }).limit(limit);
-        if (host_ip) query = query.eq('host_ip', host_ip);
-        if (log_type) query = query.eq('log_type', log_type);
-        if (client_ip) query = query.eq('client_ip', client_ip);
-        return unwrap(await query);
+      async list({ host_ip, log_type, client_ip, since, limit = 50 } = {}) {
+        return paged((o) => {
+          let query = sb.from('server_logs').select('*', o).order('logged_at', { ascending: false }).order('id', { ascending: false });
+          if (host_ip) query = query.eq('host_ip', host_ip);
+          if (log_type) query = query.eq('log_type', log_type);
+          if (client_ip) query = query.eq('client_ip', client_ip);
+          if (since) query = query.gte('logged_at', since);
+          return query;
+        }, limit);
       },
       async insertMany(rows) {
         for (const part of chunk(rows, 1000)) unwrap(await sb.from('server_logs').insert(part));
@@ -323,6 +331,122 @@ class SupabaseStore {
       async revoke(id) {
         return publicKey(unwrap(await sb.from('api_keys').update({ revoked_at: new Date().toISOString() }).eq('id', Number(id)).is('revoked_at', null).select(KEY_COLS).maybeSingle()));
       }
+    };
+  }
+
+  // ---- Cases, approvals and hunts ------------------------------------------
+  table(name, key = 'id') {
+    const sb = this.sb;
+    const k = (id) => (key === 'id' ? Number(id) : id);
+    return {
+      async get(id) { return unwrap(await sb.from(name).select('*').eq(key, k(id)).maybeSingle()); },
+      async insert(row) { return unwrap(await sb.from(name).insert(row).select().single()); },
+      async update(id, patch) { return unwrap(await sb.from(name).update({ ...patch, updated_at: new Date().toISOString() }).eq(key, k(id)).select().maybeSingle()); },
+      async remove(id) { return unwrap(await sb.from(name).delete().eq(key, k(id)).select(key)).length > 0; }
+    };
+  }
+
+  get cases() {
+    const sb = this.sb;
+    const t = this.table('cases', 'case_id');
+    return {
+      ...t,
+      async list({ status, q, limit = 500 } = {}) {
+        return paged((o) => {
+          let query = sb.from('cases').select('*', o).order('updated_at', { ascending: false }).order('case_id');
+          if (status) query = query.in('status', [].concat(status));
+          if (q && safeTerm(q)) query = query.or(['case_id', 'title', 'description', 'assignee_name'].map((c) => `${c}.ilike.*${safeTerm(q)}*`).join(','));
+          return query;
+        }, limit);
+      }
+    };
+  }
+
+  get caseAlerts() {
+    const sb = this.sb;
+    return {
+      async list(caseId) { return unwrap(await sb.from('case_alerts').select('*').eq('case_id', caseId).order('id').limit(5000)); },
+      async forAlert(alertId) { return unwrap(await sb.from('case_alerts').select('*').eq('alert_id', alertId).limit(100)); },
+      async all() { return paged((o) => sb.from('case_alerts').select('case_id,alert_id', o).order('id'), 50000); },
+      async add(caseId, alertIds, by) {
+        const ids = [...new Set(alertIds)];
+        if (!ids.length) return [];
+        const known = [];
+        for (const part of chunk(ids, 200)) known.push(...unwrap(await sb.from('alerts').select('alert_id').in('alert_id', part)).map((r) => r.alert_id));
+        if (!known.length) return [];
+        return unwrap(await sb.from('case_alerts').upsert(known.map((alert_id) => ({ case_id: caseId, alert_id, added_by: by })), { onConflict: 'case_id,alert_id', ignoreDuplicates: true }).select());
+      },
+      async remove(caseId, alertId) { return unwrap(await sb.from('case_alerts').delete().eq('case_id', caseId).eq('alert_id', alertId).select('id')).length > 0; }
+    };
+  }
+
+  get caseTasks() {
+    const sb = this.sb;
+    return {
+      ...this.table('case_tasks'),
+      async list(caseId) { return unwrap(await sb.from('case_tasks').select('*').eq('case_id', caseId).order('id').limit(1000)); },
+      async all() { return paged((o) => sb.from('case_tasks').select('case_id,status', o).order('id'), 50000); }
+    };
+  }
+
+  get caseIocs() {
+    const sb = this.sb;
+    return {
+      ...this.table('case_iocs'),
+      async list(caseId) { return unwrap(await sb.from('case_iocs').select('*').eq('case_id', caseId).order('id').limit(2000)); },
+      async all({ limit = 5000 } = {}) { return paged((o) => sb.from('case_iocs').select('*', o).order('id', { ascending: false }), limit); },
+      // Returns null when the case already holds this value.
+      async insert(row) {
+        const data = unwrap(await sb.from('case_iocs').upsert(row, { onConflict: 'case_id,value', ignoreDuplicates: true }).select());
+        return data[0] || null;
+      }
+    };
+  }
+
+  get caseEvents() {
+    const sb = this.sb;
+    return {
+      async list(caseId) { return unwrap(await sb.from('case_events').select('*').eq('case_id', caseId).order('occurred_at').order('id').limit(5000)); },
+      async add(row) { return unwrap(await sb.from('case_events').insert(row).select().single()); }
+    };
+  }
+
+  get approvals() {
+    const sb = this.sb;
+    return {
+      ...this.table('approvals', 'approval_id'),
+      async list({ status, limit = 500 } = {}) {
+        return paged((o) => {
+          const q = sb.from('approvals').select('*', o).order('created_at', { ascending: false }).order('approval_id');
+          return status ? q.in('status', [].concat(status)) : q;
+        }, limit);
+      },
+      async count(status = 'PENDING') {
+        const { count, error } = await sb.from('approvals').select('approval_id', { count: 'exact', head: true }).eq('status', status);
+        if (error) throw new Error(`Supabase: ${error.message}`);
+        return count || 0;
+      }
+    };
+  }
+
+  get hunts() {
+    const sb = this.sb;
+    return {
+      ...this.table('hunts', 'hunt_id'),
+      async list() { return unwrap(await sb.from('hunts').select('*').order('updated_at', { ascending: false }).limit(500)); }
+    };
+  }
+
+  get huntRuns() {
+    const sb = this.sb;
+    return {
+      get: this.table('hunt_runs').get,
+      async list({ hunt_id, limit = 50 } = {}) {
+        let q = sb.from('hunt_runs').select('id,hunt_id,name,run_by,hits,new_hits,duration_ms,summary,created_at').order('created_at', { ascending: false }).limit(limit);
+        if (hunt_id) q = q.eq('hunt_id', hunt_id);
+        return unwrap(await q);
+      },
+      async insert(row) { return unwrap(await sb.from('hunt_runs').insert(row).select().single()); }
     };
   }
 

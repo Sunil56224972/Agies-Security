@@ -5,7 +5,7 @@ let ctx = null;
 const ROLE_TEXT = { admin: 'Administrator', analyst: 'Analyst', viewer: 'Read only' };
 const ROLE_HELP = { admin: 'Everything, including users, keys and settings', analyst: 'Investigate, contain, edit inventory', viewer: 'Read only' };
 
-export async function render({ el, navigate }) {
+export async function render({ el, navigate, query = {} }) {
   ctx = { el, navigate };
   const manage = can('manage');
   const configure = can('configure');
@@ -35,6 +35,7 @@ export async function render({ el, navigate }) {
       </div>
       <div class="stack">
         ${configure ? '<section class="panel" id="st-notify"></section>' : ''}
+        ${mcpPanel(manage)}
         ${integrationsPanel(health)}
         <section class="panel">
           <div class="panel__head"><h2 class="panel__title">Audit log</h2><span class="panel__meta">last ${audit.length}</span>${manage ? `<a class="btn btn--sm btn--ghost" style="margin-left:12px" href="/api/export/audit.csv?limit=10000" download>${icon('download')}Export</a>` : ''}</div>
@@ -47,9 +48,12 @@ export async function render({ el, navigate }) {
   if (manage) { paintTeam(); paintKeys(); }
   if (configure) paintNotify();
   bindAccount();
+  $$('[data-mcp-copy]', el).forEach((b) => { b.onclick = () => copyText(b.dataset.mcpCopy === 'url' ? `/mcp` : mcpRemote(location.origin, 'aeg_YOUR_KEY'), b); });
   const reset = $('#st-reset', el);
   if (reset) reset.onclick = openReset;
   hydrateIcons(el);
+  const jump = query.section === 'approvals' ? $('#st-approvals', el) : null;
+  if (jump) setTimeout(() => { jump.scrollIntoView({ behavior: 'smooth', block: 'center' }); jump.classList.add('is-flash'); }, 200);
 }
 
 export function onDataChanged() {}
@@ -61,6 +65,10 @@ function policyPanel(health, configure) {
     <div class="panel__head"><h2 class="panel__title">Response policy</h2>${configure ? '' : '<span class="tag panel__meta">admins only</span>'}</div>
     <div class="setting"><div><div class="setting__label">Auto-containment threshold</div><div class="setting__help">Lowest alert severity at which a confirmed or attempted attack is blocked at the perimeter without asking. Off means the engine only recommends.</div></div>
       <select class="select" name="autoContainmentThreshold" ${dis}>${['OFF', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((v) => `<option value="${v}">${v === 'OFF' ? 'Off (recommend only)' : `${v[0]}${v.slice(1).toLowerCase()} and above`}</option>`).join('')}</select></div>
+    <div class="setting" id="st-approvals"><div><div class="setting__label">Approval policy</div><div class="setting__help">Whether containment runs at once or waits in the approval queue. Confidence bands send high-confidence verdicts straight through and route the rest to a reviewer.</div></div>
+      <select class="select" name="approvalMode" ${dis}><option value="auto">Run at once</option><option value="confidence">By confidence</option><option value="manual">Always ask</option></select></div>
+    <div class="setting setting--stack" id="st-bands"><div><div class="setting__label">Confidence bands</div><div class="setting__help">Auto-approve at or above the first value; quick review and analyst review below it; anything lower is escalated. Pending requests expire after the last value.</div></div>
+      <div class="sla-inputs">${[['approvalAutoAt', 'Auto at %', 1, 100], ['approvalQuickAt', 'Quick review %', 1, 100], ['approvalReviewAt', 'Analyst review %', 0, 100], ['approvalExpiryHours', 'Expire (h)', 1, 720]].map(([k, t, lo, hi]) => `<label class="field"><span>${t}</span><input class="input input--mono" type="number" min="${lo}" max="${hi}" name="${k}" ${dis}></label>`).join('')}</div></div>
     <div class="setting"><div><div class="setting__label">Isolate compromised hosts</div><div class="setting__help">On a confirmed compromise, also publish an ISOLATE rule for the internal host.</div></div>
       <button class="switch" role="switch" name="isolateOnCompromise" aria-label="Isolate compromised hosts" ${dis}></button></div>
     <div class="setting"><div><div class="setting__label">Investigate ingested alerts</div><div class="setting__help">Run the engine in the background for every HIGH or CRITICAL alert that arrives through the ingest API.</div></div>
@@ -92,22 +100,24 @@ function bindPolicy(config) {
   const dirty = () => { saveBtn.disabled = JSON.stringify(draft) === JSON.stringify(base()); };
   $$('.panel [name]', el).forEach((f) => {
     const k = f.getAttribute('name');
-    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours', 'detectEnabled', 'sigmaEnabled', 'sigmaMinLevel'].includes(k)) return;
+    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours', 'detectEnabled', 'sigmaEnabled', 'sigmaMinLevel', 'approvalMode', 'approvalAutoAt', 'approvalQuickAt', 'approvalReviewAt', 'approvalExpiryHours'].includes(k)) return;
     if (f.classList.contains('switch')) {
       f.setAttribute('aria-checked', String(Boolean(draft[k])));
       f.onclick = () => { draft[k] = !draft[k]; f.setAttribute('aria-checked', String(draft[k])); dirty(); };
     } else {
       f.value = draft[k] ?? '';
-      f.oninput = f.onchange = () => { draft[k] = f.type === 'number' ? Number(f.value) : f.value; dirty(); };
+      f.oninput = f.onchange = () => { draft[k] = f.type === 'number' ? Number(f.value) : f.value; dirty(); if (k === 'approvalMode') bands(); };
     }
   });
+  const bands = () => { const b = $('#st-bands', el); if (b) b.classList.toggle('is-dim', (draft.approvalMode || 'auto') !== 'confidence'); };
+  bands();
   const paintEngine = () => $$('#st-engine button', el).forEach((b) => b.classList.toggle('is-on', b.dataset.e === draft.engine));
   $$('#st-engine button', el).forEach((b) => { b.onclick = () => { draft.engine = b.dataset.e; paintEngine(); dirty(); }; });
   paintEngine();
   saveBtn.onclick = () => busy(saveBtn, async () => {
     try {
-      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled, detectSshThreshold, detectScanThreshold, detectWindowMin, sigmaEnabled, sigmaMinLevel } = draft;
-      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled: detectEnabled !== false, detectSshThreshold: detectSshThreshold || 5, detectScanThreshold: detectScanThreshold || 20, detectWindowMin: detectWindowMin || 10, sigmaEnabled: sigmaEnabled !== false, sigmaMinLevel: sigmaMinLevel || 'medium' } });
+      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled, detectSshThreshold, detectScanThreshold, detectWindowMin, sigmaEnabled, sigmaMinLevel, approvalMode, approvalAutoAt, approvalQuickAt, approvalReviewAt, approvalExpiryHours } = draft;
+      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled: detectEnabled !== false, detectSshThreshold: detectSshThreshold || 5, detectScanThreshold: detectScanThreshold || 20, detectWindowMin: detectWindowMin || 10, sigmaEnabled: sigmaEnabled !== false, sigmaMinLevel: sigmaMinLevel || 'medium', approvalMode: approvalMode || 'auto', approvalAutoAt: approvalAutoAt ?? 90, approvalQuickAt: approvalQuickAt ?? 85, approvalReviewAt: approvalReviewAt ?? 70, approvalExpiryHours: approvalExpiryHours || 24 } });
       Object.assign(config, saved);
       state.config = saved;
       toast('Policy saved', 'Applies to the next investigation.', 'ok');
@@ -115,6 +125,29 @@ function bindPolicy(config) {
       dirty();
     } catch (e) { toast('Not saved', e.message, 'error'); }
   });
+}
+
+// ---- MCP --------------------------------------------------------------------
+const mcpRemote = (o, key) => JSON.stringify({ mcpServers: { aegis: { type: 'http', url: `${o}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }, null, 2);
+const mcpBridge = (o, key) => JSON.stringify({ mcpServers: { aegis: { command: 'npx', args: ['-y', 'github:Sunil56224972/Agies-Security'], env: { AEGIS_URL: o, AEGIS_API_KEY: key } } } }, null, 2);
+const MCP_READ = ['overview', 'list_alerts', 'get_alert', 'get_investigation', 'search', 'ip_profile', 'lookup_indicator', 'bulk_check', 'detect_test', 'list_rules', 'list_cases', 'get_case', 'list_approvals', 'list_hunts', 'technique_rollup'];
+const MCP_WRITE = ['investigate_alert', 'set_alert_status', 'block_ip', 'approve_action', 'reject_action', 'create_case', 'create_case_from_killchain', 'update_case', 'add_alert_to_case', 'add_case_ioc', 'add_case_task', 'update_case_task', 'add_case_comment', 'close_case', 'run_hunt'];
+
+function mcpPanel(manage) {
+  return `<section class="panel">
+    <div class="panel__head"><h2 class="panel__title">MCP server</h2><span class="panel__meta">Model Context Protocol, Streamable HTTP</span></div>
+    <div class="panel__body">
+      <p class="small muted" style="margin-top:0">Connect Claude, Cursor or any MCP client to this console. Every tool call runs against the same API, with the key's scope, and is written to the audit log as <code>mcp:&lt;key name&gt;</code>.</p>
+      <div class="secret"><code>${esc(location.origin)}/mcp</code><button class="btn btn--sm btn--ghost" data-mcp-copy="url">Copy</button></div>
+      <div class="row small mt-12"><b class="grow">Client config</b><button class="btn btn--sm btn--ghost" data-mcp-copy="cfg">${icon('copy')}</button></div>
+      <pre class="snippet is-code mono mt-8">${esc(mcpRemote(location.origin, 'aeg_YOUR_KEY'))}</pre>
+      <div class="small muted mt-12"><b>mcp</b> scope, ${MCP_READ.length} read tools</div>
+      <div class="mcp-tools mt-8">${MCP_READ.map((t) => `<span class="tag">${t}</span>`).join('')}</div>
+      <div class="small muted mt-12"><b>mcp:write</b> adds ${MCP_WRITE.length} tools; containment still follows the approval policy</div>
+      <div class="mcp-tools mt-8">${MCP_WRITE.map((t) => `<span class="tag">${t}</span>`).join('')}</div>
+      ${manage ? '<p class="small muted mt-12" style="margin-bottom:0">Create a key with the mcp or mcp:write scope under API keys; its dialog includes a ready config.</p>' : '<p class="small muted mt-12" style="margin-bottom:0">An administrator issues MCP keys.</p>'}
+    </div>
+  </section>`;
 }
 
 // ---- Integrations ----------------------------------------------------------
@@ -269,7 +302,7 @@ function paintKeys() {
   const live = ctx.keys.filter((k) => !k.revoked_at);
   const dead = ctx.keys.filter((k) => k.revoked_at);
   box.innerHTML = `
-    <div class="panel__head"><h2 class="panel__title">API keys</h2><span class="panel__meta">for sensors and firewalls</span><button class="btn btn--sm" style="margin-left:12px" id="k-add">${icon('key')}New key</button></div>
+    <div class="panel__head"><h2 class="panel__title">API keys</h2><span class="panel__meta">sensors, firewalls, MCP clients</span><button class="btn btn--sm" style="margin-left:12px" id="k-add">${icon('key')}New key</button></div>
     ${live.length ? `<div class="table-wrap"><table class="table">
       <thead><tr><th>Name</th><th>Scope</th><th class="hide-sm">Last used</th><th style="width:1%"></th></tr></thead>
       <tbody class="rows-in">${live.map((k, i) => `<tr style="--i:${i}" data-kid="${k.id}">
@@ -277,7 +310,7 @@ function paintKeys() {
         <td>${k.scopes.map((s) => `<span class="tag">${esc(s)}</span>`).join(' ')}</td>
         <td class="hide-sm small muted">${k.last_used_at ? ago(k.last_used_at) : 'never'}</td>
         <td><button class="btn btn--sm btn--ghost" data-revoke>Revoke</button></td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty">${icon('key')}<b>No API keys</b><span class="small">Sensors need an <b>ingest</b> key to post alerts and logs. Firewalls need a <b>feed</b> key to pull the blocklist.</span></div>`}
+      : `<div class="empty">${icon('key')}<b>No API keys</b><span class="small">Sensors need an <b>ingest</b> key to post alerts and logs. Firewalls need a <b>feed</b> key to pull the blocklist. AI assistants need an <b>mcp</b> key.</span></div>`}
     ${dead.length ? `<div class="table-foot">${dead.length} revoked key${dead.length === 1 ? '' : 's'} kept for the audit trail</div>` : ''}`;
   $('#k-add', box).onclick = openNewKey;
   $$('tr[data-kid]', box).forEach((tr) => {
@@ -305,13 +338,15 @@ function openNewKey() {
       <div class="field mt-12"><span>Scope</span>
         <label class="row small"><input type="checkbox" name="ingest" checked> <b>ingest</b><span class="muted">post alerts, logs and inventory to /api/ingest/*</span></label>
         <label class="row small mt-8"><input type="checkbox" name="feed"> <b>feed</b><span class="muted">pull /api/feeds/blocklist.txt and isolate.txt</span></label>
+        <label class="row small mt-8"><input type="checkbox" name="mcp"> <b>mcp</b><span class="muted">AI assistants read alerts, cases and intel over MCP</span></label>
+        <label class="row small mt-8"><input type="checkbox" name="mcp:write"> <b>mcp:write</b><span class="muted">also investigate, contain, approve and edit cases over MCP</span></label>
       </div>
     </form>
     <div class="modal__foot"><span class="form-error" id="k-err"></span><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--primary" id="k-go">Create key</button></div>`);
   const form = $('#k-form', m);
   const go = (e) => {
     e.preventDefault();
-    const scopes = ['ingest', 'feed'].filter((s) => form.elements.namedItem(s).checked);
+    const scopes = ['ingest', 'feed', 'mcp', 'mcp:write'].filter((s) => form.elements.namedItem(s).checked);
     busy($('#k-go', m), async () => {
       try {
         const rec = await api('/keys', { method: 'POST', body: { name: form.elements.namedItem('name').value, scopes } });
@@ -340,13 +375,17 @@ function showKey(m, rec) {
   if (rec.scopes.includes('feed')) {
     snippets.push(['Firewall feed URL (PAN-OS EDL, FortiGate threat feed, pfSense URL table)', `${o}/api/feeds/blocklist.txt\nAuth: Basic, any username, password = the key\n\ncurl -sS -H "Authorization: Bearer ${rec.key}" ${o}/api/feeds/blocklist.txt`]);
   }
+  if (rec.scopes.includes('mcp') || rec.scopes.includes('mcp:write')) {
+    snippets.push(['MCP client config (Claude Desktop, Cursor, VS Code): remote server', mcpRemote(o, rec.key)]);
+    snippets.push(['MCP client config: stdio bridge for clients without remote support', mcpBridge(o, rec.key)]);
+  }
   // The raw key exists only in this dialog, so a stray backdrop click must not close it.
   const scrim = document.querySelector('.scrim:last-of-type');
   if (scrim) scrim.onclick = null;
   m.querySelector('.modal__head').innerHTML = `<h2 class="modal__title">${esc(rec.name)} is ready</h2><p class="small muted" style="margin:4px 0 0">Copy the key now. Only its hash is stored, so it cannot be shown again.</p>`;
   m.querySelector('.modal__body').outerHTML = `<div class="modal__body">
     <div class="secret"><code class="mono">${esc(rec.key)}</code><button class="btn btn--sm" id="k-copy">${icon('copy')}Copy</button></div>
-    ${snippets.map(([t, s], i) => `<div class="mt-12"><div class="row small" style="margin-bottom:6px"><b class="grow">${esc(t)}</b><button class="btn btn--sm btn--ghost" data-snip="${i}">${icon('copy')}</button></div><pre class="snippet mono">${esc(s)}</pre></div>`).join('')}
+    ${snippets.map(([t, s], i) => `<div class="mt-12"><div class="row small" style="margin-bottom:6px"><b class="grow">${esc(t)}</b><button class="btn btn--sm btn--ghost" data-snip="${i}">${icon('copy')}</button></div><pre class="snippet is-code mono">${esc(s)}</pre></div>`).join('')}
   </div>`;
   m.querySelector('.modal__foot').innerHTML = '<button class="btn btn--primary" data-close>I have stored the key</button>';
   $('#k-copy', m).onclick = (e) => copyText(rec.key, e.currentTarget);

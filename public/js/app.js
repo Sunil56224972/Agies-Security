@@ -6,6 +6,9 @@ const ROUTES = {
   overview: { title: 'Overview', load: () => import('./views/overview.js') },
   alerts: { title: 'Alerts', load: () => import('./views/alerts.js') },
   investigate: { title: 'Investigate', load: () => import('./views/investigate.js') },
+  cases: { title: 'Cases', load: () => import('./views/cases.js') },
+  approvals: { title: 'Approvals', load: () => import('./views/approvals.js') },
+  hunts: { title: 'Threat hunting', load: () => import('./views/hunts.js') },
   containment: { title: 'Containment', load: () => import('./views/containment.js') },
   assets: { title: 'Assets', load: () => import('./views/assets.js') },
   reports: { title: 'Reports', load: () => import('./views/reports.js') },
@@ -111,8 +114,8 @@ async function refreshChrome() {
   clearTimeout(chromeTimer);
   try {
     const full = !state.health || Date.now() - chromeAt > 60000;
-    const [health, config, count] = await Promise.all([
-      full ? api('/health') : state.health, full ? api('/config') : state.config, api('/alerts/count')
+    const [health, config, count, appr] = await Promise.all([
+      full ? api('/health') : state.health, full ? api('/config') : state.config, api('/alerts/count'), api('/approvals/count').catch(() => ({ pending: 0 }))
     ]);
     if (full) chromeAt = Date.now();
     state.health = health;
@@ -124,6 +127,7 @@ async function refreshChrome() {
     $('#brand-env').textContent = health.demo ? 'demo' : health.storage.kind === 'supabase' ? 'supabase' : 'local';
     $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Rule-based';
     $('#nav-open').textContent = count.open ? String(count.open) : '';
+    $('#nav-appr').textContent = appr.pending ? String(appr.pending) : '';
   } catch {
     $('#sys-dot').className = 'live-dot live-dot--off';
     $('#sys-store').textContent = 'Offline';
@@ -165,6 +169,11 @@ const JUMPS = [
   { label: 'Go to overview', path: 'overview', ic: 'grid' },
   { label: 'Go to alerts', path: 'alerts', ic: 'bell' },
   { label: 'Open investigation workspace', path: 'investigate', ic: 'scan' },
+  { label: 'Cases', path: 'cases', ic: 'file' },
+  { label: 'New case from an attacker kill chain', path: 'cases?kc=1', ic: 'activity' },
+  { label: 'Approval queue', path: 'approvals', ic: 'shieldCheck' },
+  { label: 'Threat hunting', path: 'hunts', ic: 'search' },
+  { label: 'ATT&CK technique rollup', path: 'hunts?tab=attack', ic: 'chart' },
   { label: 'Containment rules and probe', path: 'containment', ic: 'shield' },
   { label: 'Suppression rules', path: 'containment?tab=tuning', ic: 'filter' },
   { label: 'Reports: SLA, ATT&CK coverage, top attackers', path: 'reports', ic: 'chart' },

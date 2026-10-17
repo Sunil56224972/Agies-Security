@@ -376,6 +376,39 @@ test('sigma: rule bundle from a SigmaHQ-style archive', () => {
   assert.ok(b.rules[0].match(webEvent(webLine('/?a=${jndi:ldap://x/a}'))));
 });
 
+test('approvals: confidence bands route actions', () => {
+  const { routeFor } = require('../src/engine/approvals');
+  assert.deepStrictEqual(routeFor(40, { approvalMode: 'auto' }), { route: 'auto', execute: true });
+  const cfg = { approvalMode: 'confidence', approvalAutoAt: 90, approvalQuickAt: 85, approvalReviewAt: 70 };
+  assert.deepStrictEqual(routeFor(95, cfg), { route: 'auto', execute: true });
+  assert.deepStrictEqual(routeFor(87, cfg), { route: 'quick_review', execute: false });
+  assert.deepStrictEqual(routeFor(75, cfg), { route: 'analyst_review', execute: false });
+  assert.deepStrictEqual(routeFor(50, cfg), { route: 'escalate', execute: false });
+  assert.strictEqual(routeFor(99, { approvalMode: 'manual' }).execute, false);
+});
+
+test('hunt: criteria validation and CIDR matching', () => {
+  const { normalizeCriteria, ipMatcher, textMatcher, techId } = require('../src/engine/hunt');
+  assert.throws(() => normalizeCriteria({}), /at least one/);
+  assert.throws(() => normalizeCriteria({ text: 'x', window_hours: 0 }), /window_hours/);
+  assert.throws(() => normalizeCriteria({ ip: '10.0.0.0/40' }), /CIDR/);
+  assert.deepStrictEqual(normalizeCriteria({ technique: 't1110.003 brute force' }), { window_hours: 168, technique: 'T1110.003' });
+  assert.deepStrictEqual(normalizeCriteria({ indicators: 'evil[.]top, 1.2.3[.]4' }).indicators.sort(), ['1.2.3.4', 'evil.top']);
+  const m = ipMatcher('185.220.101.0/24');
+  assert.ok(m('185.220.101.45') && !m('185.220.102.1') && !m('10.0.0.1'));
+  assert.ok(ipMatcher('0.0.0.0/0')('203.0.113.9'));
+  assert.ok(ipMatcher('10.0.0.0/8')('10.255.1.1'));
+  assert.ok(textMatcher('/jndi:(ldap|rmi)/i')('${JNDI:LDAP://x}'));
+  assert.strictEqual(techId('Exploit Public-Facing Application (T1190)'), 'T1190');
+});
+
+test('cases: kill-chain checklist follows the evidence', () => {
+  const { playbookTasks } = require('../src/cases');
+  const t = playbookTasks({ ip: '203.0.113.5', hosts: ['10.0.0.5', '10.0.0.6'], compromised: ['10.0.0.5'], techniques: ['T1110.001'] });
+  assert.ok(t.some(([p, x]) => p === 'Containment' && x.includes('Isolate 10.0.0.5')));
+  assert.ok(t.some(([, x]) => /Reset credentials/.test(x)));
+  assert.ok(!t.some(([, x]) => /web shells/.test(x)));
+});
 test('intel hub: one lookup folds abuse.ch, RDAP and passive DNS into a verdict', async () => {
   const today = new Date(Date.now() - 5 * 86400000).toISOString();
   const routes = [

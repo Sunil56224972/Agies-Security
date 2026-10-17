@@ -15,7 +15,7 @@ const { SEVERITY_RANK } = require('./engine/analysis');
 // freeze the process after the response), with a short timeout per channel.
 
 const KINDS = ['slack', 'teams', 'webhook'];
-const EVENTS = ['alert', 'containment', 'verdict'];
+const EVENTS = ['alert', 'containment', 'verdict', 'approval'];
 const MAX_CHANNELS = 10;
 const TIMEOUT_MS = 6000;
 
@@ -76,6 +76,14 @@ function lines(evt) {
       link: link && `${link}#/investigate/${i.alert_id}`
     };
   }
+  if (evt.type === 'approval') {
+    const a = d.approval;
+    return {
+      title: `Approval needed: ${a.action} ${a.target_ip} (${a.approval_id})`,
+      rows: [`Reason: ${a.reason}`, `Route: ${a.route.replace(/_/g, ' ')}${a.confidence != null ? `, confidence ${a.confidence}%` : ''}`, `Requested by ${a.requested_by}`],
+      link: link && `${link}#/approvals`
+    };
+  }
   return { title: d.message || 'Test message from Aegis', rows: d.rows || [], link };
 }
 
@@ -107,7 +115,7 @@ function payloadFor(kind, evt) {
 // Highest severity carried by an event, for the per-channel floor.
 function eventSeverity(evt) {
   if (evt.type === 'alert') return Math.max(...evt.data.alerts.map((a) => SEVERITY_RANK[a.severity] || 0));
-  if (evt.type === 'containment' || evt.type === 'verdict') return SEVERITY_RANK[evt.data.severity] || SEVERITY_RANK.HIGH;
+  if (evt.type === 'containment' || evt.type === 'verdict' || evt.type === 'approval') return SEVERITY_RANK[evt.data.severity] || SEVERITY_RANK.HIGH;
   return SEVERITY_RANK.CRITICAL;
 }
 
