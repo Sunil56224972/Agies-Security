@@ -9,7 +9,7 @@
   z-index: 30;
 }
 .brand { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 16px; border-bottom: 1px solid var(--rail-line); color: var(--rail-ink-strong); }
-.brand__mark { width: 30px; height: 30px; flex: none; object-fit: contain; margin-left: -4px; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35)); transition: transform .3s var(--ease-out); }
+.brand__mark { width: 34px; height: 34px; flex: none; object-fit: contain; margin-left: -6px; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35)); transition: transform .3s var(--ease-out); }
 .brand:hover .brand__mark { transform: rotate(-6deg) scale(1.06); }
 .brand__name { font-weight: 600; font-size: 14px; letter-spacing: .02em; }
 .brand__env { margin-left: auto; font: 500 10px/1 var(--font-mono); padding: 3px 5px; border-radius: 3px; border: 1px solid var(--rail-line); color: var(--rail-ink); }
