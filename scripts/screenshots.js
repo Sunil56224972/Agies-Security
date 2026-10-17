@@ -6,7 +6,7 @@ const fs = require('fs');
 const { chromium } = require('playwright');
 const { signIn, BASE } = require('./demo-session');
 
-const OUT = path.join(__dirname, '..', 'docs', 'images');
+const OUT = path.join(__dirname, '..', 'docs', 'screens');
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
@@ -76,6 +76,13 @@ const OUT = path.join(__dirname, '..', 'docs', 'images');
   await dark.goto(`${BASE}/#/overview`);
   await dark.waitForTimeout(1800);
   await dark.screenshot({ path: path.join(OUT, 'overview-dark.png') });
+
+  // Signed-out view, without the session cookie.
+  const anon = await (await browser.newContext({ viewport: { width: 1280, height: 760 } })).newPage();
+  await anon.goto(BASE);
+  await anon.waitForSelector('.gate.is-in .gate__emblem');
+  await anon.waitForTimeout(1200);
+  await anon.screenshot({ path: path.join(OUT, 'sign-in.png') });
 
   await browser.close();
   if (errors.length) { console.error(errors); process.exit(1); }

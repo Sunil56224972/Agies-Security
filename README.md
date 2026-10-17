@@ -1,10 +1,12 @@
+<p align="center"><img src="public/img/aegis-logo.png" alt="Aegis Security" width="200"></p>
+
 # Aegis Security
 
 An incident response console for a small SOC. Aegis takes IDS alerts from your sensors and works out whether each attack actually landed. It checks the target against your asset inventory and against NVD CVE data, matched by CPE version range, and reads the host's own logs for the attacker's address. It then records a verdict and pushes a containment rule to your firewall, and reports whether the firewall actually picked the rule up.
 
 Express on Node, with Supabase Postgres or a local file for storage. There is no build step.
 
-![Overview](docs/images/overview.png)
+![Overview](docs/screens/overview.png)
 
 ## How it works
 
@@ -37,17 +39,18 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 
 | | |
 | --- | --- |
-| ![Alerts](docs/images/alerts.png) | ![Investigation](docs/images/investigation.png) |
+| ![Alerts](docs/screens/alerts.png) | ![Investigation](docs/screens/investigation.png) |
 | Alert queue with severity filters | Live investigation timeline, verdict and report |
-| ![Containment](docs/images/containment.png) | ![Assets](docs/images/assets.png) |
+| ![Containment](docs/screens/containment.png) | ![Assets](docs/screens/assets.png) |
 | Rules with enforcement read-back | Inventory from Nmap, CMDB or the agent, matched to NVD CVEs |
-| ![IP profile](docs/images/ip-profile.png) | ![Reports](docs/images/reports.png) |
+| ![IP profile](docs/screens/ip-profile.png) | ![Reports](docs/screens/reports.png) |
 | IP profile with live blocklist, GreyNoise and Shodan data | SLA, MTTA/MTTR and ATT&CK coverage |
-| ![Detections](docs/images/intel-detect.png) | ![Exploited CVEs](docs/images/intel-kev.png) |
+| ![Detections](docs/screens/intel-detect.png) | ![Exploited CVEs](docs/screens/intel-kev.png) |
 | Built-in detection rules and the rule tester | CISA KEV catalog matched against your hosts |
-| ![IOC check](docs/images/intel-ioc.png) | ![Settings](docs/images/settings.png) |
+| ![IOC check](docs/screens/intel-ioc.png) | ![Settings](docs/screens/settings.png) |
 | Bulk IOC check against six live sources | Team, API keys, integrations, policy |
-| ![Dark theme](docs/images/overview-dark.png) | |
+| ![Dark theme](docs/screens/overview-dark.png) | ![Sign in](docs/screens/sign-in.png) |
+| Dark theme | Sign-in screen |
 
 ## Quick start
 

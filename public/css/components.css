@@ -277,8 +277,12 @@ mark { background: var(--crit-soft); color: var(--crit); padding: 0 1px; }
 .gate__side { display: flex; flex-direction: column; padding: 28px 32px; background: var(--rail-bg); color: var(--rail-ink); border-right: 1px solid var(--rail-line);
   background-image: linear-gradient(var(--rail-line) 1px, transparent 1px), linear-gradient(90deg, var(--rail-line) 1px, transparent 1px); background-size: 28px 28px; background-position: -1px -1px; }
 .gate__brand { display: flex; align-items: center; gap: 10px; color: var(--rail-ink-strong); font-weight: 600; font-size: 15px; letter-spacing: .02em; }
-.gate__brand svg { width: 24px; height: 24px; }
+.gate__brand img { width: 34px; height: 34px; object-fit: contain; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .4)); }
+.gate__brand em { font-style: normal; font-weight: 500; color: var(--rail-ink); margin-left: 2px; }
 .gate__copy { margin-top: auto; margin-bottom: auto; max-width: 320px; }
+.gate__emblem { display: block; width: 132px; height: 132px; margin: 0 0 22px -6px; object-fit: contain; filter: drop-shadow(0 10px 24px rgba(0, 0, 0, .45)); animation: emblem-in .7s var(--ease-out) both; }
+@keyframes emblem-in { from { opacity: 0; transform: translateY(10px) scale(.92); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .gate__emblem { animation: none; } }
 .gate__lede { color: var(--rail-ink-strong); font-size: 19px; line-height: 1.35; font-weight: 500; margin: 0 0 22px; letter-spacing: -.01em; }
 .gate__facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; font-size: 12.5px; }
 .gate__facts li { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding-top: 12px; border-top: 1px solid var(--rail-line); }

@@ -68,9 +68,12 @@ function makeAlert({ rule, key, bucket, signature, severity, client, host, port,
   };
 }
 
+// Only the request line is judged, so a referrer or user agent cannot trip a rule
+// (an Opera UA ending "; id)" is a locale, not a command). JNDI strings are the
+// exception: Log4Shell is mostly delivered in headers, so the whole line is checked.
 function classifyRequest(l) {
-  const text = `${l.request_uri || ''} ${l.raw_entry || ''}`;
-  for (const w of WEB) if (w.re.test(text)) return w;
+  const reqLine = l.request_uri || l.raw_entry || '';
+  for (const w of WEB) if (w.re.test(w.id === 'log4shell' ? `${reqLine} ${l.raw_entry || ''}` : reqLine)) return w;
   return null;
 }
 

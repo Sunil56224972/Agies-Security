@@ -8,10 +8,11 @@ function frame(inner) {
   return `
     <div class="gate__side">
       <div class="gate__brand">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M12 2.5 4 5.5v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10v-6z"/><path d="M12 2.5v19"/></svg>
-        <span>Aegis</span>
+        <img src="/img/aegis-mark.png" alt="" width="34" height="34">
+        <span>Aegis <em>Security</em></span>
       </div>
       <div class="gate__copy">
+        <img class="gate__emblem" src="/img/aegis-mark.png" alt="Aegis Security" width="132" height="132">
         <p class="gate__lede">Alert triage, evidence and containment in one place.</p>
         <ul class="gate__facts">
           <li><span>Ingest</span>Suricata EVE and host logs over an API key</li>
