@@ -9,6 +9,7 @@ const { CLOSED_STATUSES } = require('./store/shared');
 const { findSuppression } = require('./engine/suppress');
 const { parseNmapXml, looksLikeNmap } = require('./ingest/nmap');
 const detect = require('./engine/detect');
+const { toAlerts } = require('./engine/sigma');
 
 const SEVERITIES = Object.keys(SEVERITY_RANK);
 const OPEN = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
@@ -22,7 +23,7 @@ const publicConfig = ({ notifyChannels, ...cfg }) => cfg;
 const intIn = (v, lo, hi) => Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi;
 
 function registerRoutes(app, ctx) {
-  const { store, investigator, enforcer, nvd, reputation, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt, notifier } = ctx;
+  const { store, investigator, enforcer, nvd, reputation, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt, notifier } = ctx;
   const origin = (req) => env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
   const timeline = (alertId, body, req) => store.notes.add({ alert_id: alertId, kind: 'event', author: actor(req), author_id: req.user ? req.user.id : null, body });
   const tools = investigator.tools;
@@ -37,7 +38,9 @@ function registerRoutes(app, ctx) {
       storage: { kind: store.kind, label: store.label, ok: db.ok, detail: db.detail, warning: warnings.find((w) => /supabase|store/i.test(w)) || null },
       engine: { llm: investigator.llmAvailable, model: investigator.llmAvailable ? investigator.model : null },
       enforcement: { ...enforcer.describe(), warning: warnings.find((w) => /ENFORCEMENT/.test(w)) || null },
-      intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [] },
+      intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [],
+        feeds: hub && hub.available, vt_key: Boolean(env.VT_API_KEY), abusech_key: Boolean(env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY) },
+      sigma: sigma ? (({ loaded, loading, entries, version, loaded_at, error }) => ({ enabled: sigma.available, loaded, loading, rules: entries, version, loaded_at, error }))(sigma.status()) : { enabled: false },
       demo,
       tools: TOOL_DEFINITIONS.map((t) => t.function.name),
       uptime_s: Math.round((Date.now() - bootedAt) / 1000)
@@ -458,6 +461,15 @@ function registerRoutes(app, ctx) {
       if (!Array.isArray(b.detectDisabled) || b.detectDisabled.some((x) => !ids.includes(x))) return bad(res, `detectDisabled must list rule ids from: ${ids.join(', ')}`);
       next.detectDisabled = [...new Set(b.detectDisabled)];
     }
+    if (b.sigmaEnabled !== undefined) next.sigmaEnabled = Boolean(b.sigmaEnabled);
+    if (b.sigmaMinLevel !== undefined) {
+      if (!['low', 'medium', 'high', 'critical'].includes(b.sigmaMinLevel)) return bad(res, 'Sigma minimum level must be low, medium, high or critical');
+      next.sigmaMinLevel = b.sigmaMinLevel;
+    }
+    if (b.sigmaDisabled !== undefined) {
+      if (!Array.isArray(b.sigmaDisabled) || b.sigmaDisabled.length > 2000 || b.sigmaDisabled.some((x) => typeof x !== 'string' || x.length > 64)) return bad(res, 'sigmaDisabled must be a list of Sigma rule ids');
+      next.sigmaDisabled = [...new Set(b.sigmaDisabled)];
+    }
     if (!Object.keys(next).length) return bad(res, 'Nothing to change');
     const saved = await store.config.set(next);
     await store.audit.add({ actor: actor(req), action: 'config.updated', target: 'platform', detail: Object.keys(next).join(', ') });
@@ -546,9 +558,10 @@ function registerRoutes(app, ctx) {
   async function runDetection(batch, req) {
     const cfg = await store.config.get();
     if (cfg.detectEnabled === false) return { raised: 0, ids: [] };
+    const sig = await runSigma(batch, req, cfg);
     const clients = [...new Set(batch.map((l) => l.client_ip).filter(Boolean))].slice(0, 100);
     const hosts = new Set(batch.map((l) => l.host_ip));
-    if (!clients.length) return { raised: 0, ids: [] };
+    if (!clients.length) return sig;
     const history = [];
     for (let i = 0; i < clients.length; i += 10) {
       const part = await Promise.all(clients.slice(i, i + 10).map((c) => store.logs.list({ client_ip: c, limit: 1000 })));
@@ -556,9 +569,21 @@ function registerRoutes(app, ctx) {
     }
     const now = Math.max(...batch.map((l) => new Date(l.logged_at).getTime()));
     const found = detect.evaluate(history, cfg, { now });
-    if (!found.length) return { raised: 0, ids: [] };
+    if (!found.length) return sig;
     const { inserted } = await landAlerts(found, req, { action: 'detect.raised', note: [...new Set(found.map((a) => a.external_ref.split(' ')[0].replace('aegis:', '')))].join(', ') });
-    return { raised: inserted.length, ids: inserted };
+    return { raised: inserted.length + sig.raised, ids: [...inserted, ...sig.ids], sigma: sig.sigma };
+  }
+
+  // SigmaHQ rules are single-event, so they run over the new lines only. If the rule
+  // set is still downloading the batch is not held up; the next one gets scanned.
+  async function runSigma(batch, req, cfg) {
+    if (!sigma || !sigma.available || cfg.sigmaEnabled === false) return { raised: 0, ids: [] };
+    const s = await sigma.scan(batch, { budgetMs: 3000, minLevel: cfg.sigmaMinLevel || 'medium', disabled: cfg.sigmaDisabled || [] });
+    if (!s) return { raised: 0, ids: [], sigma: 'loading' };
+    if (!s.matches.length) return { raised: 0, ids: [], sigma: s.rules };
+    const found = toAlerts(s.matches);
+    const { inserted } = await landAlerts(found, req, { action: 'detect.raised', note: `sigma: ${[...new Set(s.matches.map((m) => m.rule.title))].slice(0, 4).join(', ')}`.slice(0, 300) });
+    return { raised: inserted.length, ids: inserted, sigma: s.rules };
   }
 
   app.post('/api/ingest/logs', requireKey('ingest'), bigJson, bigText, wrap(async (req, res) => {

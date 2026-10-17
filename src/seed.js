@@ -142,7 +142,10 @@ const defaultConfig = {
   detectSshThreshold: 5,
   detectScanThreshold: 20,
   detectWindowMin: 10,
-  detectDisabled: []
+  detectDisabled: [],
+  sigmaEnabled: true,
+  sigmaMinLevel: 'medium',
+  sigmaDisabled: []
 };
 
 module.exports = { assets, cves, alerts, logs, firewallRules, defaultConfig };

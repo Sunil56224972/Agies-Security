@@ -104,8 +104,12 @@
 }
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
-  .rail { position: fixed; left: 0; width: 248px; transform: translateX(-100%); transition: transform .25s var(--ease-out); box-shadow: var(--shadow-3); }
-  .shell.nav-open .rail { transform: none; }
+  .rail { position: fixed; left: 0; z-index: 60; width: 248px; transform: translateX(-100%); visibility: hidden; transition: transform .25s var(--ease-out), visibility 0s linear .25s; }
+  .shell.nav-open .rail { transform: none; visibility: visible; box-shadow: var(--shadow-3); transition: transform .25s var(--ease-out); }
+  .shell::after { content: ""; position: fixed; inset: 0; z-index: 55; background: rgb(10 14 20 / .45); opacity: 0; pointer-events: none; transition: opacity .25s var(--ease-out); }
+  .shell.nav-open::after { opacity: 1; pointer-events: auto; }
+  body.nav-lock { overflow: hidden; }
+  .nav__item { min-height: 40px; }
   .menu-btn { display: grid; }
   .topbar { padding: 0 14px; }
   .view { padding: 0 14px 40px; }

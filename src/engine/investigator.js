@@ -4,6 +4,7 @@ const Groq = require('groq-sdk');
 const { SEVERITY_RANK, classifyPayload, exposureFor, assessLogs, isInternal, newId } = require('./analysis');
 const { createTools, TOOL_DEFINITIONS } = require('./tools');
 const { RecordAdapter } = require('../enforce');
+const { fromPayload } = require('../intel/indicator');
 
 const OUTCOME_STATUS = {
   ATTACK_SUCCEEDED: 'CONFIRMED',
@@ -15,11 +16,12 @@ const OUTCOME_STATUS = {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 class Investigator {
-  constructor(store, { groqKey, model, enforcer = new RecordAdapter(), nvd = null, reputation = null } = {}) {
+  constructor(store, { groqKey, model, enforcer = new RecordAdapter(), nvd = null, reputation = null, hub = null } = {}) {
     this.store = store;
     this.enforcer = enforcer;
     this.reputation = reputation;
-    this.tools = createTools(store, { enforcer, nvd, reputation });
+    this.hub = hub;
+    this.tools = createTools(store, { enforcer, nvd, reputation, hub });
     this.model = model || 'openai/gpt-oss-120b';
     // Short timeout and few retries: a stalled or rate-limited model falls back to the playbook.
     this.groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000, maxRetries: 1 }) : null;
@@ -101,6 +103,15 @@ class Investigator {
       if (rep.error) rep = null;
     }
 
+    // Domains, URLs, hashes and JA3 carried in the payload (TLS SNI, Host, JNDI callbacks).
+    const iocs = [];
+    if (this.hub && this.hub.available) {
+      for (const ind of fromPayload(alert.raw_payload).slice(0, 3)) {
+        const r = await this.call(ctx, 'enrich', 'lookup_indicator', { indicator: ind.value }, `Intel on ${ind.where} ${ind.display}`);
+        if (!r.error && !r.skipped) iocs.push({ ...r, where: ind.where });
+      }
+    }
+
     let exposure = { exposed: false, evidence: null };
     let cve = null;
     if (technique && technique.cve) {
@@ -144,6 +155,15 @@ class Investigator {
       if (outcome === 'RECON_ONLY' && rep.score >= 60) reasons.push('Source is a known-bad address; consider a time-boxed block.');
     } else if (rep && rep.score != null && rep.reports) {
       reasons.push(`AbuseIPDB: ${remoteIp} scores ${rep.score}/100 from ${rep.reports} reports.`);
+    }
+    for (const i of iocs) {
+      if (i.verdict === 'malicious' || i.verdict === 'suspicious') reasons.push(`${i.where}: ${i.summary}`);
+      // Outbound traffic to a known C2 is compromise evidence on its own.
+      if (i.c2 && outbound && outcome !== 'FALSE_POSITIVE') {
+        if (outcome !== 'ATTACK_SUCCEEDED') this.note(ctx, 'adapt', 'Replanning: host is talking to a known C2', i.summary, 'adaptation');
+        outcome = 'ATTACK_SUCCEEDED';
+        confidence = Math.max(confidence, Math.min(97, 85 + (i.score >= 95 ? 6 : 0)));
+      }
     }
     this.note(ctx, 'decide', `Verdict: ${outcome.replace('_', ' ').toLowerCase()} (${confidence}%)`, reasons.join(' '), 'verdict');
 
@@ -200,7 +220,8 @@ class Investigator {
 
   async runLlm(ctx, alert) {
     const system = `You are a tier-3 SOC analyst. Investigate the alert with the tools, in this order:
-packet metadata -> asset inventory (for the internal host) -> IP reputation (external party) -> CVE knowledge base (pass asset_ip) -> host logs (pass client_ip).
+packet metadata -> asset inventory (for the internal host) -> IP reputation (external party) -> lookup_indicator for any domain, URL, hash or JA3 in the indicators -> CVE knowledge base (pass asset_ip) -> host logs (pass client_ip).
+Outbound traffic from an internal host to a known C2 (Feodo, ThreatFox botnet_cc) is evidence of compromise.
 Decide: ATTACK_SUCCEEDED needs host evidence of execution or access; ATTACK_FAILED when the host rejected it; FALSE_POSITIVE when the host does not run the targeted software.
 If succeeded, BLOCK the external IP and ISOLATE the internal host, then verify_defense_state. Never block on a false positive.
 Finish by calling record_investigation_verdict once, then reply with a short plain summary. Only use facts from tool output.`;
@@ -228,7 +249,7 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
           messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ error: `Unknown tool ${name}` }) });
           continue;
         }
-        const phase = { get_packet_metadata: 'triage', ingest_nids_alerts: 'triage', lookup_asset_inventory: 'enrich', query_cve_kb: 'enrich', check_ip_reputation: 'enrich',
+        const phase = { get_packet_metadata: 'triage', ingest_nids_alerts: 'triage', lookup_asset_inventory: 'enrich', query_cve_kb: 'enrich', check_ip_reputation: 'enrich', lookup_indicator: 'enrich',
           query_server_logs: 'correlate', execute_firewall_action: 'contain', verify_defense_state: 'verify', record_investigation_verdict: 'decide' }[name];
         const res = await this.call(ctx, phase, name, { ...args, actor: name === 'execute_firewall_action' ? 'Aegis agent' : undefined }, labelFor(name, args));
         if (name === 'lookup_asset_inventory' && !res.error) assetRes = res;
@@ -318,6 +339,7 @@ function labelFor(name, a) {
     case 'get_packet_metadata': return 'Decode captured payload';
     case 'lookup_asset_inventory': return `Inventory lookup for ${a.ip_address}`;
     case 'check_ip_reputation': return `Reputation of ${a.ip_address}`;
+    case 'lookup_indicator': return `Threat intel on ${a.indicator}`;
     case 'query_cve_kb': return `Knowledge base: ${a.cve_id || a.keyword || 'search'}`;
     case 'query_server_logs': return `Host telemetry on ${a.host_ip}`;
     case 'execute_firewall_action': return `${a.action} ${a.target_ip}`;

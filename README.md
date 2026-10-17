@@ -16,6 +16,8 @@ Express on Node, with Supabase Postgres or a local file for storage. There is no
  Nmap XML, CMDB CSV, agent --/api/ingest/assets------>  +--------+  <--NVD CVE API 2.0 (CPE ranges, CISA KEV)
                                                               ^
                        Spamhaus DROP, FireHOL, Tor exits, GreyNoise, Shodan InternetDB, AbuseIPDB (IP reputation)
+          abuse.ch (ThreatFox, URLhaus, MalwareBazaar, Feodo, SSLBL), MISP, RDAP, RIPEstat, passive DNS, VirusTotal
+                       SigmaHQ community rules (matched against every log batch)
 ```
 
 The quickest way to feed a Linux server in is the bundled agent, `public/agent/aegis-agent.js` (served at `/agent/aegis-agent.js`). It is a single file with no dependencies. It tails Suricata `eve.json` and your access, auth and syslog files, and pushes a host inventory every hour: OS, listening ports with versions, and installed packages from dpkg, rpm or apk.
@@ -25,7 +27,7 @@ Every investigation runs six phases, streamed live to the console:
 | Phase | What happens |
 | --- | --- |
 | Triage | Load the alert and classify the payload (JNDI, traversal, SQLi, brute force, beaconing) |
-| Enrich | Find the target in the inventory and test its installed versions against NVD CPE ranges. Score the source IP against live blocklists and reputation services |
+| Enrich | Find the target in the inventory and test its installed versions against NVD CPE ranges. Score the source IP against live blocklists and reputation services, and look up every domain, URL or hash in the payload against abuse.ch, MISP and RDAP. A JNDI callback to a known C2 is called out by name |
 | Correlate | Read the target's ingested HTTP, auth and EDR logs for the attacker's address |
 | Decide | Weigh exposure against host evidence and record a verdict with confidence and a MITRE mapping |
 | Contain | Create a BLOCK rule for the source, and an ISOLATE rule for the host when compromise is confirmed |
@@ -47,8 +49,10 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | IP profile with live blocklist, GreyNoise and Shodan data | SLA, MTTA/MTTR and ATT&CK coverage |
 | ![Detections](docs/screens/intel-detect.png) | ![Exploited CVEs](docs/screens/intel-kev.png) |
 | Built-in detection rules and the rule tester | CISA KEV catalog matched against your hosts |
+| ![Indicator lookup](docs/screens/intel-lookup.png) | ![Feeds and Sigma](docs/screens/intel-feeds.png) |
+| One indicator against abuse.ch, MISP, RDAP, BGP and passive DNS | Feed status and the SigmaHQ rule browser |
 | ![IOC check](docs/screens/intel-ioc.png) | ![Settings](docs/screens/settings.png) |
-| Bulk IOC check against six live sources | Team, API keys, integrations, policy |
+| Bulk IOC check: IPs, domains, URLs and hashes | Team, API keys, integrations, policy |
 | ![Dark theme](docs/screens/overview-dark.png) | ![Sign in](docs/screens/sign-in.png) |
 | Dark theme | Sign-in screen |
 
@@ -139,6 +143,8 @@ You do not need Suricata to get alerts. Every batch sent to `/api/ingest/logs` i
 | `ssh-success-after` | A successful login from an address that crossed the brute-force threshold | CRITICAL |
 | `web-exploit` | Request lines with JNDI lookups, path traversal, command or SQL injection, XSS, or reads of `.env`/`.git` | HIGH or CRITICAL |
 | `web-scanner` | 20 or more 403/404 answers to one client inside the window, or a known scanner user agent | MEDIUM |
+
+On top of these four, the SigmaHQ community rule pack is matched against the same batch; see [Sigma rules](#sigma-rules).
 
 Thresholds, the window and per-rule switches live under Settings > Response policy. Alerts get a stable `DET-` id per rule, client and 10-minute bucket, so a re-sent log does not raise twice. They go through the same suppression, auto-triage and notification path as sensor alerts.
 
@@ -268,6 +274,28 @@ The Threat intel page adds four tools on top of that:
 - **Find CVEs on a host.** In an asset's drawer, Find CVEs in NVD maps each versioned package to an NVD CPE and pulls the CVEs that match, keeping CVSS 7.0 or higher and anything on KEV. Without `NVD_API_KEY` it checks 4 packages per run (about 7 seconds each because of the NVD rate limit); with a key, 12. NVD matches on upstream versions, so a distribution package with backported fixes can show CVEs that are already patched.
 - **Attack origins.** The external sources behind your alerts in the chosen window, geolocated, with their reputation and how many alerts are still open.
 
+### Indicator lookup
+
+Threat intel > Lookup takes any IP, domain, URL, MD5/SHA1/SHA256 or AS number (defanged forms such as `hxxp://evil[.]com` are fine) and queries every source that applies, in parallel:
+
+| Source | Key | What it adds |
+| --- | --- | --- |
+| ThreatFox, URLhaus, MalwareBazaar, Feodo Tracker, SSLBL (abuse.ch) | none | Bulk exports downloaded and indexed in memory (about 180,000 IOCs), refreshed hourly. C2 servers, malware URLs, sample hashes and their families |
+| abuse.ch live API | `ABUSECH_AUTH_KEY` | Exact URLhaus, MalwareBazaar and ThreatFox records for anything outside the exports |
+| MISP OSINT feed (botvrij.eu) | none | Hashed attribute index of every published event, with event title, date and galaxy tags |
+| Your own MISP | `MISP_URL`, `MISP_KEY` | `attributes/restSearch` on your instance |
+| RDAP (IANA bootstrap) | none | Registrar, registration date and age for domains; network owner and abuse contact for IPs. A domain under 30 days old is a signal on its own |
+| RIPEstat | none | Announcing ASN, prefix, visibility and routing history; for an AS number, its holder and prefixes |
+| Mnemonic passive DNS | none | Which names pointed at an IP, and which IPs a domain resolved to, with first and last seen |
+| crt.sh | none | Certificates logged for a domain |
+| VirusTotal | `VT_API_KEY` | Engine verdicts, rate limited to 4 a minute and 500 a day as the free key allows |
+
+The verdict is the strongest real signal, with a small bump when three independent sources agree. A source that times out is listed as failed and does not count either way. Lookups are written to the audit log. The same lookup runs inside investigations (the `lookup_indicator` tool), in Bulk check, and on every IP profile.
+
+### Sigma rules
+
+The [SigmaHQ](https://github.com/SigmaHQ/sigma) release archive is downloaded on start and every rule whose log source Aegis receives is compiled: web server, Linux process creation, auditd, syslog and services such as sshd, sudo and cron (around 250 of the 3,000+ rules; Windows rules are skipped because Aegis does not ingest Windows event logs). Rules run on every `/api/ingest/logs` batch and in the rule tester. Hits become alerts with a stable `SIG-` id, the rule's ATT&CK technique and a link to the rule source. The lowest level that raises an alert (`medium` by default) and per-rule switches are under Threat intel > Feeds & Sigma. Set `AEGIS_SIGMA=off` to skip the download.
+
 ## What Aegis does not do for you
 
 - It does not capture traffic. Alerts come from your IDS, and evidence comes from the logs you ship. A host that sends no logs gets a lower-confidence verdict.
@@ -301,7 +329,10 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 | GET | `/api/ip/:ip`, `/api/reports/summary?days=30` | IP profile, SLA and ATT&CK report |
 | GET / POST | `/api/detect/rules`, `/api/detect/test` | Built-in rules with hit counts; dry-run rule tester |
 | GET / POST | `/api/intel/kev`, `/api/intel/kev/sync` | CISA KEV status, overlap with your CVEs, flag records |
-| POST | `/api/intel/bulk` | Score up to 100 IOCs |
+| POST | `/api/intel/bulk` | Score up to 100 IOCs (IPs, domains, URLs, hashes) |
+| GET | `/api/intel/lookup?q=` | One indicator across every intel source |
+| GET / POST | `/api/intel/feeds`, `/api/intel/feeds/refresh` | Feed status; force a re-download (admin) |
+| GET | `/api/sigma/rules?q=&level=&target=` | Compiled SigmaHQ rules with 30-day hit counts |
 | GET | `/api/intel/origins?days=30` | Geolocated alert sources |
 | GET / POST | `/api/assets/:ip/software`, `/api/assets/:ip/discover` | Packages mapped to CPEs; pull matching CVEs from NVD |
 | GET | `/api/export/alerts.csv`, `/api/export/audit.csv`, `/api/investigations/:id/report.md` | Exports |
@@ -312,7 +343,7 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 npm test
 ```
 
-There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 79 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
+There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, abuse.ch and MISP feed parsers, indicator extraction, the Sigma compiler, the intel hub verdict, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 102 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
 
 To run the HTTP suite against the Supabase project in `.env` instead of a temp file, set `AEGIS_TEST_SUPABASE=1`. It empties every Aegis table before and after the run, so use a staging project, never one holding real incidents.
 

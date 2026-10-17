@@ -1,6 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["bom1"],
+  "functions": { "server.js": { "maxDuration": 60, "memory": 1024 } },
   "crons": [{ "path": "/api/cron/retention", "schedule": "0 3 * * *" }],
   "headers": [
     {

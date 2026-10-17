@@ -277,6 +277,15 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     r = await call('GET', '/api/intel/kev');
     ok(r.status === 200 && r.json.status.loaded === false && r.json.recent.length === 0, 'KEV view reports an unloaded catalog offline');
     ok((await call('POST', '/api/intel/bulk', { body: { ips: '1.2.3.4' } })).status === 503, 'bulk IOC check refuses when intel is off');
+    r = await call('GET', '/api/intel/lookup?q=example.org');
+    ok(r.status === 200 && r.json.skipped === true && r.json.verdict === 'unknown', 'indicator lookup says intel is off instead of guessing');
+    ok((await call('GET', '/api/intel/lookup?q=%3F%3F%3F')).status === 400, 'lookup rejects text that is not an indicator');
+    r = await call('GET', '/api/intel/feeds');
+    ok(r.status === 200 && r.json.offline === true, 'feed status reports offline mode');
+    r = await call('GET', '/api/sigma/rules');
+    ok(r.status === 200 && Array.isArray(r.json.rules) && r.json.rules.length === 0, 'no Sigma rules are invented offline');
+    ok((await call('PUT', '/api/config', { body: { sigmaMinLevel: 'bogus' } })).status === 400, 'bad Sigma level rejected');
+    ok((await call('POST', '/api/intel/feeds/refresh', { body: { which: 'all' } })).status === 503, 'feed refresh refuses offline');
     r = await call('GET', '/api/intel/origins');
     ok(r.status === 200 && r.json.intel === false && r.json.sources >= 1, 'origins lists sources without locating them offline');
     r = await call('POST', '/api/assets/10.0.4.15/discover', { body: {} });

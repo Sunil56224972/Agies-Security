@@ -50,7 +50,7 @@ async function route(force = false) {
   const sameView = current.name === name && !force;
   const token = ++current.token;
   closeLayer();
-  $('#shell').classList.remove('nav-open');
+  setNav(false);
 
   $$('.nav__item').forEach((a) => {
     const on = a.dataset.route === name;
@@ -144,11 +144,20 @@ $('#theme-btn').onclick = () => {
   setTimeout(() => document.documentElement.classList.remove('theme-anim'), 400);
 };
 
-$('#menu-btn').onclick = (e) => { e.stopPropagation(); $('#shell').classList.toggle('nav-open'); };
-document.addEventListener('click', (e) => {
+// Mobile drawer: the shell's ::after is the backdrop, so any tap outside the
+// rail closes it, as do Escape and navigation.
+function setNav(open) {
   const shell = $('#shell');
-  if (shell.classList.contains('nav-open') && !e.target.closest('#rail')) shell.classList.remove('nav-open');
+  if (!shell) return;
+  shell.classList.toggle('nav-open', open);
+  document.body.classList.toggle('nav-lock', open);
+  $('#menu-btn').setAttribute('aria-expanded', String(open));
+}
+$('#menu-btn').onclick = (e) => { e.stopPropagation(); setNav(!$('#shell').classList.contains('nav-open')); };
+document.addEventListener('click', (e) => {
+  if ($('#shell').classList.contains('nav-open') && !e.target.closest('#rail')) setNav(false);
 });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#shell').classList.contains('nav-open')) setNav(false); });
 window.addEventListener('scroll', () => $('#topbar').classList.toggle('is-scrolled', window.scrollY > 4), { passive: true });
 
 // ---- Command palette -----------------------------------------------------

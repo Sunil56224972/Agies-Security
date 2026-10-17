@@ -1,11 +1,12 @@
 import { $, $$, api, esc, sev, ago, stamp, emptyState, toast, busy, emit, can, num, markPayload } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
+import { lookupTab, feedsTab, VERDICT_C } from './intel-lookup.js';
 
-// Detection rules, bulk IOC checks, the CISA KEV catalog and attacker origins.
-// Every number on this page comes from the API; nothing is filled in client-side.
+// Indicator lookup, detection rules (built-in and SigmaHQ), bulk IOC checks, feed
+// status, the CISA KEV catalog and attacker origins. Every number on this page comes
+// from the API; nothing is filled in client-side.
 
-const TABS = [['detect', 'Detections'], ['ioc', 'IOC check'], ['kev', 'Exploited CVEs'], ['origins', 'Attack origins']];
-const VERDICT_C = { malicious: 'var(--crit)', suspicious: 'var(--high)', clean: 'var(--ok)', benign: 'var(--ok)', internal: 'var(--ink-3)', unknown: 'var(--ink-3)', error: 'var(--ink-3)' };
+const TABS = [['lookup', 'Lookup'], ['detect', 'Detections'], ['ioc', 'Bulk check'], ['feeds', 'Feeds & Sigma'], ['kev', 'Exploited CVEs'], ['origins', 'Attack origins']];
 const SAMPLE = `Oct 17 09:41:02 bastion sshd[2211]: Failed password for root from 203.0.113.50 port 51112 ssh2
 Oct 17 09:41:04 bastion sshd[2211]: Failed password for root from 203.0.113.50 port 51120 ssh2
 Oct 17 09:41:07 bastion sshd[2213]: Invalid user oracle from 203.0.113.50 port 51188
@@ -17,19 +18,19 @@ Oct 17 09:41:30 bastion sshd[2230]: Accepted password for ubuntu from 203.0.113.
 let ctx = null;
 
 export async function render({ el, navigate, query }) {
-  ctx = { el, navigate, tab: TABS.some(([k]) => k === query.tab) ? query.tab : 'detect' };
+  ctx = { el, navigate, query, tab: TABS.some(([k]) => k === query.tab) ? query.tab : query.tab === 'detections' ? 'detect' : 'lookup' };
   el.innerHTML = `
     <div class="page-head">
       <div class="page-head__text">
         <h1 class="page-title">Threat intel</h1>
-        <p class="page-sub">Aegis' own detections on your logs, plus live lookups against CISA, NVD and public reputation feeds.</p>
+        <p class="page-sub">Look up any indicator across abuse.ch, MISP, RDAP and passive DNS, run SigmaHQ and built-in rules on your logs, and track what CISA says is being exploited.</p>
       </div>
     </div>
     <section class="panel reveal">
       <div class="tabs" role="tablist">${TABS.map(([k, t]) => `<button class="tab" data-tab="${k}" role="tab">${t}</button>`).join('')}</div>
       <div id="in-body"></div>
     </section>`;
-  $$('[data-tab]', el).forEach((b) => { b.onclick = () => { ctx.tab = b.dataset.tab; history.replaceState(null, '', `#/intel?tab=${ctx.tab}`); paint(); }; });
+  $$('[data-tab]', el).forEach((b) => { b.onclick = () => { ctx.tab = b.dataset.tab; ctx.query = {}; history.replaceState(null, '', `#/intel?tab=${ctx.tab}`); paint(); }; });
   await paint();
 }
 
@@ -41,8 +42,10 @@ async function paint() {
   const body = $('#in-body', el);
   body.innerHTML = '<div class="panel__body"><div class="skeleton" style="height:140px"></div></div>';
   try {
-    if (ctx.tab === 'detect') await detections(body);
+    if (ctx.tab === 'lookup') lookupTab(body, { navigate: ctx.navigate, query: ctx.query });
+    else if (ctx.tab === 'detect') await detections(body);
     else if (ctx.tab === 'ioc') iocCheck(body);
+    else if (ctx.tab === 'feeds') await feedsTab(body, { navigate: ctx.navigate });
     else if (ctx.tab === 'kev') await kevTab(body);
     else await origins(body);
   } catch (e) {
@@ -111,8 +114,14 @@ async function detections(body) {
       const r = await api('/detect/test', { method: 'POST', body: { host_ip: $('#dt-host', body).value.trim(), lines: $('#dt-lines', body).value } });
       const types = Object.entries(r.by_type).map(([k, n]) => `${n} ${k}`).join(', ');
       out.innerHTML = `<div class="small muted">${r.parsed} lines parsed (${esc(types || 'none')})${r.without_client ? `, ${r.without_client} without a remote address` : ''}${r.rejected.length ? `, ${r.rejected.length} rejected` : ''}</div>
-        ${r.findings.length ? `<div class="rows-in mt-8">${r.findings.map((f, i) => `<div class="finding" style="--i:${i}"><div class="row">${sev(f.severity)}<span class="mono small">${esc(f.rule)}</span>${f.ref ? `<span class="tag">${esc(f.ref)}</span>` : ''}</div><div class="finding__sig">${esc(f.signature)}</div><pre class="code">${f.evidence.map(markPayload).join('\n')}</pre></div>`).join('')}</div>`
-          : '<div class="notice mt-8">' + icon('check') + '<div>No rule fired on these lines.</div></div>'}`;
+        <div class="dt-group">Built-in rules</div>
+        ${r.findings.length ? `<div class="rows-in">${r.findings.map((f, i) => `<div class="finding" style="--i:${i}"><div class="row">${sev(f.severity)}<span class="mono small">${esc(f.rule)}</span>${f.ref ? `<span class="tag">${esc(f.ref)}</span>` : ''}</div><div class="finding__sig">${esc(f.signature)}</div><pre class="code">${f.evidence.map(markPayload).join('\n')}</pre></div>`).join('')}</div>`
+          : '<p class="small muted" style="margin:0">None fired.</p>'}
+        <div class="dt-group">SigmaHQ${r.sigma && r.sigma.loaded ? ` <span class="muted">${num(r.sigma.rules)} rules, ${esc(r.sigma.version || '')}</span>` : ''}</div>
+        ${!r.sigma || (!r.sigma.loaded && !r.sigma.loading) ? '<p class="small muted" style="margin:0">Sigma is off on this server.</p>'
+          : r.sigma.loading ? '<p class="small muted" style="margin:0">The rule pack is still downloading. Run again in a few seconds.</p>'
+          : r.sigma.findings.length ? `<div class="rows-in">${r.sigma.findings.map((f, i) => `<div class="finding finding--sigma" style="--i:${i}"><div class="row wrap">${sev(f.severity)}${f.technique ? `<span class="tag">${esc(f.technique)}</span>` : ''}${f.cve ? `<span class="tag tag--kev">${esc(f.cve)}</span>` : ''}</div><div class="finding__sig">${f.link ? `<a class="ip-link" href="${esc(f.link)}" target="_blank" rel="noopener noreferrer">${esc(f.title)}</a>` : esc(f.title)}</div><pre class="code">${f.evidence.map(markPayload).join('\n')}</pre></div>`).join('')}</div>`
+          : '<p class="small muted" style="margin:0">None fired.</p>'}`;
       hydrateIcons(out);
     } catch (err) { out.innerHTML = `<div class="notice notice--warn">${icon('alert')}<div>${esc(err.message)}</div></div>`; hydrateIcons(out); }
   });
@@ -122,16 +131,18 @@ async function detections(body) {
 function iocCheck(body) {
   body.innerHTML = `
     <div class="panel__body">
-      <p class="small muted" style="margin:0 0 10px">Paste up to 100 addresses in any format: a list, CSV, firewall log lines or defanged IOCs like 203.0.113[.]7. Each is checked against Spamhaus DROP, FireHOL, the Tor exit list, GreyNoise, Shodan InternetDB and ipwho.is${state.abuse ? ' and AbuseIPDB' : ''}.</p>
-      <textarea class="textarea" id="ioc-in" rows="6" spellcheck="false" placeholder="185.220.101.45&#10;45.95.147.236, 8.8.8.8"></textarea>
-      <div class="row mt-8"><button class="btn btn--primary" id="ioc-go">${icon('search')}Check addresses</button><span class="small muted" id="ioc-n"></span>
+      <p class="small muted" style="margin:0 0 10px">Paste up to 100 indicators in any format: a list, CSV, log lines or defanged IOCs like 203.0.113[.]7 or hxxps://bad[.]example. IPs go to Spamhaus DROP, FireHOL, Tor, GreyNoise, Shodan InternetDB${state.abuse ? ', AbuseIPDB' : ''}, Feodo and ThreatFox; domains, URLs and hashes to ThreatFox, URLhaus, MalwareBazaar, MISP and RDAP.</p>
+      <textarea class="textarea" id="ioc-in" rows="6" spellcheck="false" placeholder="185.220.101.45&#10;update-check[.]example, 44d88612fea8a8f36de82e1278abb02f"></textarea>
+      <div class="row mt-8"><button class="btn btn--primary" id="ioc-go">${icon('search')}Check all</button><span class="small muted" id="ioc-n"></span>
         <div class="grow"></div><button class="btn btn--sm btn--ghost" id="ioc-csv" disabled>${icon('download')}CSV</button></div>
     </div>
     <div id="ioc-out"></div>`;
   const ta = $('#ioc-in', body);
   const count = () => {
-    const n = new Set((ta.value.replace(/\[\.\]/g, '.').match(/(?:\d{1,3}\.){3}\d{1,3}/g) || [])).size;
-    $('#ioc-n', body).textContent = n ? `${n} IPv4 address${n === 1 ? '' : 'es'} found` : '';
+    // Rough client-side count; the server does the real parsing.
+    const s = ta.value.replace(/\[\.\]|\(\.\)/g, '.').replace(/hxxp/gi, 'http');
+    const n = new Set([...(s.match(/https?:\/\/[^\s"'<>]+/gi) || []), ...(s.replace(/https?:\/\/[^\s"'<>]+/gi, ' ').match(/\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[a-f0-9]{32}\b|\b[a-f0-9]{40}\b|\b[a-f0-9]{64}\b|\b(?:[a-z0-9-]+\.)+[a-z]{2,24}\b/gi) || [])].map((x) => x.toLowerCase())).size;
+    $('#ioc-n', body).textContent = n ? `about ${n} indicator${n === 1 ? '' : 's'}` : '';
   };
   ta.oninput = count;
   let last = null;
@@ -144,23 +155,23 @@ function iocCheck(body) {
       const s = last.summary;
       out.innerHTML = `
         <div class="ioc-sum">${[['malicious', s.malicious], ['suspicious', s.suspicious], ['clean', s.clean], ['internal', s.internal], ['unknown', s.unknown]].map(([k, n]) => `<div><i style="background:${VERDICT_C[k]}"></i><b>${n}</b><span>${k}</span></div>`).join('')}</div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Address</th><th>Verdict</th><th class="hide-sm">Network</th><th class="hide-sm">Seen by</th><th class="num">Alerts</th><th></th></tr></thead><tbody class="rows-in">
-          ${last.results.sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map((r, i) => `<tr style="--i:${Math.min(i, 30)}" class="is-clickable" data-ip="${esc(r.ip)}">
-            <td><span class="cell-main mono">${esc(r.ip)}</span><span class="cell-sub">${r.country ? esc(r.country) : ''}${r.asn ? ` &middot; ${esc(r.asn)}` : ''}</span></td>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Indicator</th><th>Verdict</th><th class="hide-sm">Network / registrar</th><th class="hide-sm">Seen by</th><th class="num">Alerts</th><th></th></tr></thead><tbody class="rows-in">
+          ${last.results.sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map((r, i) => `<tr style="--i:${Math.min(i, 30)}" class="is-clickable" data-ip="${esc(r.ip)}" data-type="${esc(r.type || 'ipv4')}">
+            <td><span class="cell-main mono truncate" style="max-width:320px;display:block" title="${esc(r.ip)}">${esc(r.ip)}</span><span class="cell-sub">${r.type && !/^ipv/.test(r.type) ? `${esc(r.type)}${r.age_days != null ? ` &middot; ${num(r.age_days)} days old` : ''}` : ''}${r.country ? esc(r.country) : ''}${r.asn ? ` &middot; ${esc(r.asn)}` : ''}</span></td>
             <td><span class="ioc-verdict" style="--c:${VERDICT_C[r.verdict] || 'var(--ink-3)'}">${esc(r.verdict)}</span>${r.score != null ? ` <span class="mono small">${r.score}</span>` : ''}</td>
             <td class="hide-sm small truncate" style="max-width:220px">${esc(r.org || (r.internal ? 'internal range' : r.error || '-'))}</td>
-            <td class="hide-sm small">${(r.listed || []).map((l) => `<span class="tag tag--warn">${esc(l)}</span>`).join(' ')}${r.greynoise && r.greynoise !== 'unknown' ? ` <span class="tag">GreyNoise ${esc(r.greynoise)}</span>` : ''}${r.vulns ? ` <span class="tag">${r.vulns} CVEs</span>` : ''}</td>
+            <td class="hide-sm small">${r.c2 ? '<span class="tag tag--warn">C2</span> ' : ''}${(r.families || []).map((f) => `<span class="tag">${esc(f)}</span>`).join(' ')} ${(r.listed || []).map((l) => `<span class="tag tag--warn">${esc(l)}</span>`).join(' ')}${r.greynoise && r.greynoise !== 'unknown' ? ` <span class="tag">GreyNoise ${esc(r.greynoise)}</span>` : ''}${r.vulns ? ` <span class="tag">${r.vulns} CVEs</span>` : ''}</td>
             <td class="num">${r.alerts || '-'}</td>
             <td class="small">${r.blocked ? '<span class="tag tag--ok">blocked</span>' : ''}</td>
           </tr>`).join('')}
         </tbody></table></div>`;
-      $$('[data-ip]', out).forEach((r) => { r.onclick = () => ctx.navigate(`ip/${r.dataset.ip}`); });
+      $$('[data-ip]', out).forEach((r) => { r.onclick = () => ctx.navigate(/^ipv/.test(r.dataset.type) ? `ip/${r.dataset.ip}` : `intel?tab=lookup&q=${encodeURIComponent(r.dataset.ip)}`); });
       emit('data:changed');
     } catch (err) { out.innerHTML = `<div class="panel__body"><div class="notice notice--warn">${icon('alert')}<div>${esc(err.message)}</div></div></div>`; hydrateIcons(out); }
   });
   $('#ioc-csv', body).onclick = () => {
     if (!last) return;
-    const cols = ['ip', 'verdict', 'score', 'country', 'asn', 'org', 'listed', 'greynoise', 'vulns', 'alerts', 'blocked'];
+    const cols = ['ip', 'type', 'verdict', 'score', 'c2', 'families', 'country', 'asn', 'org', 'age_days', 'listed', 'greynoise', 'vulns', 'alerts', 'blocked'];
     const q = (v) => `"${String(Array.isArray(v) ? v.join(' ') : v ?? '').replace(/"/g, '""')}"`;
     const csv = [cols.join(','), ...last.results.map((r) => cols.map((c) => q(r[c])).join(','))].join('\r\n');
     const a = document.createElement('a');

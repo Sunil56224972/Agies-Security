@@ -7,6 +7,8 @@ const { isIP, isInternal, exposureFor } = require('./engine/analysis');
 const { normalizeLog } = require('./ingest/normalize');
 const detect = require('./engine/detect');
 const { discover, softwareOf } = require('./intel/discover');
+const { extractAll, isIpType } = require('./intel/indicator');
+const { scanWith, toAlerts, publicRule, LEVELS } = require('./engine/sigma');
 
 const OPEN = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
 const BULK_MAX = 100;
@@ -25,7 +27,7 @@ async function pool(items, n, fn) {
 }
 
 function registerIntel(app, ctx) {
-  const { store, reputation, nvd, kev, env, wrap, bad, need, actor } = ctx;
+  const { store, reputation, nvd, kev, hub, sigma, env, wrap, bad, need, actor } = ctx;
   const intelOn = () => Boolean(reputation && reputation.available);
 
   // ---- CISA KEV --------------------------------------------------------------
@@ -85,22 +87,101 @@ function registerIntel(app, ctx) {
     } finally { running.delete(a.ip_address); }
   }));
 
+  // ---- Indicator lookup (abuse.ch, MISP, RDAP, RIPEstat, PDNS, VirusTotal) ---------
+  app.get('/api/intel/lookup', wrap(async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) return bad(res, 'Enter an IP, domain, URL, hash or ASN');
+    if (q.length > 2048) return bad(res, 'Indicator is too long');
+    let r;
+    try { r = await hub.lookup(q, { budgetMs: Math.min(Number(req.query.wait) || 15000, 25000), vt: req.query.vt !== '0' }); } catch (err) {
+      if (err.status === 400) return bad(res, err.message);
+      throw err;
+    }
+    // Repeat polls while feeds are still downloading are not separate lookups.
+    if (!req.query.poll) await store.audit.add({ actor: actor(req), action: 'intel.lookup', target: r.indicator.display.slice(0, 200), detail: `${r.indicator.type}: ${r.verdict}${r.score != null ? ` (${r.score})` : ''}` });
+    const ip = isIpType(r.indicator.type) ? r.indicator.value : r.indicator.host && isIP(r.indicator.host) ? r.indicator.host : null;
+    if (ip) {
+      const alerts = (await store.alerts.list({ lite: true, limit: 5000 })).filter((a) => a.source_ip === ip || a.dest_ip === ip);
+      r.local = { alerts: alerts.length, open: alerts.filter((a) => OPEN.includes(a.status)).length, blocked: (await store.rules.list()).some((x) => x.is_active && x.target_ip === ip && x.action === 'BLOCK') };
+    }
+    res.json(r);
+  }));
+
+  app.get('/api/intel/samples', wrap(async (req, res) => {
+    if (!hub.available) return res.json({ samples: [], offline: true });
+    res.json({ samples: await hub.abusech.samples() });
+  }));
+
+  app.get('/api/intel/feeds', wrap(async (req, res) => {
+    res.json({ ...hub.describe(), sigma: { enabled: sigma.available, ...sigma.status() } });
+  }));
+
+  app.post('/api/intel/feeds/refresh', need('configure'), wrap(async (req, res) => {
+    if (!hub.available) return bad(res, 'Threat intel is disabled on this server (AEGIS_INTEL=off)', 503);
+    const which = String((req.body || {}).which || 'all');
+    const started = Date.now();
+    const out = {};
+    if (which === 'all' || which === 'feeds') out.feeds = await hub.refresh();
+    if ((which === 'all' || which === 'sigma') && sigma.available) {
+      try { await sigma.refresh(); out.sigma = { ok: true }; } catch (err) { out.sigma = { ok: false, error: err.message }; }
+    }
+    await store.audit.add({ actor: actor(req), action: 'intel.feeds_refreshed', target: which, detail: `${Date.now() - started} ms` });
+    res.json({ ...out, ms: Date.now() - started, ...hub.describe(), sigma_status: sigma.status() });
+  }));
+
+  // ---- Sigma rules ---------------------------------------------------------------
+  app.get('/api/sigma/rules', wrap(async (req, res) => {
+    const cfg = await store.config.get();
+    const status = { enabled: sigma.available && cfg.sigmaEnabled !== false, ...sigma.status() };
+    const rules = sigma.available ? await sigma.rules(Math.min(Number(req.query.wait) || 8000, 20000)) : null;
+    if (!rules) return res.json({ status, rules: [], total: 0, loading: sigma.available && !status.error });
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const per = {};
+    for (const a of (await store.alerts.list({ since, lite: true, limit: 20000 })).filter((x) => x.sensor === 'sigma')) {
+      const id = String(a.external_ref || '').split(' ')[0].replace('sigma:', '');
+      per[id] = per[id] || { total: 0, open: 0, last: null };
+      per[id].total += 1;
+      if (OPEN.includes(a.status)) per[id].open += 1;
+      if (!per[id].last || a.detected_at > per[id].last) per[id].last = a.detected_at;
+    }
+    const q = String(req.query.q || '').toLowerCase().trim();
+    const level = String(req.query.level || '');
+    const target = String(req.query.target || '');
+    const off = new Set(cfg.sigmaDisabled || []);
+    const min = LEVELS[cfg.sigmaMinLevel || 'low'] ?? 0;
+    let list = rules.map((r) => ({ ...publicRule(r), enabled: !off.has(r.id) && LEVELS[r.level] >= min, hits_30d: per[r.id] ? per[r.id].total : 0, open: per[r.id] ? per[r.id].open : 0, last_hit: per[r.id] ? per[r.id].last : null }));
+    if (q) list = list.filter((r) => `${r.title} ${r.id} ${r.technique || ''} ${r.cve || ''} ${(r.tags || []).join(' ')} ${r.description || ''}`.toLowerCase().includes(q));
+    if (level) list = list.filter((r) => r.level === level);
+    if (target) list = list.filter((r) => (target === 'service' ? r.target.startsWith('svc:') : r.target === target));
+    list.sort((a, b) => b.hits_30d - a.hits_30d || (LEVELS[b.level] - LEVELS[a.level]) || a.title.localeCompare(b.title));
+    const limit = Math.min(Number(req.query.limit) || 60, 300);
+    res.json({ status, total: rules.length, matched: list.length, rules: list.slice(0, limit), firing: Object.keys(per).length });
+  }));
+
   // ---- Bulk IOC check ----------------------------------------------------------
   app.post('/api/intel/bulk', wrap(async (req, res) => {
     if (!intelOn()) return bad(res, 'Threat intel is disabled on this server (AEGIS_INTEL=off)', 503);
     const raw = (req.body || {}).ips;
     const text = Array.isArray(raw) ? raw.join('\n') : String(raw || '');
     // Accept anything pasted: CSV, firewall logs, defanged IOCs like 1.2.3[.]4.
-    const found = text.replace(/\[\.\]|\(\.\)/g, '.').match(/(?:\d{1,3}\.){3}\d{1,3}|[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}/gi) || [];
-    const ips = [...new Set(found.map((x) => x.toLowerCase()).filter(isIP))];
-    if (!ips.length) return bad(res, 'No IP addresses found in the input');
-    if (ips.length > BULK_MAX) return bad(res, `At most ${BULK_MAX} addresses per check (found ${ips.length})`, 413);
-    const results = await pool(ips, 5, async (ip) => {
-      if (isInternal(ip)) return { ip, internal: true, verdict: 'internal', score: null };
+    // IPs, domains, URLs and hashes in any order; ASNs are left to the single lookup.
+    const inds = extractAll(text).filter((i) => i.type !== 'asn');
+    const ips = inds.map((i) => i.value);
+    if (!inds.length) return bad(res, 'No IP addresses, domains, URLs or hashes found in the input');
+    if (inds.length > BULK_MAX) return bad(res, `At most ${BULK_MAX} indicators per check (found ${inds.length})`, 413);
+    const results = await pool(inds, 5, async (ind) => {
+      const ip = ind.value;
+      if (!isIpType(ind.type)) {
+        try {
+          const r = await hub.lookup(ind.value, { budgetMs: 8000, vt: false });
+          return { ip, type: ind.type, verdict: r.verdict, score: r.score, listed: [...new Set(r.hits.filter((h) => h.score != null).map((h) => h.source))], families: r.families, c2: r.c2, org: r.whois ? r.whois.registrar || r.whois.org || null : null, age_days: r.whois ? r.whois.age_days ?? null : null, summary: r.summary, sources_failed: r.sources_failed.length, pending: r.pending.length };
+        } catch (err) { return { ip, type: ind.type, verdict: 'error', score: null, error: err.message }; }
+      }
+      if (isInternal(ip)) return { ip, type: ind.type, internal: true, verdict: 'internal', score: null };
       try {
         const r = await reputation.check(ip);
-        return { ip, verdict: r.verdict || 'unknown', score: r.score, listed: (r.listed || []).map((l) => l.list), country: r.country, org: r.isp, asn: r.geo ? r.geo.asn : null, greynoise: r.greynoise ? r.greynoise.classification : null, ports: r.shodan ? r.shodan.ports.slice(0, 8) : [], vulns: r.shodan ? r.shodan.vulns.length : 0, summary: r.summary, sources_failed: (r.sources_failed || []).length, cached: Boolean(r.cached) };
-      } catch (err) { return { ip, verdict: 'error', score: null, error: err.message }; }
+        return { ip, type: ind.type, verdict: r.verdict || 'unknown', score: r.score, listed: [...new Set([...(r.listed || []).map((l) => l.list), ...(r.iocs || []).filter((h) => h.score != null).map((h) => h.source)])], c2: Boolean(r.c2), country: r.country, org: r.isp, asn: r.geo ? r.geo.asn : null, greynoise: r.greynoise ? r.greynoise.classification : null, ports: r.shodan ? r.shodan.ports.slice(0, 8) : [], vulns: r.shodan ? r.shodan.vulns.length : 0, summary: r.summary, sources_failed: (r.sources_failed || []).length, cached: Boolean(r.cached) };
+      } catch (err) { return { ip, type: ind.type, verdict: 'error', score: null, error: err.message }; }
     });
     const seen = await store.alerts.list({ statuses: undefined, lite: true, limit: 5000 });
     const counts = {};
@@ -108,7 +189,7 @@ function registerIntel(app, ctx) {
     const rules = (await store.rules.list()).filter((r) => r.is_active);
     for (const r of results) { r.alerts = counts[r.ip] || 0; r.blocked = rules.some((x) => x.target_ip === r.ip && x.action === 'BLOCK'); }
     const by = (v) => results.filter((r) => r.verdict === v).length;
-    await store.audit.add({ actor: actor(req), action: 'intel.bulk', target: `${ips.length} addresses`, detail: `${by('malicious')} malicious, ${by('suspicious')} suspicious` });
+    await store.audit.add({ actor: actor(req), action: 'intel.bulk', target: `${ips.length} indicators`, detail: `${by('malicious')} malicious, ${by('suspicious')} suspicious` });
     res.json({ checked: results.length, summary: { malicious: by('malicious'), suspicious: by('suspicious'), clean: by('clean') + by('benign'), internal: by('internal'), unknown: by('unknown') + by('error') }, results });
   }));
 
@@ -192,7 +273,22 @@ function registerIntel(app, ctx) {
     });
     const cfg = await store.config.get();
     const findings = detect.evaluate(parsed, { ...cfg, detectEnabled: true }, { now: Date.now() });
+    let sigmaOut = { loaded: false, rules: 0, findings: [] };
+    if (sigma.available) {
+      const s = await sigma.scan(parsed, { budgetMs: 15000, minLevel: cfg.sigmaMinLevel || 'low', disabled: cfg.sigmaDisabled || [] });
+      if (s) {
+        const byId = new Map(s.matches.map((m) => [m.rule.id, m.rule]));
+        sigmaOut = {
+          loaded: true, rules: s.rules, version: sigma.status().version,
+          findings: toAlerts(s.matches).map((a) => {
+            const rule = publicRule(byId.get(a.external_ref.split(' ')[0].replace('sigma:', '')));
+            return { rule: rule.id, title: rule.title, level: rule.level, technique: rule.technique || null, cve: rule.cve || null, link: rule.link || null, severity: a.severity, source_ip: a.source_ip, dest_ip: a.dest_ip, evidence: a.raw_payload.split('\n\n')[1].split('\n').slice(0, 4) };
+          })
+        };
+      } else sigmaOut.loading = true;
+    }
     res.json({
+      sigma: sigmaOut,
       parsed: parsed.length, rejected: rejected.slice(0, 20),
       without_client: parsed.filter((l) => !l.client_ip).length,
       by_type: parsed.reduce((m, l) => ({ ...m, [l.log_type]: (m[l.log_type] || 0) + 1 }), {}),

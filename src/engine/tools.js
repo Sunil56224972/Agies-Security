@@ -8,7 +8,7 @@ const CONTAINED_STATES = ['ENFORCED'];
 
 // Tool implementations shared by the deterministic playbook and the LLM agent.
 // Every tool returns plain JSON and never throws; failures come back as { error }.
-function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputation = null } = {}) {
+function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputation = null, hub = null } = {}) {
   const tools = {
     async ingest_nids_alerts({ alert_id, severity } = {}) {
       if (alert_id) {
@@ -47,6 +47,26 @@ function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputa
       if (isInternal(ip_address)) return { ip: ip_address, skipped: true, reason: 'Internal address' };
       if (!reputation || !reputation.available) return { ip: ip_address, skipped: true, reason: 'Threat intel is disabled' };
       try { return await reputation.check(ip_address); } catch (err) { return { error: err.message }; }
+    },
+
+    // Domains, URLs, hashes and ASNs against abuse.ch, MISP, RDAP, passive DNS and VirusTotal.
+    async lookup_indicator({ indicator } = {}) {
+      if (!indicator) return { error: 'indicator is required' };
+      if (!hub || !hub.available) return { indicator, skipped: true, reason: 'Threat intel is disabled' };
+      try {
+        const r = await hub.lookup(indicator, { budgetMs: 12000 });
+        // The model gets the facts, not every passive DNS row.
+        return {
+          indicator: r.indicator.display, type: r.indicator.type, verdict: r.verdict, score: r.score, summary: r.summary, c2: r.c2, families: r.families,
+          signals: r.signals.slice(0, 8),
+          hits: r.hits.slice(0, 6).map((h) => ({ source: h.source, kind: h.kind, malware: h.malware, detail: h.detail, first_seen: h.first_seen, link: h.link })),
+          whois: r.whois && r.whois.found ? { registrar: r.whois.registrar, registered: r.whois.registered, age_days: r.whois.age_days, org: r.whois.org, country: r.whois.country, range: r.whois.range } : null,
+          bgp: r.bgp && r.bgp.asns ? { prefix: r.bgp.prefix, asns: r.bgp.asns } : null,
+          pdns: r.pdns && r.pdns.records ? { total: r.pdns.total, first_seen: r.pdns.first_seen, recent: r.pdns.records.slice(0, 5).map((x) => `${x.query} ${x.rrtype} ${x.answer}`) } : null,
+          virustotal: r.virustotal && r.virustotal.found ? { malicious: r.virustotal.malicious, total: r.virustotal.total, label: r.virustotal.label } : r.virustotal && r.virustotal.skipped ? 'not configured' : null,
+          sources_ok: r.sources_ok, sources_failed: r.sources_failed.map((f) => f.source)
+        };
+      } catch (err) { return { error: err.message }; }
     },
 
     async query_cve_kb({ cve_id, keyword, asset_ip } = {}) {
@@ -144,6 +164,8 @@ const TOOL_DEFINITIONS = [
     ip_address: { type: 'string' } }, ['ip_address']],
   ['check_ip_reputation', 'Reputation of an external IP: Spamhaus DROP, FireHOL and Tor exit lists, GreyNoise, Shodan InternetDB, geolocation/ASN, and AbuseIPDB when configured. Returns a 0-100 score, verdict and per-source detail.', {
     ip_address: { type: 'string' } }, ['ip_address']],
+  ['lookup_indicator', 'Threat intel for a domain, URL, file hash (md5/sha1/sha256), JA3 or ASN found in the payload: ThreatFox, URLhaus, MalwareBazaar, Feodo, SSLBL, MISP OSINT, RDAP registration age, passive DNS and VirusTotal when configured.', {
+    indicator: { type: 'string', description: 'e.g. update.example.net, http://host/p.sh, a sha256' } }, ['indicator']],
   ['query_cve_kb', 'Look up a CVE (fetched from NVD if not cached) or search by keyword. Pass asset_ip to get per-asset exposure from CPE version ranges.', {
     cve_id: { type: 'string' }, keyword: { type: 'string' }, asset_ip: { type: 'string' } }, []],
   ['query_server_logs', 'Read host telemetry (http_access, auth_log, edr_process, system) to see whether the exploit executed.', {

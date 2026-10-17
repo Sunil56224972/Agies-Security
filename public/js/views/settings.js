@@ -1,4 +1,4 @@
-import { $, $$, api, esc, ago, stamp, toast, busy, emit, state, modal, closeLayer, can, copyText, pill, label } from '../core.js';
+import { $, $$, api, esc, ago, stamp, toast, busy, emit, state, modal, closeLayer, can, copyText, pill, label, num } from '../core.js';
 import { icon, hydrateIcons } from '../icons.js';
 
 let ctx = null;
@@ -75,6 +75,8 @@ function policyPanel(health, configure) {
       <input class="input input--mono" type="number" min="0" max="720" name="autoBlockTtlHours" ${dis}></div>
     <div class="setting"><div><div class="setting__label">Built-in detections</div><div class="setting__help">Raise alerts from ingested SSH and web server logs: brute force, login after failures, exploit strings and scanners. Rules can be switched one by one under Threat intel.</div></div>
       <button class="switch" role="switch" name="detectEnabled" aria-label="Built-in detections" ${dis}></button></div>
+    <div class="setting"><div><div class="setting__label">SigmaHQ rules</div><div class="setting__help">Run the community Sigma rules on every log batch. Alerts below the chosen level are not raised. Individual rules can be switched off under Threat intel.</div></div>
+      <div class="row"><select class="select" name="sigmaMinLevel" aria-label="Lowest Sigma level" style="width:auto" ${dis}>${['low', 'medium', 'high', 'critical'].map((l) => `<option value="${l}">${l} and up</option>`).join('')}</select><button class="switch" role="switch" name="sigmaEnabled" aria-label="SigmaHQ rules" ${dis}></button></div></div>
     <div class="setting setting--stack"><div><div class="setting__label">Detection thresholds</div><div class="setting__help">Failed SSH logins, or 403/404 answers, from one address inside the window before an alert is raised.</div></div>
       <div class="sla-inputs">${[['detectSshThreshold', 'SSH failures', 2, 1000], ['detectScanThreshold', '403/404s', 3, 5000], ['detectWindowMin', 'Window (min)', 1, 1440]].map(([k, t, lo, hi]) => `<label class="field"><span>${t}</span><input class="input input--mono" type="number" min="${lo}" max="${hi}" name="${k}" ${dis}></label>`).join('')}</div></div>
     <div class="setting setting--stack"><div><div class="setting__label">First-response targets</div><div class="setting__help">Minutes from detection to the first owner, note or status change. Reports measure every alert against these.</div></div>
@@ -90,7 +92,7 @@ function bindPolicy(config) {
   const dirty = () => { saveBtn.disabled = JSON.stringify(draft) === JSON.stringify(base()); };
   $$('.panel [name]', el).forEach((f) => {
     const k = f.getAttribute('name');
-    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours', 'detectEnabled'].includes(k)) return;
+    if (!(k in draft) && !['autoInvestigate', 'autoBlockTtlHours', 'detectEnabled', 'sigmaEnabled', 'sigmaMinLevel'].includes(k)) return;
     if (f.classList.contains('switch')) {
       f.setAttribute('aria-checked', String(Boolean(draft[k])));
       f.onclick = () => { draft[k] = !draft[k]; f.setAttribute('aria-checked', String(draft[k])); dirty(); };
@@ -104,8 +106,8 @@ function bindPolicy(config) {
   paintEngine();
   saveBtn.onclick = () => busy(saveBtn, async () => {
     try {
-      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled, detectSshThreshold, detectScanThreshold, detectWindowMin } = draft;
-      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled: detectEnabled !== false, detectSshThreshold: detectSshThreshold || 5, detectScanThreshold: detectScanThreshold || 20, detectWindowMin: detectWindowMin || 10 } });
+      const { autoContainmentThreshold, isolateOnCompromise, autoInvestigate, engine, maxIterations, alertRetentionDays, autoBlockTtlHours, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled, detectSshThreshold, detectScanThreshold, detectWindowMin, sigmaEnabled, sigmaMinLevel } = draft;
+      const saved = await api('/config', { method: 'PUT', body: { autoContainmentThreshold, isolateOnCompromise, autoInvestigate: Boolean(autoInvestigate), engine, maxIterations, alertRetentionDays, autoBlockTtlHours: autoBlockTtlHours ?? 0, slaCritical, slaHigh, slaMedium, slaLow, detectEnabled: detectEnabled !== false, detectSshThreshold: detectSshThreshold || 5, detectScanThreshold: detectScanThreshold || 20, detectWindowMin: detectWindowMin || 10, sigmaEnabled: sigmaEnabled !== false, sigmaMinLevel: sigmaMinLevel || 'medium' } });
       Object.assign(config, saved);
       state.config = saved;
       toast('Policy saved', 'Applies to the next investigation.', 'ok');
@@ -126,6 +128,11 @@ function integrationsPanel(h) {
     ${row(`Storage: ${isSb ? 'Supabase Postgres' : 'Local JSON file'}`, h.storage.ok ? (isSb ? true : 'warn') : false, esc(h.storage.warning || h.storage.detail || (h.storage.ok ? 'Connected' : 'Unavailable')) + (isSb ? '' : '. Fine for one node; use Supabase for anything shared.'), isSb ? '' : 'SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY')}
     ${row('NVD CVE API', h.intel.nvd_key ? true : 'warn', h.intel.nvd_key ? 'API key set: 50 requests per 30 s.' : 'No key: NVD allows 5 requests per 30 s, so sync is slow.', 'NVD_API_KEY')}
     ${row('IP reputation', h.intel.reputation ? true : 'warn', h.intel.reputation ? `Checked live against ${esc((h.intel.sources || []).join(', '))}.${h.intel.abuseipdb ? '' : ' Add an AbuseIPDB key for community report counts.'}` : 'Off (AEGIS_INTEL=off).', 'ABUSEIPDB_API_KEY (optional)')}
+    ${row('abuse.ch feeds', h.intel.feeds ? true : 'warn', h.intel.feeds ? `ThreatFox, URLhaus, MalwareBazaar, Feodo Tracker and SSLBL bulk exports, refreshed hourly.${h.intel.abusech_key ? ' Auth key set: any hash or host can also be queried live.' : ' Add an abuse.ch Auth-Key to query any hash or host live, not only the exported ones.'}` : 'Off (AEGIS_INTEL=off).', 'ABUSECH_AUTH_KEY (optional)')}
+    ${row('MISP', h.intel.feeds ? true : 'warn', h.intel.misp_own ? 'Your MISP instance plus the botvrij.eu OSINT feed.' : 'botvrij.eu OSINT feed (public MISP feed). Point Aegis at your own instance to search it too.', 'MISP_URL, MISP_KEY (optional)')}
+    ${row('RDAP, RIPEstat, passive DNS', h.intel.feeds ? true : 'warn', h.intel.feeds ? 'Registration owner and domain age from the registries, BGP origin from RIPEstat, resolution history from Mnemonic, certificates from crt.sh. No keys needed.' : 'Off (AEGIS_INTEL=off).', '')}
+    ${row('VirusTotal', h.intel.vt_key ? true : 'warn', h.intel.vt_key ? 'Key set. Free tier: 4 lookups a minute, 500 a day; results are cached for 12 hours.' : 'Off. A free key from virustotal.com adds 70+ engine verdicts to every lookup.', 'VT_API_KEY')}
+    ${row('SigmaHQ rules', h.sigma && h.sigma.loaded ? true : h.sigma && h.sigma.enabled ? 'warn' : false, h.sigma && h.sigma.loaded ? `${num(h.sigma.rules)} rules from release ${esc(h.sigma.version || '')} run on every log batch. Tune them under Threat intel, Feeds & Sigma.` : h.sigma && h.sigma.enabled ? (h.sigma.error ? `Download failed: ${esc(h.sigma.error)}` : 'Loads from GitHub on first use (about 3 MB).') : 'Off on this server.', 'AEGIS_SIGMA=on | off')}
     ${row('LLM agent (Groq)', h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}.` : 'Off. The rule-based playbook handles every run. Add a free key from console.groq.com to turn it on.', 'GROQ_API_KEY')}
     ${h.demo && can('manage') ? `<div class="setting"><div><div class="setting__label">Demo mode</div><div class="setting__help">AEGIS_DEMO=1 is set. Sample data can be restored; never enable this in production.</div></div><button class="btn btn--danger btn--sm" id="st-reset">Reset sample data</button></div>` : ''}
   </section>`;

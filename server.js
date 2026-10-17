@@ -19,8 +19,8 @@ async function build() {
   const nvd = new NvdClient({ apiKey: process.env.NVD_API_KEY });
   const reputation = new ThreatIntel({ abuseKey: process.env.ABUSEIPDB_API_KEY, offline: /^(0|off|false|no)$/i.test(String(process.env.AEGIS_INTEL || '')) });
   const warnings = [storeWarning, enforceWarning].filter(Boolean);
-  const { app, investigator } = createApp({ store, enforcer, nvd, reputation, env: process.env, demo, warnings });
-  return { app, investigator, store, enforcer, reputation, warnings, demo };
+  const { app, investigator, hub, sigma } = createApp({ store, enforcer, nvd, reputation, env: process.env, demo, warnings });
+  return { app, investigator, store, enforcer, reputation, hub, sigma, warnings, demo };
 }
 
 // Built once per process (or per serverless instance). A failed boot is not
@@ -43,7 +43,10 @@ handler.use((err, req, res, next) => {
 module.exports = handler;
 
 async function main() {
-  const { store, enforcer, investigator, reputation, warnings, demo } = await boot();
+  const { store, enforcer, investigator, reputation, hub, sigma, warnings, demo } = await boot();
+  // A long-running server pulls the feeds and rules up front; serverless loads them on first use.
+  hub.warm();
+  sigma.warm();
   const users = await store.users.count();
   const server = handler.listen(PORT, HOST, () => {
     const line = (k, v) => console.log(`  ${k.padEnd(12)}${v}`);
@@ -51,7 +54,8 @@ async function main() {
     line('Storage', store.label);
     line('Enforcement', `${enforcer.label} (${enforcer.mode})`);
     line('Engine', investigator.llmAvailable ? `rule-based playbook + ${investigator.model}` : 'rule-based playbook (add GROQ_API_KEY to enable the LLM agent)');
-    line('Intel', `NVD${process.env.NVD_API_KEY ? ' (keyed)' : ' (public quota)'}, ${reputation.describe().sources.length} reputation sources`);
+    line('Intel', `NVD${process.env.NVD_API_KEY ? ' (keyed)' : ' (public quota)'}, ${reputation.describe().sources.length} reputation sources, abuse.ch + MISP feeds, VirusTotal ${process.env.VT_API_KEY ? 'on' : 'off'}`);
+    line('Sigma', sigma.available ? 'SigmaHQ rules load in the background' : 'off');
     if (demo) line('Mode', 'DEMO dataset loaded (AEGIS_DEMO=1)');
     for (const w of warnings) line('Warning', w);
     if (!users) line('Setup', `No users yet. Open http://localhost:${PORT} to create the first administrator.`);

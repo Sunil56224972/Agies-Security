@@ -91,20 +91,20 @@ function paint() {
     : emptyState(all.length ? 'No matches' : 'No alerts', all.length ? 'Try a different filter.' : 'Send Suricata EVE or JSON alerts to POST /api/ingest/alerts with an ingest API key (Settings, API keys).', 'inbox');
 
   $('#al-table', el).innerHTML = rows.length ? `
-    <div class="table-wrap"><table class="table">
+    <div class="table-wrap"><table class="table table--alerts">
       <thead><tr>
         ${respond ? `<th class="col-check"><input type="checkbox" class="cb" id="al-all" aria-label="Select all" ${allOn ? 'checked' : ''}></th>` : ''}
         <th style="width:104px">Severity</th><th>Signature</th><th class="hide-sm">Flow</th><th class="hide-md">Owner</th><th>Status</th><th class="num hide-sm">Detected</th><th style="width:1%"></th></tr></thead>
       <tbody class="rows-in">${rows.slice(0, ctx.shown).map((a, i) => `
         <tr class="is-clickable ${['CLOSED', 'FALSE_POSITIVE'].includes(a.status) ? 'is-dim' : ''} ${picked.has(a.alert_id) ? 'is-picked' : ''}" style="--i:${Math.min(i, 20)}" data-id="${esc(a.alert_id)}">
           ${respond ? `<td class="col-check"><input type="checkbox" class="cb" data-pick="${esc(a.alert_id)}" aria-label="Select ${esc(a.alert_id)}" ${picked.has(a.alert_id) ? 'checked' : ''} ${a.status === 'INVESTIGATING' ? 'disabled title="Under investigation"' : ''}></td>` : ''}
-          <td>${sev(a.severity)}</td>
-          <td><span class="cell-main">${esc(a.signature)}</span><span class="cell-sub"><span class="mono">${esc(a.alert_id)}</span> &middot; ${esc(a.category)}${a.suppressed_by ? ' &middot; suppressed' : ''}</span></td>
-          <td class="hide-sm">${flow(a.source_ip, a.dest_ip, a.dest_port)}</td>
-          <td class="hide-md">${a.assignee_name ? `<span class="owner-chip"><span class="owner-chip__i">${esc(initials(a.assignee_name))}</span>${esc(a.assignee_name)}</span>` : '<span class="small muted">-</span>'}</td>
-          <td>${pill(a.status)}</td>
-          <td class="num hide-sm small muted" title="${stamp(a.detected_at)}">${ago(a.detected_at)}</td>
-          <td>${respond ? `<button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Run investigation">Run</button>` : ''}</td>
+          <td class="al-sev">${sev(a.severity)}</td>
+          <td class="al-sig"><span class="cell-main">${esc(a.signature)}</span><span class="cell-sub"><span class="mono">${esc(a.alert_id)}</span> &middot; ${esc(a.category)}${a.suppressed_by ? ' &middot; suppressed' : ''}</span></td>
+          <td class="hide-sm al-flow">${flow(a.source_ip, a.dest_ip, a.dest_port)}</td>
+          <td class="hide-md al-own">${a.assignee_name ? `<span class="owner-chip"><span class="owner-chip__i">${esc(initials(a.assignee_name))}</span>${esc(a.assignee_name)}</span>` : '<span class="small muted">-</span>'}</td>
+          <td class="al-st">${pill(a.status)}</td>
+          <td class="num hide-sm small muted nowrap al-time" title="${stamp(a.detected_at)}">${ago(a.detected_at)}</td>
+          <td class="al-act">${respond ? `<button class="btn btn--sm ${OPEN.includes(a.status) && a.status !== 'INVESTIGATING' ? '' : 'btn--ghost'}" data-run="${esc(a.alert_id)}" ${a.status === 'INVESTIGATING' ? 'disabled' : ''} title="Run investigation">Run</button>` : ''}</td>
         </tr>`).join('')}</tbody>
     </table></div>
     <div class="table-foot">${Math.min(rows.length, ctx.shown)} of ${rows.length}${rows.length !== all.length ? ` (${all.length} loaded)` : ''}${rows.length > ctx.shown ? ` <button class="btn btn--ghost btn--sm" id="al-more">Show ${Math.min(PAGE, rows.length - ctx.shown)} more</button>` : ''}</div>` : empty;

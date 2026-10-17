@@ -75,7 +75,11 @@ class ThreatIntel {
     this.lists = new Map();
     this.loading = new Map();
     this.cache = new Map();
+    this.feeds = null;
   }
+
+  // abuse.ch and MISP feed matches (src/intel/hub.js) count towards every IP verdict.
+  attachFeeds(hub) { this.feeds = hub; }
 
   // Public sources need no key, so reputation is on unless explicitly disabled.
   get available() { return !this.offline; }
@@ -83,7 +87,7 @@ class ThreatIntel {
   describe() {
     return {
       abuseipdb: Boolean(this.abuse),
-      sources: [...LISTS.map((l) => l.name), 'GreyNoise', 'Shodan InternetDB', 'ipwho.is', ...(this.abuse ? ['AbuseIPDB'] : [])],
+      sources: [...LISTS.map((l) => l.name), 'GreyNoise', 'Shodan InternetDB', 'ipwho.is', ...(this.feeds ? ['Feodo Tracker', 'ThreatFox', 'URLhaus', 'MISP OSINT'] : []), ...(this.abuse ? ['AbuseIPDB'] : [])],
       lists: LISTS.map((l) => {
         const s = this.lists.get(l.id);
         return { id: l.id, name: l.name, entries: s && s.data ? s.data.ranges.length + s.data.exact.size : null, loaded_at: s && s.data ? new Date(s.at).toISOString() : null, error: s ? s.error || null : null };
@@ -141,7 +145,7 @@ class ThreatIntel {
       try { const v = await fn(); ok.push(name); return v; } catch (err) { failed.push({ source: name, error: err.name === 'TimeoutError' ? 'timed out' : err.message }); return null; }
     };
     const v4 = net.isIPv4(ip) ? ipv4ToInt(ip) : null;
-    const [listed, gn, sh, geo, abuse] = await Promise.all([
+    const [listed, gn, sh, geo, abuse, feed] = await Promise.all([
       Promise.all(LISTS.map(async (def) => {
         const rec = await this.loadList(def);
         if (!rec.data) { failed.push({ source: def.name, error: rec.error }); return null; }
@@ -160,8 +164,11 @@ class ThreatIntel {
         if (d.success === false) throw new Error(d.message || 'lookup failed');
         return d;
       }),
-      this.abuse ? run('AbuseIPDB', () => this.abuse.check(ip)) : null
+      this.abuse ? run('AbuseIPDB', () => this.abuse.check(ip)) : null,
+      this.feeds ? this.feeds.ipHits(ip).catch((err) => ({ hits: [], ok: [], failed: [{ source: 'abuse.ch', error: err.message }], pending: [] })) : null
     ]);
+    const iocs = feed ? feed.hits : [];
+    if (feed) { ok.push(...feed.ok); failed.push(...feed.failed); }
 
     const hits = listed.filter(Boolean);
     const greynoise = gn ? { classification: gn.classification || 'unknown', noise: Boolean(gn.noise), riot: Boolean(gn.riot), name: gn.name && gn.name !== 'unknown' ? gn.name : null, last_seen: gn.last_seen || null, unseen: Boolean(gn.unseen) } : null;
@@ -175,11 +182,15 @@ class ThreatIntel {
     else if (greynoise && greynoise.classification === 'suspicious') signals.push(50);
     if (shodan && shodan.tags.includes('malware')) signals.push(85);
     if (abuse && abuse.score != null) signals.push(abuse.score);
+    for (const h of iocs) if (h.score != null) signals.push(h.score);
     const benign = Boolean(greynoise && (greynoise.riot || greynoise.classification === 'benign'));
     const score = signals.length ? Math.max(...signals) : ok.length ? 0 : null;
     const verdict = score == null ? 'unknown' : score >= 75 ? 'malicious' : score >= 40 ? 'suspicious' : benign ? 'benign' : 'clean';
 
     const parts = [];
+    const c2 = iocs.find((h) => h.c2);
+    if (c2) parts.push(`known ${c2.malware ? `${c2.malware} ` : ''}C2 server (${c2.source})`);
+    else if (iocs.some((h) => h.score != null)) parts.push(`in ${[...new Set(iocs.map((h) => h.source))].join(', ')}${iocs[0].malware ? ` (${iocs[0].malware})` : ''}`);
     if (hits.length) parts.push(`listed on ${hits.map((h) => h.list).join(', ')}`);
     if (greynoise && !greynoise.unseen) parts.push(`GreyNoise ${greynoise.classification}${greynoise.noise ? ', scanning the internet' : ''}${greynoise.riot ? ', known business service' : ''}`);
     if (abuse && abuse.score != null) parts.push(`AbuseIPDB ${abuse.score}/100 from ${abuse.reports} reports`);
@@ -188,7 +199,7 @@ class ThreatIntel {
 
     const data = {
       ip, source: ok.join(', '), score, verdict, listed: hits.map(({ score: _s, ...h }) => h), greynoise, shodan, geo: location,
-      abuseipdb: abuse || null,
+      abuseipdb: abuse || null, iocs, c2: Boolean(c2), pending: feed ? feed.pending : [],
       reports: abuse ? abuse.reports : hits.length,
       country: (location && location.country_code) || (abuse && abuse.country) || null,
       isp: (location && location.org) || (abuse && abuse.isp) || null,
@@ -200,7 +211,8 @@ class ThreatIntel {
     };
     if (ok.length) {
       if (this.cache.size >= IP_CACHE_MAX) this.cache.delete(this.cache.keys().next().value);
-      this.cache.set(ip, { at: Date.now(), data });
+      // Feeds still downloading: keep the answer for a minute, not six hours.
+      this.cache.set(ip, { at: feed && feed.pending.length ? Date.now() - IP_TTL + 60000 : Date.now(), data });
     }
     return data;
   }

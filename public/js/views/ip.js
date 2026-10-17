@@ -126,6 +126,28 @@ async function paint() {
   if (tune) tune.onclick = () => openSuppress({ name: `Expected traffic from ${ip}`, source_cidr: ip });
   if (intel && intel.error && !ctx.warned) { ctx.warned = true; toast('Reputation lookup failed', intel.error, 'error'); }
   hydrateIcons(el);
+  if (!d.internal && intel && !intel.error && !intel.skipped) registration(ip, el);
+}
+
+// RDAP owner, BGP origin and passive DNS load after the page so it never waits on them.
+async function registration(ip, el) {
+  const box = $('#ip-reg', el);
+  if (!box) return;
+  if (ctx.reg && ctx.reg.ip === ip) { box.innerHTML = ctx.reg.html; return; }
+  box.innerHTML = '<div class="small muted row" style="gap:8px;margin-top:10px"><span class="spinner spinner--sm"></span>Registration, routing and passive DNS</div>';
+  try {
+    const r = await api(`/intel/lookup?q=${encodeURIComponent(ip)}&vt=0&poll=1&wait=6000`);
+    const w = r.whois && r.whois.found ? r.whois : null;
+    const b = r.bgp && r.bgp.asns ? r.bgp : null;
+    const p = r.pdns && r.pdns.records ? r.pdns : null;
+    const html = `<dl class="kv mt-12">
+      ${w ? `<dt>Registered to</dt><dd>${esc(w.org || w.name || '-')}${w.range ? ` <span class="mono muted small">${esc(w.range)}</span>` : ''}</dd>${w.abuse ? `<dt>Abuse contact</dt><dd class="small">${esc(w.abuse)}</dd>` : ''}` : ''}
+      ${b ? `<dt>BGP origin</dt><dd>${b.asns.map((a) => `<span class="mono">${esc(a.asn)}</span> ${esc(a.holder || '')}`).join(', ') || '-'}${b.prefix ? ` <span class="mono muted small">${esc(b.prefix)}</span>` : ''}</dd>` : ''}
+      ${p ? `<dt>Passive DNS</dt><dd>${p.records.length ? `${p.records.slice(0, 4).map((x) => `<div class="mono small truncate">${esc(x.query)}</div>`).join('')}<span class="small muted">${num(p.total)} records since ${esc(String(p.first_seen || '').slice(0, 10))}</span>` : '<span class="muted">no names seen</span>'}</dd>` : ''}
+    </dl><a class="small ip-link" href="#/intel?tab=lookup&q=${encodeURIComponent(ip)}">Full lookup</a>`;
+    ctx.reg = { ip, html };
+    if (document.body.contains(box)) box.innerHTML = html;
+  } catch { if (document.body.contains(box)) box.innerHTML = ''; }
 }
 function intelBlock(intel, score, gap) {
   const g = intel.geo || {};
@@ -136,6 +158,8 @@ function intelBlock(intel, score, gap) {
   const where = [g.city, g.country].filter(Boolean).join(', ');
   return `<dl class="kv ${gap ? 'mt-12' : ''}">
     <dt>Score</dt><dd><span class="meter"><span class="meter__track" style="width:90px"><span class="meter__fill" style="width:${score || 0}%;background:${color}"></span></span><span class="mono">${score ?? '-'}</span></span> <span class="small muted">${esc(intel.verdict || '')}</span></dd>
+    ${intel.c2 ? '<dt>Botnet C2</dt><dd><span class="tag tag--warn">command and control</span></dd>' : ''}
+    ${(intel.iocs || []).length ? `<dt>Threat feeds</dt><dd>${intel.iocs.slice(0, 6).map((h) => `<div class="small">${h.link ? `<a class="ip-link" href="${esc(h.link)}" target="_blank" rel="noopener noreferrer">${esc(h.source)}</a>` : esc(h.source)}: ${esc(h.kind)}${h.malware ? ` <b>${esc(h.malware)}</b>` : ''}${h.first_seen ? ` <span class="muted">since ${esc(String(h.first_seen).slice(0, 10))}</span>` : ''}</div>`).join('')}</dd>` : ''}
     <dt>Blocklists</dt><dd>${intel.listed && intel.listed.length ? intel.listed.map((l) => `<span class="tag tag--warn" title="${esc(l.detail)}">${esc(l.list)}</span>`).join(' ') : '<span class="muted">not listed</span>'}</dd>
     <dt>GreyNoise</dt><dd>${gn ? (gn.unseen ? '<span class="muted">not seen scanning</span>' : `${esc(gn.classification)}${gn.noise ? ', scanning the internet' : ''}${gn.riot ? ', known business service' : ''}${gn.last_seen ? ` <span class="muted small">last ${esc(gn.last_seen)}</span>` : ''}`) : '-'}</dd>
     ${ab ? `<dt>AbuseIPDB</dt><dd>${ab.score}/100 from ${num(ab.reports)} reports${ab.last_reported ? ` <span class="muted small">last ${ago(ab.last_reported)}</span>` : ''}</dd>` : ''}
@@ -145,5 +169,6 @@ function intelBlock(intel, score, gap) {
     ${sh && sh.hostnames.length ? `<dt>Hostnames</dt><dd class="mono small truncate">${esc(sh.hostnames.slice(0, 3).join(', '))}</dd>` : ''}
     ${sh && sh.vulns.length ? `<dt>CVEs seen</dt><dd>${sh.vulns.slice(0, 6).map((v) => `<span class="tag">${esc(v)}</span>`).join(' ')}${sh.vulns.length > 6 ? ` <span class="small muted">+${sh.vulns.length - 6}</span>` : ''}</dd>` : ''}
   </dl>
+  <div id="ip-reg" class="ip-reg"></div>
   <p class="small muted" style="margin:8px 0 0">${esc((intel.sources_ok || []).join(', '))}${intel.sources_failed && intel.sources_failed.length ? `. Unavailable: ${esc(intel.sources_failed.map((f) => f.source).join(', '))}` : ''}. ${intel.cached ? 'Cached' : 'Checked'} ${ago(intel.checked_at)}.</p>`;
 }
