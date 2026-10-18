@@ -68,6 +68,14 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | ![Dark theme](docs/screens/overview-dark.png) | ![Sign in](docs/screens/sign-in.png) |
 | Dark theme | Sign-in screen |
 
+On a phone the sidebar folds into a menu and tables scroll inside their card:
+
+<p align="center">
+  <img src="docs/screens/mobile-overview.png" alt="Overview on a phone" width="240">
+  <img src="docs/screens/mobile-investigation.png" alt="Investigation on a phone" width="240">
+  <img src="docs/screens/mobile-assistant.png" alt="Assistant on a phone" width="240">
+</p>
+
 ## Quick start
 
 Requires Node 18 or newer.
