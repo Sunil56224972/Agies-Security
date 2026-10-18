@@ -151,11 +151,19 @@ function hybridPanel(h) {
   if (h.error) return card(t, 'sandbox', `<p class="small lk-pad">${icon('alert')} ${esc(h.error)}</p>`);
   if (!h.found) return card(t, 'sandbox', `<p class="small muted lk-pad">No sandbox report for this hash.${h.link ? ` ${ext(h.link, 'Search there')}` : ''}</p>`);
   const c = h.verdict === 'malicious' ? 'var(--crit)' : h.verdict === 'suspicious' ? 'var(--high)' : 'var(--ok)';
-  const rows = (h.reports || []).slice(0, 5).map((r) => `<tr><td class="small">${esc(r.environment || '-')}</td><td class="small">${esc(r.verdict || '-')}</td><td class="num small">${r.threat_score ?? '-'}</td><td class="small">${esc(r.family || '')}</td></tr>`).join('');
+  const rows = (h.reports || []).slice(0, 5).map((r) => `<tr><td class="small">${esc(r.environment || '-')}</td><td class="small">${esc(r.verdict || '-')}</td><td class="small">${r.id && h.sha256 ? ext(`https://www.hybrid-analysis.com/sample/${h.sha256}/${r.id}`, 'Open report') : '-'}</td></tr>`).join('');
+  const runs = h.runs ? `${num(h.completed)} of ${num(h.runs)} sandbox run${h.runs === 1 ? '' : 's'} completed${h.malicious_runs ? `, ${num(h.malicious_runs)} malicious` : ''}` : '';
+  const kv = [
+    h.file_name ? `<dt>File</dt><dd class="mono">${esc(h.file_name)}</dd>` : '',
+    h.file_type ? `<dt>Type</dt><dd>${esc(h.file_type)}</dd>` : '',
+    h.size != null ? `<dt>Size</dt><dd>${num(h.size)} bytes</dd>` : ''
+  ].join('');
   return card(t, h.cached ? 'cached' : 'sandbox', `<div class="lk-pad">
-    <div class="lk-vt"><b style="color:${c}">${esc(h.verdict || 'no verdict')}</b><span>${h.threat_score != null ? `threat score ${h.threat_score}/100` : ''}</span></div>
+    <div class="lk-vt"><b style="color:${c}">${esc(h.verdict || 'no verdict')}</b><span>${h.threat_score != null ? `threat score ${h.threat_score}/100` : ''}${runs ? `${h.threat_score != null ? ' &middot; ' : ''}${runs}` : ''}</span></div>
     ${h.families && h.families.length ? `<div class="lk-tags mt-8">${h.families.map((f) => `<span class="tag tag--warn">${esc(f)}</span>`).join('')}</div>` : ''}
-    ${rows ? `<div class="table-wrap mt-8"><table class="table"><thead><tr><th>Environment</th><th>Verdict</th><th class="num">Score</th><th>Family</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+    ${kv ? `<dl class="kv mt-8">${kv}</dl>` : ''}
+    ${h.tags && h.tags.length ? `<div class="lk-tags mt-8">${h.tags.map((x) => `<span class="tag">${esc(x)}</span>`).join('')}</div>` : ''}
+    ${rows ? `<div class="table-wrap mt-8"><table class="table"><thead><tr><th>Environment</th><th>Verdict</th><th>Report</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
     ${h.link ? `<div class="small mt-8">${ext(h.link, 'Reports on hybrid-analysis.com')}</div>` : ''}</div>`);
 }
 
