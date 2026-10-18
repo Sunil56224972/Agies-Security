@@ -35,6 +35,7 @@ export async function render({ el, navigate, query = {} }) {
       </div>
       <div class="stack">
         ${configure ? '<section class="panel" id="st-notify"></section>' : ''}
+        ${manage ? '<section class="panel" id="st-backup"></section>' : ''}
         ${mcpPanel(manage)}
         ${integrationsPanel(health)}
         <section class="panel">
@@ -47,12 +48,13 @@ export async function render({ el, navigate, query = {} }) {
   if (configure) bindPolicy(config);
   if (manage) { paintTeam(); paintKeys(); }
   if (configure) paintNotify();
+  if (manage) paintBackup();
   bindAccount();
   $$('[data-mcp-copy]', el).forEach((b) => { b.onclick = () => copyText(b.dataset.mcpCopy === 'url' ? `/mcp` : mcpRemote(location.origin, 'aeg_YOUR_KEY'), b); });
   const reset = $('#st-reset', el);
   if (reset) reset.onclick = openReset;
   hydrateIcons(el);
-  const jump = query.section === 'approvals' ? $('#st-approvals', el) : null;
+  const jump = query.section === 'approvals' ? $('#st-approvals', el) : query.section === 'backup' ? $('#st-backup', el) : null;
   if (jump) setTimeout(() => { jump.scrollIntoView({ behavior: 'smooth', block: 'center' }); jump.classList.add('is-flash'); }, 200);
 }
 
@@ -166,7 +168,12 @@ function integrationsPanel(h) {
     ${row('RDAP, RIPEstat, passive DNS', h.intel.feeds ? true : 'warn', h.intel.feeds ? 'Registration owner and domain age from the registries, BGP origin from RIPEstat, resolution history from Mnemonic, certificates from crt.sh. No keys needed.' : 'Off (AEGIS_INTEL=off).', '')}
     ${row('VirusTotal', h.intel.vt_key ? true : 'warn', h.intel.vt_key ? 'Key set. Free tier: 4 lookups a minute, 500 a day; results are cached for 12 hours.' : 'Off. A free key from virustotal.com adds 70+ engine verdicts to every lookup.', 'VT_API_KEY')}
     ${row('SigmaHQ rules', h.sigma && h.sigma.loaded ? true : h.sigma && h.sigma.enabled ? 'warn' : false, h.sigma && h.sigma.loaded ? `${num(h.sigma.rules)} rules from release ${esc(h.sigma.version || '')} run on every log batch. Tune them under Threat intel, Feeds & Sigma.` : h.sigma && h.sigma.enabled ? (h.sigma.error ? `Download failed: ${esc(h.sigma.error)}` : 'Loads from GitHub on first use (about 3 MB).') : 'Off on this server.', 'AEGIS_SIGMA=on | off')}
-    ${row('LLM agent (Groq)', h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}.` : 'Off. The rule-based playbook handles every run. Add a free key from console.groq.com to turn it on.', 'GROQ_API_KEY')}
+    ${row('LLM agent and assistant (Groq)', h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}. Drives LLM investigations and the Assistant.` : 'Off. The rule-based playbook handles every run and the Assistant is unavailable. Add a free key from console.groq.com to turn both on.', 'GROQ_API_KEY')}
+    ${row('AlienVault OTX', h.intel.otx_key ? true : h.intel.otx ? true : 'warn', h.intel.otx_key ? 'Key set. Pulses, related malware families and adversaries are added to every lookup.' : h.intel.otx ? 'Public indicator API, no key: pulse counts and families for IPs, domains, URLs and hashes.' : 'Off.', 'OTX_API_KEY (optional, raises rate limits)')}
+    ${row('Hybrid Analysis', h.intel.ha_key ? true : 'warn', h.intel.ha_key ? 'Key set. Sandbox verdicts and threat scores for file hashes.' : 'Off. A free key from hybrid-analysis.com adds sandbox reports for hashes.', 'HYBRID_ANALYSIS_API_KEY')}
+    ${row('Jira', h.integrations && h.integrations.jira ? true : 'warn', h.integrations && h.integrations.jira ? 'Cases can be pushed to Jira and their status synced back.' : 'Off. Set all four to raise Jira issues from a case.', 'JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT')}
+    ${row('PagerDuty', true, 'Add a PagerDuty channel under Notifications with an Events API v2 integration key. Repeats of the same alert collapse into one incident.', '')}
+    ${h.workbench_migration ? row('Workbench tables', false, `The ${esc(h.workbench_migration)} migration is not applied. Assistant, workflows, documents, decisions and custom detections are disabled until it is.`, 'supabase db push') : ''}
     ${h.demo && can('manage') ? `<div class="setting"><div><div class="setting__label">Demo mode</div><div class="setting__help">AEGIS_DEMO=1 is set. Sample data can be restored; never enable this in production.</div></div><button class="btn btn--danger btn--sm" id="st-reset">Reset sample data</button></div>` : ''}
   </section>`;
 }
@@ -414,7 +421,77 @@ function openReset() {
   });
 }
 // ---- Notifications -----------------------------------------------------------
-const KIND_TEXT = { slack: 'Slack', teams: 'Microsoft Teams', webhook: 'Webhook' };
+const KIND_TEXT = { slack: 'Slack', teams: 'Microsoft Teams', webhook: 'Webhook', pagerduty: 'PagerDuty' };
+
+// ---- Backup -------------------------------------------------------------------
+function paintBackup() {
+  const box = $('#st-backup', ctx.el);
+  box.innerHTML = `
+    <div class="panel__head"><h2 class="panel__title">Backup and restore</h2><span class="panel__meta">JSON, admins only</span></div>
+    <div class="panel__body">
+      <p class="small muted" style="margin-top:0">Exports alerts, investigations, cases, rules, hunts, workflows, documents, detections and settings. Users, API keys and notification URLs are never written to the file.</p>
+      <div class="bk-row">
+        <button class="btn btn--sm btn--primary" id="bk-dl">${icon('download')}Download backup</button>
+        <label class="row small"><input type="checkbox" id="bk-logs">Include telemetry (up to 20,000 lines)</label>
+      </div>
+      <div class="bk-row mt-12">
+        <input type="file" id="bk-file" accept=".json,application/json" hidden>
+        <button class="btn btn--sm" id="bk-up">${icon('upload')}Restore from file</button>
+        <span class="small muted">Rows are merged by id; nothing is deleted.</span>
+      </div>
+      <div id="bk-out"></div>
+    </div>`;
+  hydrateIcons(box);
+  $('#bk-dl', box).onclick = (e) => busy(e.currentTarget, async () => {
+    try {
+      const data = await api(`/admin/backup${$('#bk-logs', box).checked ? '?logs=1' : ''}`);
+      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `aegis-backup-${data.created_at.slice(0, 19).replace(/[:T]/g, '-')}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      const total = Object.values(data.counts).reduce((x, y) => x + y, 0);
+      $('#bk-out', box).innerHTML = `<div class="bk-counts">${Object.entries(data.counts).filter(([, n]) => n).map(([k, n]) => `<span class="tag">${esc(label(k))} <b>${num(n)}</b></span>`).join('')}</div>`;
+      toast('Backup downloaded', `${num(total)} rows, ${(blob.size / 1024).toFixed(0)} KB`, 'ok');
+    } catch (err) { toast('Backup failed', err.message, 'error'); }
+  });
+  const file = $('#bk-file', box);
+  $('#bk-up', box).onclick = () => file.click();
+  file.onchange = () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    if (f.size > 40 * 1024 * 1024) { toast('File too large', 'Backups up to 40 MB can be restored here', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      let data;
+      try { data = JSON.parse(String(reader.result)); } catch { toast('Not a backup', 'The file is not valid JSON', 'error'); return; }
+      if (data.format !== 'aegis-backup') { toast('Not a backup', 'That file was not exported by Aegis', 'error'); return; }
+      const counts = data.counts || {};
+      const m = modal(`
+        <div class="modal__head"><h2 class="modal__title">Restore this backup?</h2></div>
+        <div class="modal__body">
+          <p class="small" style="margin-top:0">Taken ${esc(stamp(data.created_at))} by ${esc(data.created_by || 'unknown')} from a ${esc(data.store || '')} store.</p>
+          <div class="bk-counts">${Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `<span class="tag">${esc(label(k))} <b>${num(n)}</b></span>`).join('')}</div>
+          <div class="notice notice--warn mt-12">${icon('alert')}<span>Rows with the same id are overwritten with the values in the file. Settings in the file replace the current policy.</span></div>
+        </div>
+        <div class="modal__foot"><span class="form-error" id="bk-err"></span><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--danger" id="bk-go">Restore</button></div>`);
+      hydrateIcons(m);
+      $('#bk-go', m).onclick = () => busy($('#bk-go', m), async () => {
+        try {
+          const r = await api('/admin/restore', { method: 'POST', body: data });
+          closeLayer();
+          const n = Object.values(r.restored).reduce((x, y) => x + y, 0);
+          toast('Backup restored', `${num(n)} rows merged`, 'ok', 6000);
+          $('#bk-out', box).innerHTML = `<div class="bk-counts">${Object.entries(r.restored).filter(([, x]) => x).map(([k, x]) => `<span class="tag tag--ok">${esc(label(k))} <b>${num(x)}</b></span>`).join('')}</div><p class="small muted">${esc(r.note)}</p>`;
+          emit('data:changed');
+        } catch (err) { $('#bk-err', m).textContent = err.message; }
+      });
+    };
+    reader.readAsText(f);
+  };
+}
 const EVENT_TEXT = { alert: 'New alerts', containment: 'Containment rules', verdict: 'Verdicts' };
 
 function paintNotify() {
@@ -485,8 +562,9 @@ function openNewChannel() {
     <div class="modal__head"><h2 class="modal__title">Add notification channel</h2><p class="small muted" style="margin:4px 0 0">The URL and secret stay on the server. Only a masked hint is shown after saving.</p></div>
     <form class="modal__body form-grid" id="n-form" novalidate>
       <label class="field"><span>Name</span><input class="input" name="name" maxlength="60" placeholder="#soc-alerts" autocomplete="off"></label>
-      <label class="field"><span>Type</span><select class="select" name="kind"><option value="slack">Slack incoming webhook</option><option value="teams">Microsoft Teams workflow</option><option value="webhook">Generic webhook (JSON)</option></select></label>
-      <label class="field span-2"><span>Webhook URL</span><input class="input input--mono" name="url" placeholder="https://hooks.slack.com/services/..." autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>Type</span><select class="select" name="kind"><option value="slack">Slack incoming webhook</option><option value="teams">Microsoft Teams workflow</option><option value="webhook">Generic webhook (JSON)</option><option value="pagerduty">PagerDuty (Events API v2)</option></select></label>
+      <label class="field span-2" id="n-pd" hidden><span>Integration key <span class="muted">(32 characters, from an Events API v2 integration)</span></span><input class="input input--mono" name="pd_key" maxlength="32" autocomplete="off" spellcheck="false" placeholder="e.g. a1b2c3d4e5f6..."></label>
+      <label class="field span-2" id="n-url"><span>Webhook URL</span><input class="input input--mono" name="url" placeholder="https://hooks.slack.com/services/..." autocomplete="off" spellcheck="false"></label>
       <label class="field span-2" id="n-secret" hidden><span>Signing secret <span class="muted">(optional, 16+ characters)</span></span><input class="input input--mono" name="secret" autocomplete="off" spellcheck="false" placeholder="Used for the X-Aegis-Signature HMAC header"></label>
       <label class="field"><span>Minimum severity</span><select class="select" name="min_severity">${['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((s) => `<option value="${s}" ${s === 'HIGH' ? 'selected' : ''}>${label(s)} and above</option>`).join('')}</select></label>
       <div class="field"><span>Send</span><div class="stack" style="gap:4px">${Object.entries(EVENT_TEXT).map(([k, t]) => `<label class="check"><input type="checkbox" name="ev_${k}" checked><span>${t}</span></label>`).join('')}</div></div>
@@ -495,12 +573,19 @@ function openNewChannel() {
   const form = $('#n-form', m);
   const kind = form.elements.namedItem('kind');
   const hints = { slack: 'https://hooks.slack.com/services/...', teams: 'https://prod-00.westus.logic.azure.com/workflows/...', webhook: 'https://soar.example.com/hooks/aegis' };
-  kind.onchange = () => { $('#n-secret', m).hidden = kind.value !== 'webhook'; form.elements.namedItem('url').placeholder = hints[kind.value]; };
+  kind.onchange = () => {
+    const pd = kind.value === 'pagerduty';
+    $('#n-secret', m).hidden = kind.value !== 'webhook';
+    $('#n-pd', m).hidden = !pd;
+    $('#n-url', m).hidden = pd;
+    if (!pd) form.elements.namedItem('url').placeholder = hints[kind.value];
+  };
   const go = (e) => {
     e.preventDefault();
     const v = (n) => form.elements.namedItem(n).value;
     const body = { name: v('name'), kind: v('kind'), url: v('url').trim(), min_severity: v('min_severity'), events: Object.keys(EVENT_TEXT).filter((k) => form.elements.namedItem(`ev_${k}`).checked) };
     if (body.kind === 'webhook' && v('secret').trim()) body.secret = v('secret').trim();
+    if (body.kind === 'pagerduty') { body.secret = v('pd_key').trim(); delete body.url; }
     busy($('#n-go', m), async () => {
       try {
         const c = await api('/notify/channels', { method: 'POST', body });

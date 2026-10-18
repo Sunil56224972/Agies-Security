@@ -31,7 +31,8 @@ function emptyState(seed) {
   return {
     alerts: [], assets: [], cves: referenceCves(seed), logs: [], rules: [], investigations: [],
     config: { ...seed.defaultConfig }, audit: [], users: [], api_keys: [], alert_notes: [], suppressions: [],
-    cases: [], case_alerts: [], case_tasks: [], case_iocs: [], case_events: [], approvals: [], hunts: [], hunt_runs: []
+    cases: [], case_alerts: [], case_tasks: [], case_iocs: [], case_events: [], approvals: [], hunts: [], hunt_runs: [],
+    chat_threads: [], workflows: [], workflow_runs: [], decision_feedback: [], documents: [], custom_rules: []
   };
 }
 

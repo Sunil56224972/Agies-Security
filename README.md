@@ -50,7 +50,7 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | ![Detections](docs/screens/intel-detect.png) | ![Exploited CVEs](docs/screens/intel-kev.png) |
 | Built-in detection rules and the rule tester | CISA KEV catalog matched against your hosts |
 | ![Indicator lookup](docs/screens/intel-lookup.png) | ![Feeds and Sigma](docs/screens/intel-feeds.png) |
-| One indicator against abuse.ch, MISP, RDAP, BGP and passive DNS | Feed status and the SigmaHQ rule browser |
+| One indicator against abuse.ch, MISP, OTX, RDAP, BGP and passive DNS | Feed status and the SigmaHQ rule browser |
 | ![IOC check](docs/screens/intel-ioc.png) | ![Settings](docs/screens/settings.png) |
 | Bulk IOC check: IPs, domains, URLs and hashes | Team, API keys, integrations, policy |
 | ![Cases](docs/screens/cases.png) | ![Case detail](docs/screens/case-detail.png) |
@@ -59,6 +59,12 @@ The **rule-based playbook** needs no API key: the same evidence always gives the
 | Containment held for a human, routed by verdict confidence | Hunt across logs, alerts and investigations; every hit links to its record |
 | ![ATT&CK rollup](docs/screens/attack-rollup.png) | ![MCP server](docs/screens/mcp.png) |
 | Techniques seen in your own detections, per tactic | MCP endpoint and client config in Settings |
+| ![Assistant](docs/screens/assistant.png) | ![Workflows](docs/screens/workflows.png) |
+| Assistant answering from live tool calls, with clickable ids | Saved workflows built from templates or the step editor |
+| ![Workflow run](docs/screens/workflow-run.png) | ![Custom detections](docs/screens/detection-editor.png) |
+| One workflow run, step by step, with skipped conditions | Custom Sigma rule with live lint and a dry run |
+| ![Documents](docs/screens/documents.png) | ![Decisions](docs/screens/decisions.png) |
+| Uploaded file: hash, extracted indicators, intel check, attach to case | Verdict accuracy, calibration and the engine's common mistakes |
 | ![Dark theme](docs/screens/overview-dark.png) | ![Sign in](docs/screens/sign-in.png) |
 | Dark theme | Sign-in screen |
 
@@ -279,9 +285,9 @@ For clients that only speak stdio, the repo ships a bridge that forwards to the 
 }
 ```
 
-With an `mcp` key you get 15 read tools: `overview`, `list_alerts`, `get_alert`, `get_investigation`, `search`, `ip_profile`, `lookup_indicator`, `bulk_check`, `detect_test`, `list_rules`, `list_cases`, `get_case`, `list_approvals`, `list_hunts` and `technique_rollup`.
+With an `mcp` key you get 19 read tools: `overview`, `list_alerts`, `get_alert`, `get_investigation`, `search`, `ip_profile`, `lookup_indicator`, `bulk_check`, `detect_test`, `list_rules`, `list_cases`, `get_case`, `list_approvals`, `list_hunts`, `technique_rollup`, `extract_iocs_document`, `decision_accuracy`, `list_custom_rules` and `list_workflows`.
 
-An `mcp:write` key adds 15 more: `investigate_alert`, `set_alert_status`, `block_ip`, `approve_action`, `reject_action`, `create_case`, `create_case_from_killchain`, `update_case`, `add_alert_to_case`, `add_case_ioc`, `add_case_task`, `update_case_task`, `add_case_comment`, `close_case` and `run_hunt`.
+An `mcp:write` key adds 16 more: `investigate_alert`, `set_alert_status`, `block_ip`, `approve_action`, `reject_action`, `create_case`, `create_case_from_killchain`, `update_case`, `add_alert_to_case`, `add_case_ioc`, `add_case_task`, `update_case_task`, `add_case_comment`, `close_case`, `run_hunt` and `run_workflow`.
 
 `block_ip` follows the approval policy like everything else, so under *Always ask* an agent can only propose. Every call is written to the audit log as `mcp:<key name>`, with the tool name, its outcome and how long it took. `MCP_RATE_LIMIT` caps calls per minute per address (default 300).
 
@@ -365,12 +371,30 @@ Threat intel > Lookup takes any IP, domain, URL, MD5/SHA1/SHA256 or AS number (d
 | Mnemonic passive DNS | none | Which names pointed at an IP, and which IPs a domain resolved to, with first and last seen |
 | crt.sh | none | Certificates logged for a domain |
 | VirusTotal | `VT_API_KEY` | Engine verdicts, rate limited to 4 a minute and 500 a day as the free key allows |
+| AlienVault OTX | optional `OTX_API_KEY` | Community pulses that mention the indicator, malware families and named adversaries. Indicators on OTX's own allowlist (public resolvers, CDNs) score nothing |
+| Hybrid Analysis | `HYBRID_ANALYSIS_API_KEY` | Falcon sandbox verdict, threat score and family for file hashes, per analysis environment |
 
 The verdict is the strongest real signal, with a small bump when three independent sources agree. A source that times out is listed as failed and does not count either way. Lookups are written to the audit log. The same lookup runs inside investigations (the `lookup_indicator` tool), in Bulk check, and on every IP profile.
 
 ### Sigma rules
 
 The [SigmaHQ](https://github.com/SigmaHQ/sigma) release archive is downloaded on start and every rule whose log source Aegis receives is compiled: web server, Linux process creation, auditd, syslog and services such as sshd, sudo and cron (around 250 of the 3,000+ rules; Windows rules are skipped because Aegis does not ingest Windows event logs). Rules run on every `/api/ingest/logs` batch and in the rule tester. Hits become alerts with a stable `SIG-` id, the rule's ATT&CK technique and a link to the rule source. The lowest level that raises an alert (`medium` by default) and per-rule switches are under Threat intel > Feeds & Sigma. Set `AEGIS_SIGMA=off` to skip the download.
+
+## Workbench
+
+Five tools under the Workbench section of the sidebar. They need the `20261019000000_assistant_workflows_documents.sql` migration on Supabase; until it is applied those routes answer 503 and the rest of the console is unaffected.
+
+- **Assistant.** A chat over this deployment's own data. It uses Groq tool calling with the same tools the MCP server exposes, so every number it quotes comes from a tool result in the conversation, and each call is shown as a chip under the answer. Read tools run straight away. Anything that changes state (investigate, contain, open a case, run a hunt) is held as a pending action until an analyst approves it. Viewers get read tools only. It needs `GROQ_API_KEY`; without one the page says so instead of answering.
+- **Workflows.** Chain steps into a playbook you can rerun: investigate, extract indicators, intel lookup, hunt, case from kill chain, open case, add indicators, contain, notify. Steps pass results forward with `{{steps.<id>.<field>}}`, can run only when a condition holds (`nonempty`, `eq`, `in`, `gte` and so on), and can be marked to continue on error. Three templates are included (alert to incident, IOC triage, attacker sweep). Runs stream step by step and are kept with their inputs and outputs. Containment still goes through the approval policy.
+- **Detections.** Write your own Sigma rules in the browser. Each rule is linted as you type and compiled by the same engine as the SigmaHQ pack. You can test it against pasted log lines or backtest it over stored logs before saving. Enabled rules run on every ingested batch and count their hits.
+- **Documents.** Upload a threat report, log export, e-mail source or IOC list (text formats up to 5 MB). Aegis extracts IPs, domains, URLs, hashes, CVEs and ATT&CK ids, including defanged forms. It flags internal addresses and stores the file with its SHA-256. Indicators can be checked against every intel source, attached to a case as IOCs plus a hashed evidence entry, or sent to Hunting.
+- **Decisions.** How often the investigation engine is right. Analysts mark a verdict right or wrong, give the correct outcome and a 1-5 rating. Overrides count too. The page shows accuracy per engine, calibration per confidence band (is a 90% verdict right 90% of the time?) and the most common mistakes.
+
+Integrations in the same release:
+
+- **Jira.** With `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` and `JIRA_PROJECT` set, a case gets a *Create Jira issue* button. The issue key is stored on the case, logged on its timeline, and *Sync* pulls the current status and assignee back.
+- **PagerDuty.** A notification channel type next to Slack, Teams and webhook. Paste the 32-character Events API v2 integration key; events are sent to `events.pagerduty.com/v2/enqueue` and nowhere else.
+- **Backup and restore.** Settings > Backup (admins) downloads every table as one JSON file and restores it on this or another deployment. Users, API keys and notification channel secrets are never exported or overwritten.
 
 ## What Aegis does not do for you
 
@@ -418,6 +442,13 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 | GET / POST / PATCH / DELETE | `/api/hunts`, `/hunts/adhoc`, `/hunts/:id/run`, `/hunts/runs`, `/hunts/runs/:id/replay` | Saved and ad-hoc hunts, run history |
 | GET | `/api/hunts/techniques?days=30` | ATT&CK technique rollup |
 | POST | `/mcp` (alias `/api/mcp`) | MCP JSON-RPC endpoint (`mcp` or `mcp:write` key) |
+| GET / POST | `/api/assistant/threads`, `/threads/:id/messages/stream`, `/threads/:id/confirm/stream` | Assistant conversations (SSE) and approval of proposed actions |
+| GET / POST / PUT / DELETE | `/api/workflows`, `/workflows/catalog`, `/workflows/:id/run/stream`, `/workflows/runs/:id` | Workflows, templates and run history |
+| GET / POST / PUT / DELETE | `/api/detections/custom`, `/custom/lint`, `/custom/test` | Custom Sigma rules |
+| GET / POST / DELETE | `/api/documents`, `/documents/analyze`, `/documents/:id/check`, `/documents/:id/attach` | Document library and IOC extraction |
+| GET / POST | `/api/decisions`, `/decisions/:id/feedback` | Verdict accuracy and analyst feedback |
+| GET / POST | `/api/cases/:id/jira` | Create or sync the case's Jira issue |
+| GET / POST | `/api/admin/backup`, `/api/admin/restore` | Full backup and restore (admin) |
 
 ## Tests
 
@@ -425,7 +456,7 @@ Browser endpoints use the session cookie. Ingest and feed endpoints use `Authori
 npm test
 ```
 
-There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, abuse.ch and MISP feed parsers, indicator extraction, the Sigma compiler, the intel hub verdict, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 147 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention; cases, approvals under every policy mode, hunts and replay, the ATT&CK rollup, and the MCP server with its key scopes. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
+There are three suites. Unit tests cover CPE version matching, EVE normalisation, Nmap XML parsing, blocklist parsing, abuse.ch and MISP feed parsers, indicator extraction, the Sigma compiler, the intel hub verdict, password hashing and webhook signatures. The smoke test runs every sample incident through the playbook against each enforcement adapter. The HTTP suite makes 186 end-to-end checks. They cover auth, roles and CSRF; ingest and de-duplication; feeds, CSV and Nmap import, agent inventory push; enforcement read-back; case ownership and notes; bulk triage; suppression; rule expiry; signed webhook delivery, checked by a local receiver; reports, exports and retention; cases, approvals under every policy mode, hunts and replay, the ATT&CK rollup, the MCP server with its key scopes, custom Sigma rules, document extraction, workflow runs with conditions, decision feedback, PagerDuty validation and backup/restore. External APIs (NVD, AbuseIPDB, Cloudflare) are stubbed or exercised offline.
 
 To run the HTTP suite against the Supabase project in `.env` instead of a temp file, set `AEGIS_TEST_SUPABASE=1`. It empties every Aegis table before and after the run, so use a staging project, never one holding real incidents.
 
@@ -440,6 +471,7 @@ src/routes.js           console API, ingest, feeds, retention
 src/casework.js         ownership, notes, bulk triage, suppressions, reports, exports
 src/cases.js            cases, approvals and hunts: service layer and routes
 src/mcp.js              MCP server (JSON-RPC over HTTP), tool registry and scopes
+src/workbench.js        assistant, workflows, documents, custom detections, decisions, Jira, backup
 bin/aegis-mcp.js        stdio bridge for MCP clients without HTTP transport
 src/notify.js           Slack / Teams / signed webhook delivery
 src/engine/             analysis rules, tools, playbook and LLM investigator

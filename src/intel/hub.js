@@ -11,18 +11,22 @@ const { AbuseCh } = require('./abusech');
 const { Misp } = require('./misp');
 const { Whois } = require('./whois');
 const { VirusTotal, vtScore } = require('./virustotal');
+const { Otx, otxScore } = require('./otx');
+const { HybridAnalysis, haScore } = require('./hybrid');
 const { errText } = require('./feeds');
 const { isInternal } = require('../engine/analysis');
 
 const offFlag = (v) => /^(0|off|false|no)$/i.test(String(v || ''));
 
 class IntelHub {
-  constructor({ reputation = null, abusech, misp, whois, vt, offline = false }) {
+  constructor({ reputation = null, abusech, misp, whois, vt, otx = null, ha = null, offline = false }) {
     this.reputation = reputation;
     this.abusech = abusech;
     this.misp = misp;
     this.whois = whois;
     this.vt = vt;
+    this.otx = otx;
+    this.ha = ha;
     this.offline = offline;
   }
 
@@ -34,6 +38,8 @@ class IntelHub {
       abusech: this.abusech.describe(),
       misp: this.misp.describe(),
       virustotal: this.vt.describe(),
+      otx: this.otx ? this.otx.describe() : null,
+      hybrid_analysis: this.ha ? this.ha.describe() : null,
       reputation_lists: this.reputation && this.reputation.describe ? this.reputation.describe().lists : []
     };
   }
@@ -58,7 +64,7 @@ class IntelHub {
     return { hits: [...a.hits, ...m.hits], ok: [...a.ok, ...m.ok], failed: [...a.failed, ...m.failed], pending: [...a.pending, ...m.pending] };
   }
 
-  async lookup(query, { budgetMs = 15000, vt = true } = {}) {
+  async lookup(query, { budgetMs = 15000, vt = true, otx = true } = {}) {
     const ind = classify(query);
     if (!ind) throw Object.assign(new Error('Not an IP, domain, URL, ASN, MD5, SHA1 or SHA256'), { status: 400 });
     const base = { query: String(query).trim(), indicator: ind, checked_at: new Date().toISOString() };
@@ -86,6 +92,8 @@ class IntelHub {
       abuse: !isIpType(t) && t !== 'asn' ? this.abusech.lookup(ind, { budgetMs }).then(merge) : null,
       misp: !isIpType(t) && t !== 'asn' && t !== 'ja3' ? this.misp.lookup(ind, { budgetMs }).then(merge) : null,
       vt: vt && this.vt.supports(t) ? run('VirusTotal', () => this.vt.lookup(ind)) : null,
+      otx: otx && this.otx && this.otx.supports(t) ? run('AlienVault OTX', () => this.otx.lookup(ind)) : null,
+      ha: this.ha && this.ha.supports(t) ? run('Hybrid Analysis', () => this.ha.lookup(ind)) : null,
       rdap: isIpType(t) || t === 'domain' || t === 'url' ? run('RDAP', () => this.whois.rdap(hostIsIp ? hostInd : t === 'url' ? hostInd : ind)) : null,
       bgp: isIpType(t) || t === 'asn' || hostIsIp ? run('RIPEstat', () => this.whois.bgp(hostIsIp ? hostInd : ind)) : null,
       pdns: isIpType(t) || t === 'domain' || t === 'url' ? run('Mnemonic PDNS', () => this.whois.pdns(t === 'url' ? hostInd : ind)) : null,
@@ -115,6 +123,12 @@ class IntelHub {
     const vtv = r.vt && r.vt.found ? r.vt : null;
     const vs = vtScore(vtv);
     if (vtv && vs) signals.push({ source: 'VirusTotal', score: vs, text: `${vtv.malicious} of ${vtv.total} engines flag it` });
+    const ox = r.otx && r.otx.found ? r.otx : null;
+    const os = otxScore(ox);
+    if (ox && os != null) signals.push({ source: 'AlienVault OTX', score: os, text: `in ${ox.pulses} community pulse${ox.pulses === 1 ? '' : 's'}${ox.families.length ? ` (${ox.families.join(', ')})` : ''}` });
+    const hx = r.ha && r.ha.found ? r.ha : null;
+    const hs = haScore(hx);
+    if (hx && hs != null) signals.push({ source: 'Hybrid Analysis', score: hs, text: `sandbox verdict ${hx.verdict}${hx.threat_score != null ? ` (threat score ${hx.threat_score})` : ''}` });
     const reg = r.rdap && r.rdap.kind === 'domain' ? r.rdap : null;
     if (reg && reg.fresh) signals.push({ source: 'RDAP', score: 45, text: `domain registered ${reg.age_days} days ago` });
     else if (reg && reg.young) signals.push({ source: 'RDAP', score: 20, text: `domain is ${reg.age_days} days old` });
@@ -126,17 +140,19 @@ class IntelHub {
     // Several independent sources agreeing is stronger than any one of them.
     const strong = new Set(scored.filter((s) => s.score >= 60).map((s) => s.source));
     if (score != null && strong.size >= 3) score = Math.min(100, score + 5);
-    const benign = Boolean((vtv && vtv.malicious === 0 && vtv.harmless > 10) || (rep && rep.verdict === 'benign'));
+    const benign = Boolean((vtv && vtv.malicious === 0 && vtv.harmless > 10) || (rep && rep.verdict === 'benign') || (ox && ox.whitelisted));
     const verdict = score == null ? 'unknown' : score >= 75 ? 'malicious' : score >= 40 ? 'suspicious' : benign ? 'benign' : 'clean';
 
     const c2 = hits.find((h) => h.c2);
-    const families = [...new Set(hits.filter((h) => h.score != null).map((h) => h.malware).filter(Boolean))].slice(0, 4);
+    const families = [...new Set([...hits.filter((h) => h.score != null).map((h) => h.malware), ...(hx ? hx.families : [])].filter(Boolean))].slice(0, 4);
     const parts = [];
     if (c2) parts.push(`known ${c2.malware ? `${c2.malware} ` : ''}C2 (${c2.source})`);
     else if (hits.some((h) => h.score != null)) parts.push(`listed by ${[...new Set(hits.filter((h) => h.score != null).map((h) => h.source))].join(', ')}`);
     else if (hits.length) parts.push(`mentioned in ${hits.length} MISP event${hits.length === 1 ? '' : 's'} as context, not as an IOC`);
     if (families.length && !c2) parts.push(`linked to ${families.join(', ')}`);
     if (vtv) parts.push(`VirusTotal ${vtv.malicious}/${vtv.total}`);
+    if (ox && ox.pulses) parts.push(`OTX: ${ox.pulses} pulse${ox.pulses === 1 ? '' : 's'}${ox.whitelisted ? ' (whitelisted)' : ''}`);
+    if (hx && hx.verdict) parts.push(`sandbox: ${hx.verdict}`);
     if (reg && reg.young) parts.push(`registered ${reg.age_days} days ago${reg.registrar ? ` via ${reg.registrar.replace(/\.$/, '')}` : ''}`);
     if (rep && rep.summary && !hits.length) parts.push(rep.summary.replace(/^[^:]+:\s*/, '').replace(/\.$/, ''));
     const summary = parts.length ? `${ind.display}: ${parts.join('; ')}.` : `${ind.display}: no listing in ${ok.length} sources.`;
@@ -144,7 +160,7 @@ class IntelHub {
     return {
       ...base, verdict, score, summary, c2: Boolean(c2), families, signals: signals.sort((a, b) => (b.score ?? -1) - (a.score ?? -1)), hits,
       reputation: rep ? { verdict: rep.verdict, score: rep.score, listed: rep.listed, greynoise: rep.greynoise, shodan: rep.shodan, geo: rep.geo, abuseipdb: rep.abuseipdb, cached: rep.cached || false } : null,
-      virustotal: r.vt || null, whois: r.rdap || null, bgp: r.bgp || null, pdns: r.pdns || null, certs: r.certs || null,
+      virustotal: r.vt || null, otx: r.otx || null, hybrid: r.ha || null, whois: r.rdap || null, bgp: r.bgp || null, pdns: r.pdns || null, certs: r.certs || null,
       sources_ok: [...new Set(ok)], sources_failed: failed, pending: [...new Set(pending)]
     };
   }
@@ -158,7 +174,9 @@ function createHub({ env = process.env, reputation = null, fetchImpl = globalThi
     abusech: new AbuseCh({ fetchImpl, offline: off, authKey: env.ABUSECH_AUTH_KEY }),
     misp: new Misp({ fetchImpl, offline: off, url: env.MISP_URL, key: env.MISP_KEY }),
     whois: new Whois({ fetchImpl, offline: off }),
-    vt: new VirusTotal({ apiKey: env.VT_API_KEY, fetchImpl, offline: off })
+    vt: new VirusTotal({ apiKey: env.VT_API_KEY, fetchImpl, offline: off }),
+    otx: new Otx({ apiKey: env.OTX_API_KEY, fetchImpl, offline: off }),
+    ha: new HybridAnalysis({ apiKey: env.HYBRID_ANALYSIS_API_KEY, fetchImpl, offline: off })
   });
   if (reputation && typeof reputation.attachFeeds === 'function') reputation.attachFeeds(hub);
   return hub;

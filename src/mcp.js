@@ -223,6 +223,30 @@ function buildTools(ctx, svc) {
     return { ...r, findings: r.findings.slice(0, 60), findings_total: r.findings.length };
   }, { write: true });
 
+  // ---- Workbench ---------------------------------------------------------------
+  const wb = () => { if (!ctx.workbench) throw new ToolError('The workbench is not available'); if (store.pendingExtras) throw new ToolError(`Needs the ${store.pendingExtras.migration} migration`); return ctx.workbench; };
+
+  def('extract_iocs_document', 'Analyse document', 'Extract IPs, domains, URLs, hashes, CVE ids, ATT&CK ids, e-mail addresses and registry keys from a report, log or e-mail source. Known CVEs are matched to the local catalogue. Nothing is stored.', S({ text: str('Document text (up to 200k characters)') }, ['text']), (a) => {
+    const t = String(need(a.text, 'text is required'));
+    return wb().analyzeText(t.slice(0, 200000));
+  });
+
+  def('decision_accuracy', 'Decision accuracy', 'How often each investigation engine was right, judged by analyst overrides and feedback, with confidence calibration and the most common mistakes.', S({ days: int('Window in days (default 30)') }), async (a) => {
+    const r = await wb().decisions({ days: a.days, limit: 20 });
+    return { days: r.days, totals: r.totals, engines: r.engines, calibration: r.bands, mistakes: r.mistakes, recent_wrong: r.rows.filter((x) => x.correct === false).slice(0, 10) };
+  });
+
+  def('list_custom_rules', 'List custom detections', 'Analyst-written Sigma rules with their level, ATT&CK technique, state and hit count.', S({}), async () => (await wb().listCustom()).map(({ yaml, ...r }) => r));
+
+  def('list_workflows', 'List workflows', 'Saved response workflows with their inputs, steps and last result.', S({}), async () => (await wb().listWorkflows()).map((w) => ({ workflow_id: w.workflow_id, name: w.name, description: w.description, enabled: w.enabled, inputs: w.inputs, steps: w.steps.map((s) => `${s.id}:${s.type}`), runs: w.runs, last_status: w.last_status, last_run_at: w.last_run_at })));
+
+  def('run_workflow', 'Run workflow', 'Run a saved workflow with its inputs. Steps run in order; containment inside a workflow still follows the approval policy.', S({
+    workflow_id: str('WF-...'), input: { type: 'object', description: 'Input values keyed by the workflow input keys', additionalProperties: { type: 'string' } }
+  }, ['workflow_id']), async (a, who) => {
+    const r = await wb().startRun(need(a.workflow_id, 'workflow_id is required'), a.input || {}, who);
+    return { run_id: r.run_id, status: r.status, duration_ms: r.duration_ms, steps: r.steps.map(({ output, ...s }) => s) };
+  }, { write: true });
+
   return tools;
 }
 

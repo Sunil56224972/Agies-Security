@@ -15,6 +15,8 @@ const { Approvals } = require('./engine/approvals');
 const { HuntEngine } = require('./engine/hunt');
 const { registerCases } = require('./cases');
 const { registerMcp } = require('./mcp');
+const { registerWorkbench } = require('./workbench');
+const { CustomRules } = require('./engine/customrules');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
@@ -67,7 +69,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
 
   // Ingest and import routes take large bodies and their own parsers.
   const smallJson = express.json({ limit: '128kb' });
-  app.use((req, res, next) => (/^\/api\/(ingest\/|assets\/import)/.test(req.path) ? next() : smallJson(req, res, next)));
+  app.use((req, res, next) => (/^\/api\/(ingest\/|assets\/import|documents$|admin\/restore$)/.test(req.path) ? next() : smallJson(req, res, next)));
 
   // ---- Session ------------------------------------------------------------
   const userCache = new Map();
@@ -250,12 +252,14 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   const notifier = new Notifier(store, { consoleUrl: env.PUBLIC_URL || null });
   const approvals = new Approvals(store, { tools: investigator.tools, notifier });
   investigator.approvals = approvals;
-  const hunter = new HuntEngine(store, { sigma, reputation, hub });
-  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, bootedAt: Date.now() };
+  const customRules = new CustomRules(store);
+  const hunter = new HuntEngine(store, { sigma, reputation, hub, custom: customRules });
+  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, customRules, bootedAt: Date.now() };
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
   registerIntel(app, ctx);
   const cases = registerCases(app, ctx);
+  registerWorkbench(app, ctx, cases);
   registerMcp(app, ctx, cases);
   investigator.onVerdict = casework.onVerdict;
 

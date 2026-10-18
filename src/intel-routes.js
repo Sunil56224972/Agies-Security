@@ -274,6 +274,20 @@ function registerIntel(app, ctx) {
     const cfg = await store.config.get();
     const findings = detect.evaluate(parsed, { ...cfg, detectEnabled: true }, { now: Date.now() });
     let sigmaOut = { loaded: false, rules: 0, findings: [] };
+    // Custom rules are reported separately so an analyst sees exactly what their own rules caught.
+    let customOut = { rules: 0, findings: [] };
+    if (ctx.customRules) {
+      const own = await ctx.customRules.compiled().catch(() => []);
+      const byId = new Map(own.map((r) => [r.id, r]));
+      const m = own.length ? scanWith(own, parsed) : [];
+      customOut = {
+        rules: own.length,
+        findings: toAlerts(m).map((a) => {
+          const rule = byId.get(a.external_ref.split(' ')[0].replace('sigma:', ''));
+          return { rule: rule.id, title: rule.title, level: rule.level, technique: rule.technique || null, severity: a.severity, source_ip: a.source_ip, dest_ip: a.dest_ip, evidence: a.raw_payload.split('\n\n')[1].split('\n').slice(0, 4) };
+        })
+      };
+    }
     if (sigma.available) {
       const s = await sigma.scan(parsed, { budgetMs: 15000, minLevel: cfg.sigmaMinLevel || 'low', disabled: cfg.sigmaDisabled || [] });
       if (s) {
@@ -288,7 +302,7 @@ function registerIntel(app, ctx) {
       } else sigmaOut.loading = true;
     }
     res.json({
-      sigma: sigmaOut,
+      sigma: sigmaOut, custom: customOut,
       parsed: parsed.length, rejected: rejected.slice(0, 20),
       without_client: parsed.filter((l) => !l.client_ip).length,
       by_type: parsed.reduce((m, l) => ({ ...m, [l.log_type]: (m[l.log_type] || 0) + 1 }), {}),

@@ -443,6 +443,85 @@ test('intel hub: one lookup folds abuse.ch, RDAP and passive DNS into a verdict'
   const off = createHub({ env: {}, offline: true });
   assert.strictEqual((await off.lookup('example.org')).skipped, true);
 });
+// ---- Workbench ---------------------------------------------------------------------
+const { lintRule } = require('../src/engine/customrules');
+const { otxScore } = require('../src/intel/otx');
+const { haScore } = require('../src/intel/hybrid');
+const wbx = require('../src/workbench');
+
+const SSH_RULE = `title: Root login refused over SSH
+description: Password guessing against root
+level: high
+tags: [attack.t1110.001]
+falsepositives: [admins mistyping]
+logsource:
+  product: linux
+  service: sshd
+detection:
+  keywords:
+    - 'Failed password for root'
+  condition: keywords
+`;
+
+test('custom rules: a clean rule compiles and maps ATT&CK', () => {
+  const r = lintRule(SSH_RULE);
+  assert.ok(r.ok, r.errors.join('; '));
+  assert.strictEqual(r.rule.technique, 'T1110.001');
+  assert.strictEqual(r.warnings.length, 0);
+});
+
+test('custom rules: lint reports YAML position, missing fields and bad level', () => {
+  assert.match(lintRule('title: x\n  bad: [').errors[0], /line \d+/);
+  const miss = lintRule('title: Something here\nlevel: high\n');
+  assert.ok(miss.errors.includes('logsource is required') && miss.errors.includes('detection is required'));
+  assert.ok(lintRule(SSH_RULE.replace('level: high', 'level: urgent')).errors.some((e) => /level must be/.test(e)));
+  assert.ok(!lintRule(SSH_RULE.replace('service: sshd', 'service: windows-defender')).ok, 'unsupported logsource refused');
+  assert.ok(lintRule(SSH_RULE.replace('tags: [attack.t1110.001]\n', '')).warnings.some((w) => /ATT&CK/.test(w)));
+});
+
+test('intel scores: OTX pulses and Hybrid Analysis verdicts', () => {
+  assert.strictEqual(otxScore(null), null);
+  assert.strictEqual(otxScore({ found: true, pulses: 0 }), null);
+  assert.strictEqual(otxScore({ found: true, pulses: 1 }), 25);
+  assert.strictEqual(otxScore({ found: true, pulses: 12 }), 70);
+  assert.strictEqual(otxScore({ found: true, pulses: 40, whitelisted: true }), null, 'allowlisted resolvers score nothing');
+  assert.strictEqual(haScore({ found: true, verdict: 'malicious', threat_score: 95 }), 95);
+  assert.strictEqual(haScore({ found: true, verdict: 'malicious' }), 80);
+  assert.strictEqual(haScore({ found: true, verdict: 'suspicious' }), 50);
+  assert.strictEqual(haScore({ found: true, verdict: 'no specific threat' }), 0);
+  assert.strictEqual(haScore({ found: false }), null);
+});
+
+test('workflows: templates resolve and conditions evaluate', () => {
+  const scope = { input: { ip: '203.0.113.9' }, steps: { a: { hits: 3, list: ['x', 'y'], none: [], outcome: 'ATTACK_FAILED' } } };
+  assert.strictEqual(wbx.resolve('{{input.ip}}', scope), '203.0.113.9');
+  assert.deepStrictEqual(wbx.resolve('{{steps.a.list}}', scope), ['x', 'y'], 'a whole-value template keeps its type');
+  assert.strictEqual(wbx.resolve('hits={{steps.a.hits}} on {{steps.a.list}} {{steps.zz.q}}.', scope), 'hits=3 on x, y .');
+  assert.strictEqual(wbx.test(null, scope), true);
+  assert.strictEqual(wbx.test({ path: 'steps.a.list', op: 'nonempty' }, scope), true);
+  assert.strictEqual(wbx.test({ path: 'steps.a.none', op: 'nonempty' }, scope), false);
+  assert.strictEqual(wbx.test({ path: 'steps.a.none', op: 'empty' }, scope), true);
+  assert.strictEqual(wbx.test({ path: 'steps.a.outcome', op: 'in', value: 'ATTACK_SUCCEEDED,ATTACK_FAILED' }, scope), true);
+  assert.strictEqual(wbx.test({ path: 'steps.a.hits', op: 'gte', value: 4 }, scope), false);
+  assert.strictEqual(wbx.test({ path: 'steps.a.hits', op: 'lte', value: 3 }, scope), true);
+  assert.strictEqual(wbx.test({ path: 'steps.a.hits', op: 'bogus' }, scope), false);
+});
+
+test('workflows: validation rejects forward references, unknown steps and bad ids', () => {
+  for (const t of wbx.TEMPLATES) assert.ok(wbx.validateWorkflow(t).steps.length, `template ${t.key} validates`);
+  const base = { name: 'Sweep', inputs: [{ key: 'ip', label: 'IP' }] };
+  const bad = (steps, re) => assert.throws(() => wbx.validateWorkflow({ ...base, steps }), (e) => re.test(e.message));
+  bad([], /at least one step/);
+  bad([{ id: 'a', type: 'format_disk', params: {} }], /unknown type/);
+  bad([{ id: 'a', type: 'hunt', params: { ip: '{{steps.b.ip}}' } }, { id: 'b', type: 'intel_lookup', params: { values: 'x' } }], /does not run before/);
+  bad([{ id: 'a', type: 'hunt', params: { ip: '{{input.host}}' } }], /does not declare/);
+  bad([{ id: 'A b', type: 'notify', params: { message: 'hi' } }], /lower_case/);
+  bad([{ id: 'a', type: 'notify', params: {} }], /required/);
+  bad([{ id: 'a', type: 'notify', params: { message: 'x' } }, { id: 'a', type: 'notify', params: { message: 'y' } }], /used twice/);
+  bad([{ id: 'a', type: 'notify', params: { message: 'x' }, when: { path: 'steps.zz.q', op: 'nonempty' } }], /earlier step/);
+  assert.throws(() => wbx.validateWorkflow({ name: 'x', steps: [{ type: 'notify', params: { message: 'm' } }] }), /3 characters/);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, fn] of tests) {

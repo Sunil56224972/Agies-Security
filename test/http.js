@@ -376,6 +376,87 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok((await call('GET', '/mcp', { as: null })).status === 405, 'GET /mcp is 405 (stateless)');
     ok((await call('GET', '/api/audit?limit=200')).json.some((a) => a.action === 'mcp.call' && a.actor === 'mcp:soc-agent'), 'MCP calls are audited');
 
+    // ---- Workbench: detections, documents, workflows, decisions, backup ----------
+    r = await call('GET', '/api/workbench/status');
+    ok(r.status === 200 && r.json.assistant === false && r.json.jira === false && r.json.pending_migration == null, 'workbench status reports integrations honestly');
+    await call('POST', '/api/users', { body: { name: 'Vic Viewer', email: 'vic@corp.example', password: 'Another1pass', role: 'viewer' } });
+    ok((await call('POST', '/api/auth/login', { as: 'vic', body: { email: 'vic@corp.example', password: 'Another1pass' } })).status === 200, 'second viewer signs in');
+
+    const SSH_RULE = 'title: Root login refused over SSH\ndescription: Password guessing against root\nlevel: high\ntags: [attack.t1110.001]\nfalsepositives: [admins]\nlogsource:\n  product: linux\n  service: sshd\ndetection:\n  keywords:\n    - \'Failed password for root\'\n  condition: keywords\n';
+    r = await call('POST', '/api/detections/custom/lint', { body: { yaml: 'title: broken\n  x: [' } });
+    ok(r.status === 200 && r.json.ok === false && /line/.test(r.json.errors[0]), 'lint points at the YAML error');
+    ok((await call('POST', '/api/detections/custom', { body: { yaml: 'title: nope' } })).status === 400, 'a rule that does not lint is not saved');
+    r = await call('POST', '/api/detections/custom', { body: { yaml: SSH_RULE } });
+    ok(r.status === 201 && r.json.technique === 'T1110.001' && r.json.enabled === true, 'custom rule saved with its technique');
+    const ruleId = r.json.rule_id;
+    ok((await call('POST', '/api/detections/custom', { as: 'vic', body: { yaml: SSH_RULE } })).status === 403, 'viewer cannot write detections');
+    r = await call('POST', '/api/detections/custom/test', { body: { rule_id: ruleId, lines: 'Oct 17 10:00:01 web sshd[11]: Failed password for root from 203.0.113.9 port 2222 ssh2\nOct 17 10:00:02 web sshd[11]: Accepted publickey for deploy from 10.0.0.2 port 50000 ssh2' } });
+    ok(r.status === 200 && r.json.parsed === 2 && r.json.hits === 1 && /203\.0\.113\.9/.test(r.json.matches[0].line), 'rule test matches the right pasted line only');
+    r = await call('PUT', `/api/detections/custom/${ruleId}`, { body: { enabled: false } });
+    ok(r.status === 200 && r.json.enabled === false, 'rule can be switched off');
+    ok((await call('DELETE', `/api/detections/custom/${ruleId}`)).status === 200 && (await call('GET', `/api/detections/custom/${ruleId}`)).status === 404, 'rule deleted');
+
+    const report = 'Phishing wave. Payload from hxxps://cdn-update[.]top/inv.exe sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08, C2 185.220.101[.]45, internal relay 10.0.4.22. Exploits CVE-2021-44228 (T1190).';
+    r = await call('POST', '/api/documents/analyze', { body: { text: report } });
+    ok(r.status === 200 && r.json.iocs.some((i) => i.value === '185.220.101.45') && r.json.iocs.some((i) => i.value === '10.0.4.22' && i.internal) && r.json.refs.cves.includes('CVE-2021-44228'), 'document analysis extracts defanged IOCs, internal flags and CVEs');
+    ok((await call('POST', '/api/documents', { body: { name: 'a.bin', content: 'MZ\u0000\u0000' } })).status === 415, 'binary uploads refused');
+    r = await call('POST', '/api/documents', { body: { name: 'phish-report.txt', mime: 'text/plain', content: report } });
+    ok(r.status === 201 && r.json.sha256 === crypto.createHash('sha256').update(report).digest('hex') && r.json.duplicate_of === null, 'document stored with its SHA-256');
+    const docId = r.json.doc_id;
+    ok((await call('POST', '/api/documents', { body: { name: 'again.txt', content: report } })).json.duplicate_of === docId, 'duplicate upload is recognised');
+    r = await call('POST', '/api/cases', { body: { title: 'Phishing wave with Log4Shell follow-up', severity: 'HIGH' } });
+    const docCase = r.json.case_id;
+    r = await call('POST', `/api/documents/${docId}/attach`, { body: { case_id: docCase } });
+    ok(r.status === 200 && r.json.attached.added >= 2 && !(await call('GET', `/api/cases/${docCase}`)).json.iocs.some((i) => i.value === '10.0.4.22'), 'attaching a document adds external IOCs only');
+    ok((await call('DELETE', `/api/documents/${docId}`, { as: 'vic' })).status === 403, 'viewer cannot delete documents');
+
+    r = await call('GET', '/api/workflows/catalog');
+    ok(r.status === 200 && r.json.templates.length >= 3 && r.json.steps.hunt, 'workflow catalog');
+    ok((await call('POST', '/api/workflows', { body: { name: 'Broken', steps: [{ id: 'a', type: 'hunt', params: { ip: '{{steps.b.ip}}' } }] } })).status === 400, 'workflow with a forward reference refused');
+    r = await call('POST', '/api/workflows', { body: { name: 'Sweep and tell', inputs: [{ key: 'ip', label: 'IP', required: true }], steps: [
+      { id: 'sweep', type: 'hunt', params: { ip: '{{input.ip}}', window_hours: 72 } },
+      { id: 'case', type: 'create_case', params: { title: 'Sweep hit {{input.ip}}', severity: 'MEDIUM' }, when: { path: 'steps.sweep.hits', op: 'gte', value: 1 } },
+      { id: 'never', type: 'notify', params: { message: 'no hits' }, when: { path: 'steps.sweep.hits', op: 'eq', value: -1 } }
+    ] } });
+    ok(r.status === 201, 'workflow saved');
+    const wfId = r.json.workflow_id;
+    ok((await call('POST', `/api/workflows/${wfId}/run`, { body: { input: {} } })).status === 400, 'required workflow input enforced');
+    r = await call('POST', `/api/workflows/${wfId}/run`, { body: { input: { ip: '185.220.101.0/24' } } });
+    ok(r.status === 200 && r.json.status === 'SUCCEEDED' && r.json.steps[0].status === 'ok' && r.json.steps[1].status === 'ok' && r.json.steps[2].status === 'skipped', 'workflow runs real steps and honours conditions');
+    ok((await call('GET', `/api/workflows/runs/${r.json.run_id}`)).json.steps.length === 3, 'run history kept');
+    ok((await call('GET', `/api/workflows/${wfId}`)).json.runs === 1, 'workflow run counter');
+    ok((await call('POST', `/api/workflows/${wfId}/run`, { as: 'vic', body: { input: { ip: '1.1.1.1' } } })).status === 403, 'viewer cannot run workflows');
+    r = await call('POST', '/api/workflows', { body: { template: 'ioc-triage' } });
+    ok(r.status === 201 && r.json.steps.length === 5, 'workflow created from a template');
+
+    r = await call('GET', '/api/decisions?days=30');
+    ok(r.status === 200 && r.json.rows.some((x) => x.investigation_id === invId), 'decisions log lists investigations');
+    ok((await call('POST', `/api/decisions/${invId}/feedback`, { body: { correct: 'yes' } })).status === 400, 'feedback needs a boolean verdict');
+    ok((await call('POST', `/api/decisions/${invId}/feedback`, { body: { correct: true, rating: 9 } })).status === 400, 'rating is 1-5');
+    r = await call('POST', `/api/decisions/${invId}/feedback`, { body: { correct: true, rating: 4, notes: 'Evidence chain was right' } });
+    ok(r.status === 200, 'analyst judges a decision');
+    r = await call('GET', '/api/decisions?days=30&judged=yes');
+    ok(r.json.totals.judged >= 1 && r.json.rows.every((x) => x.correct !== null) && r.json.rows.find((x) => x.investigation_id === invId).rating === 4, 'accuracy built from analyst feedback');
+
+    ok((await call('POST', `/api/cases/${docCase}/jira`)).status === 400 || (await call('POST', `/api/cases/${docCase}/jira`)).status === 503, 'Jira refuses cleanly when not configured');
+    ok((await call('POST', '/api/notify/channels', { body: { name: 'On-call', kind: 'pagerduty', secret: 'short' } })).status === 400, 'PagerDuty key validated');
+    r = await call('POST', '/api/notify/channels', { body: { name: 'On-call', kind: 'pagerduty', secret: 'a'.repeat(32), min_severity: 'CRITICAL' } });
+    ok(r.status === 201 && r.json.kind === 'pagerduty' && /events\.pagerduty\.com/.test(r.json.url_hint) && r.json.signed === true, 'PagerDuty channel pinned to the Events API');
+
+    ok((await call('GET', '/api/admin/backup', { as: 'vic' })).status === 403, 'viewer cannot export a backup');
+    r = await call('GET', '/api/admin/backup');
+    ok(r.status === 200 && r.json.format === 'aegis-backup' && r.json.tables.workflows.length === 2 && !r.json.users.some((u) => u.password_hash) && r.json.config.notifyChannels === undefined, 'backup exports data without credentials');
+    const snap = r.json;
+    await call('DELETE', `/api/workflows/${wfId}`);
+    ok((await call('GET', `/api/workflows/${wfId}`)).status === 404, 'workflow deleted before restore');
+    ok((await call('POST', '/api/admin/restore', { body: { format: 'other' } })).status === 400, 'restore refuses foreign files');
+    ok((await call('POST', '/api/admin/restore', { body: { format: 'aegis-backup', version: 1, tables: { nope: [] } } })).status === 400, 'restore refuses unknown tables');
+    r = await call('POST', '/api/admin/restore', { body: snap });
+    ok(r.status === 200 && r.json.restored.workflows === 2 && (await call('GET', `/api/workflows/${wfId}`)).status === 200, 'restore brings the workflow back');
+    store.pendingExtras = { migration: '20261019000000_assistant_workflows_documents.sql', error: 'relation "workflows" does not exist' };
+    ok((await call('GET', '/api/workflows')).status === 503 && (await call('GET', '/api/alerts?limit=1')).status === 200, 'missing workbench migration answers 503 without breaking the rest');
+    store.pendingExtras = null;
+
     // A database without the casework migration: those routes answer 503, the rest keeps working.
     store.pending = { migration: '20261018000000_cases_approvals_hunts.sql', error: 'relation "cases" does not exist' };
     r = await call('GET', '/api/cases');

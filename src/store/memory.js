@@ -10,7 +10,10 @@ const OPEN_STATUSES = ['NEW', 'INVESTIGATING', 'CONFIRMED'];
 // single-node install or evaluation; use Supabase for anything shared.
 const DEFAULT_FILE = path.join(__dirname, '..', '..', '.data', 'aegis.json');
 const LOG_CAP = 50000;
-const CASE_TABLES = ['cases', 'case_alerts', 'case_tasks', 'case_iocs', 'case_events', 'approvals', 'hunts', 'hunt_runs'];
+const CASE_TABLES = ['cases', 'case_alerts', 'case_tasks', 'case_iocs', 'case_events', 'approvals', 'hunts', 'hunt_runs',
+  'chat_threads', 'workflows', 'workflow_runs', 'decision_feedback', 'documents', 'custom_rules'];
+// Row caps for tables that only grow; the oldest rows go first.
+const CAPS = { workflow_runs: 500, chat_threads: 500, documents: 500 };
 const byNewest = (k) => (a, b) => String(b[k]).localeCompare(String(a[k]));
 
 class MemoryStore {
@@ -69,7 +72,7 @@ class MemoryStore {
 
   // Replaces telemetry with the demo dataset. Users and API keys are kept.
   async reset() {
-    const keep = { users: this.db.users, api_keys: this.db.api_keys, suppressions: this.db.suppressions, hunts: this.db.hunts };
+    const keep = { users: this.db.users, api_keys: this.db.api_keys, suppressions: this.db.suppressions, hunts: this.db.hunts, workflows: this.db.workflows, custom_rules: this.db.custom_rules, chat_threads: this.db.chat_threads };
     this.db = { ...emptyState(seed), ...materializeSeed(seed), ...keep };
     this.seq.log = this.db.logs.length + 1;
     this.seq.audit = 2;
@@ -408,6 +411,48 @@ class MemoryStore {
         return s.db[name].length < n;
       }
     };
+  }
+
+  // Generic access for the workbench tables (assistant, workflows, feedback,
+  // documents, custom rules). `eq` filters on exact column values.
+  coll(name, key = 'id') {
+    const s = this;
+    const t = s.table(name, key);
+    return {
+      ...t,
+      async list({ eq = {}, order = 'created_at', asc = false, limit = 200, omit = [] } = {}) {
+        const rows = t.rows().filter((r) => Object.entries(eq).every(([k, v]) => String(r[k]) === String(v)))
+          .sort((a, b) => (asc ? 1 : -1) * (String(a[order]).localeCompare(String(b[order])) || (Number(a.id) || 0) - (Number(b.id) || 0)))
+          .slice(0, limit);
+        return rows.map((r) => { const c = s.clone(r); for (const k of omit) delete c[k]; return c; });
+      },
+      async count(eq = {}) { return t.rows().filter((r) => Object.entries(eq).every(([k, v]) => String(r[k]) === String(v))).length; },
+      async insert(row) {
+        const rec = await t.insert(row);
+        const cap = CAPS[name];
+        if (cap && s.db[name].length > cap) s.db[name] = [...s.db[name]].sort(byNewest('created_at')).slice(0, cap);
+        return rec;
+      },
+      async all() { return t.rows().map((r) => s.clone(r)); },
+      // Insert-or-replace by key, used by restore.
+      async put(rows) {
+        for (const r of rows) {
+          const i = s.db[name].findIndex((x) => String(x[key]) === String(r[key]));
+          if (i >= 0) s.db[name][i] = { ...r }; else s.db[name].push({ ...r });
+          if (key === 'id' && Number(r.id) >= s.seq[name]) s.seq[name] = Number(r.id) + 1;
+        }
+        s.persist();
+        return rows.length;
+      }
+    };
+  }
+
+  // After a restore wrote rows with their own ids, move every counter past them.
+  async afterRestore() {
+    const max = (rows) => Math.max(0, ...rows.map((x) => Number(x.id) || 0)) + 1;
+    Object.assign(this.seq, { log: max(this.db.logs), audit: max(this.db.audit), note: max(this.db.alert_notes), supp: max(this.db.suppressions) });
+    for (const k of CASE_TABLES) this.seq[k] = max(this.db[k]);
+    this.persist();
   }
 
   get cases() {

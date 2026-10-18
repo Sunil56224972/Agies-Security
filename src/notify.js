@@ -10,11 +10,15 @@ const { SEVERITY_RANK } = require('./engine/analysis');
 //   teams    Microsoft Teams incoming webhook or Workflows "post to channel" URL
 //   webhook  Any HTTPS endpoint. JSON body, HMAC-SHA256 signed when a secret is set:
 //            X-Aegis-Signature: sha256=hex(HMAC(secret, "<X-Aegis-Timestamp>.<body>"))
+//   pagerduty  PagerDuty Events API v2. The integration (routing) key is stored as
+//            the channel secret; events are sent to events.pagerduty.com/v2/enqueue.
 //
 // Delivery is awaited inside the request that caused it (serverless platforms
 // freeze the process after the response), with a short timeout per channel.
 
-const KINDS = ['slack', 'teams', 'webhook'];
+const KINDS = ['slack', 'teams', 'webhook', 'pagerduty'];
+const PD_URL = 'https://events.pagerduty.com/v2/enqueue';
+const PD_SEVERITY = { CRITICAL: 'critical', HIGH: 'error', MEDIUM: 'warning', LOW: 'info' };
 const EVENTS = ['alert', 'containment', 'verdict', 'approval'];
 const MAX_CHANNELS = 10;
 const TIMEOUT_MS = 6000;
@@ -36,6 +40,11 @@ function validateChannel(b, { production }) {
   const name = String(b.name || '').trim();
   if (name.length < 2) return { error: 'Give the channel a name, e.g. #soc-alerts' };
   if (!KINDS.includes(b.kind)) return { error: `Type must be one of ${KINDS.join(', ')}` };
+  if (b.kind === 'pagerduty') {
+    const key = String(b.secret || b.routing_key || '').trim();
+    if (!/^[A-Za-z0-9]{32}$/.test(key)) return { error: 'Paste the 32-character Integration Key from a PagerDuty Events API v2 integration' };
+    b = { ...b, url: PD_URL, secret: key };
+  }
   let url;
   try { url = new URL(String(b.url || '').trim()); } catch { return { error: 'Enter the full webhook URL' }; }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
@@ -45,7 +54,7 @@ function validateChannel(b, { production }) {
   if (!SEVERITY_RANK[min]) return { error: 'Unknown minimum severity' };
   const events = [...new Set((Array.isArray(b.events) ? b.events : EVENTS).filter((e) => EVENTS.includes(e)))];
   if (!events.length) return { error: 'Pick at least one event' };
-  const secret = b.kind === 'webhook' && b.secret ? String(b.secret).trim() : '';
+  const secret = (b.kind === 'webhook' || b.kind === 'pagerduty') && b.secret ? String(b.secret).trim() : '';
   if (secret && secret.length < 16) return { error: 'Signing secret must be at least 16 characters' };
   return { channel: { name: name.slice(0, 60), kind: b.kind, url: url.toString(), secret: secret || null, min_severity: min, events, enabled: true } };
 }
@@ -87,8 +96,18 @@ function lines(evt) {
   return { title: d.message || 'Test message from Aegis', rows: d.rows || [], link };
 }
 
-function payloadFor(kind, evt) {
+function payloadFor(kind, evt, channel = {}) {
   const m = lines(evt);
+  if (kind === 'pagerduty') {
+    const sev = Object.keys(SEVERITY_RANK).find((k) => SEVERITY_RANK[k] === eventSeverity(evt)) || 'HIGH';
+    return {
+      routing_key: channel.secret, event_action: 'trigger',
+      // Repeats of the same event collapse into one PagerDuty incident.
+      dedup_key: `aegis-${crypto.createHash('sha1').update(`${evt.type}|${m.title}`).digest('hex').slice(0, 24)}`,
+      payload: { summary: m.title.slice(0, 1000), severity: PD_SEVERITY[sev] || 'error', source: 'aegis', component: evt.type, custom_details: { lines: m.rows } },
+      ...(m.link ? { links: [{ href: m.link, text: 'Open in Aegis' }] } : {})
+    };
+  }
   if (kind === 'slack') {
     const text = [`*${m.title}*`, ...m.rows.map((r) => `\`${r.replace(/`/g, "'")}\``), m.link ? `<${m.link}|Open in Aegis>` : ''].filter(Boolean).join('\n');
     return { text };
@@ -134,7 +153,7 @@ class Notifier {
   async saveChannels(list) { await this.store.config.set({ notifyChannels: list }); }
 
   async deliver(channel, evt) {
-    const body = JSON.stringify(payloadFor(channel.kind, evt));
+    const body = JSON.stringify(payloadFor(channel.kind, evt, channel));
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'Aegis-Notifier/1' };
     if (channel.kind === 'webhook') {
       const ts = String(Math.floor(Date.now() / 1000));

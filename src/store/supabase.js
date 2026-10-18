@@ -54,11 +54,12 @@ class SupabaseStore {
     // Fails fast if either migration is missing.
     // Every probe runs at once; a cold start should cost one round trip, not ten.
     const probe = (table, col) => this.sb.from(table).select(col).limit(1);
-    const [base, enf, cases, work, { count }] = await Promise.all([
+    const [base, enf, cases, work, extra, { count }] = await Promise.all([
       Promise.all([['alerts', 'alert_id'], ['users', 'id'], ['api_keys', 'id']].map(([t, c]) => probe(t, c))),
       probe('firewall_rules', 'enforcement'),
       Promise.all([['alert_notes', 'id'], ['suppressions', 'id'], ['firewall_rules', 'expires_at'], ['alerts', 'assignee_id']].map(([t, c]) => probe(t, c))),
       Promise.all([['cases', 'case_id'], ['case_alerts', 'id'], ['case_tasks', 'id'], ['case_iocs', 'id'], ['case_events', 'id'], ['approvals', 'approval_id'], ['hunts', 'hunt_id'], ['hunt_runs', 'id']].map(([t, c]) => probe(t, c))),
+      Promise.all([['chat_threads', 'thread_id'], ['workflows', 'workflow_id'], ['workflow_runs', 'run_id'], ['decision_feedback', 'id'], ['documents', 'doc_id'], ['custom_rules', 'rule_id'], ['cases', 'jira']].map(([t, c]) => probe(t, c))),
       this.sb.from('cves').select('cve_id', { count: 'exact', head: true })
     ]);
     const failed = (list) => list.find((r) => r.error);
@@ -69,6 +70,9 @@ class SupabaseStore {
     // /api/cases, /api/approvals and /api/hunts answer 503 until they exist.
     this.pending = failed(work) ? { migration: '20261018000000_cases_approvals_hunts.sql', error: failed(work).error.message } : null;
     if (this.pending) console.warn(`  Casework disabled: ${this.pending.error}. Apply supabase/migrations/${this.pending.migration}.`);
+    // Same for the assistant, workflows, feedback, documents and custom rules.
+    this.pendingExtras = failed(extra) ? { migration: '20261019000000_assistant_workflows_documents.sql', error: failed(extra).error.message } : null;
+    if (this.pendingExtras) console.warn(`  Workbench disabled: ${this.pendingExtras.error}. Apply supabase/migrations/${this.pendingExtras.migration}.`);
     if (!count) unwrap(await this.sb.from('cves').upsert(referenceCves(seed)));
     if (this.demo) {
       const { count: alerts } = await this.sb.from('alerts').select('alert_id', { count: 'exact', head: true });
@@ -102,6 +106,7 @@ class SupabaseStore {
 
   // Demo reset: wipes telemetry and reloads the demo dataset. Users and API keys stay.
   async reset() {
+    if (!this.pendingExtras) for (const [table, col] of [['decision_feedback', 'id'], ['workflow_runs', 'run_id'], ['documents', 'doc_id']]) unwrap(await this.sb.from(table).delete().not(col, 'is', null));
     for (const [table, col] of [['case_events', 'id'], ['case_iocs', 'id'], ['case_tasks', 'id'], ['case_alerts', 'id'], ['approvals', 'approval_id'], ['cases', 'case_id'], ['hunt_runs', 'id'], ['alert_notes', 'id'], ['firewall_rules', 'rule_id'], ['investigations', 'investigation_id'], ['server_logs', 'id'],
       ['alerts', 'alert_id'], ['assets', 'ip_address'], ['app_config', 'key'], ['audit_log', 'id']]) {
       unwrap(await this.sb.from(table).delete().not(col, 'is', null));
@@ -343,6 +348,38 @@ class SupabaseStore {
       async insert(row) { return unwrap(await sb.from(name).insert(row).select().single()); },
       async update(id, patch) { return unwrap(await sb.from(name).update({ ...patch, updated_at: new Date().toISOString() }).eq(key, k(id)).select().maybeSingle()); },
       async remove(id) { return unwrap(await sb.from(name).delete().eq(key, k(id)).select(key)).length > 0; }
+    };
+  }
+
+  async afterRestore() {
+    const { error } = await this.sb.rpc('aegis_sync_identity');
+    if (error) console.warn(`  Identity sync after restore failed: ${error.message}`);
+  }
+
+  coll(name, key = 'id') {
+    const sb = this.sb;
+    const t = this.table(name, key);
+    return {
+      ...t,
+      async list({ eq = {}, order = 'created_at', asc = false, limit = 200, select = '*' } = {}) {
+        return paged((o) => {
+          let q = sb.from(name).select(select, o).order(order, { ascending: asc }).order(key, { ascending: asc });
+          for (const [k, v] of Object.entries(eq)) q = q.eq(k, v);
+          return q;
+        }, limit);
+      },
+      async count(eq = {}) {
+        let q = sb.from(name).select(key, { count: 'exact', head: true });
+        for (const [k, v] of Object.entries(eq)) q = q.eq(k, v);
+        const { count, error } = await q;
+        if (error) throw new Error(`Supabase: ${error.message}`);
+        return count || 0;
+      },
+      async all() { return paged((o) => sb.from(name).select('*', o).order(key), 100000); },
+      async put(rows) {
+        for (const part of chunk(rows, 500)) unwrap(await sb.from(name).upsert(part, { onConflict: key }));
+        return rows.length;
+      }
     };
   }
 

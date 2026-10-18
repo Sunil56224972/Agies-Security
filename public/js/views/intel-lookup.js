@@ -92,6 +92,8 @@ function result(r) {
     <div class="lk-grid">
       ${hitsPanel(r)}
       ${vtPanel(r.virustotal)}
+      ${otxPanel(r.otx)}
+      ${hybridPanel(r.hybrid)}
       ${rdapPanel(r.whois, ind)}
       ${bgpPanel(r.bgp)}
       ${repPanel(r.reputation)}
@@ -124,6 +126,37 @@ function vtPanel(v) {
     <dl class="kv mt-8">${v.label ? `<dt>Threat label</dt><dd>${esc(v.label)}</dd>` : ''}${v.type ? `<dt>File type</dt><dd>${esc(v.type)}</dd>` : ''}${v.names && v.names.length ? `<dt>Names</dt><dd class="mono small">${v.names.map(esc).join(', ')}</dd>` : ''}${v.as_owner ? `<dt>Network</dt><dd>${esc(v.asn || '')} ${esc(v.as_owner)}</dd>` : ''}${v.categories && v.categories.length ? `<dt>Categories</dt><dd>${v.categories.map(esc).join(', ')}</dd>` : ''}${v.last_analysis ? `<dt>Last analysis</dt><dd>${day(v.last_analysis)}</dd>` : ''}</dl>
     ${v.engines.length ? `<div class="lk-tags mt-8">${v.engines.map((e) => `<span class="tag tag--warn" title="${esc(e.result)}">${esc(e.engine)}</span>`).join('')}</div>` : ''}
     ${v.link ? `<div class="small mt-8">${ext(v.link, 'Full report on virustotal.com')}</div>` : ''}</div>`);
+}
+
+function otxPanel(o) {
+  if (!o) return '';
+  const t = 'AlienVault OTX';
+  if (o.skipped) return card(t, '', `<p class="small muted lk-pad">${esc(o.reason)}</p>`);
+  if (o.error) return card(t, '', `<p class="small lk-pad">${icon('alert')} ${esc(o.error)}</p>`);
+  if (!o.found || !o.pulses) return card(t, o.cached ? 'cached' : 'live', `<p class="small muted lk-pad">No OTX pulse references this indicator.${o.link ? ` ${ext(o.link, 'Open in OTX')}` : ''}</p>`);
+  const c = o.whitelisted ? 'var(--ok)' : o.pulses >= 10 ? 'var(--crit)' : o.pulses >= 2 ? 'var(--high)' : 'var(--muted)';
+  const recent = (o.recent || []).slice(0, 5).map((p) => `<li><span class="cell-main">${esc(p.name)}</span><span class="cell-sub">${esc(p.author || 'unknown')}${p.created ? `, ${day(p.created)}` : ''}${p.adversary ? `, ${esc(p.adversary)}` : ''}</span></li>`).join('');
+  return card(t, o.cached ? 'cached' : 'live', `<div class="lk-pad">
+    <div class="lk-vt"><b style="color:${c}">${num(o.pulses)}</b><span>community pulse${o.pulses === 1 ? '' : 's'} mention it${o.whitelisted ? ' <span class="tag tag--ok">OTX allowlist</span>' : ''}</span></div>
+    ${o.families && o.families.length ? `<div class="lk-tags mt-8">${o.families.map((f) => `<span class="tag tag--warn">${esc(f)}</span>`).join('')}</div>` : ''}
+    ${o.adversaries && o.adversaries.length ? `<dl class="kv mt-8"><dt>Adversary</dt><dd>${o.adversaries.map(esc).join(', ')}</dd></dl>` : ''}
+    ${recent ? `<ul class="lk-list mt-8">${recent}</ul>` : ''}
+    ${o.link ? `<div class="small mt-8">${ext(o.link, 'All pulses on otx.alienvault.com')}</div>` : ''}</div>`);
+}
+
+function hybridPanel(h) {
+  if (!h) return '';
+  const t = 'Hybrid Analysis';
+  if (h.skipped) return card(t, 'sandbox', `<p class="small muted lk-pad">${esc(h.reason)}</p>`);
+  if (h.error) return card(t, 'sandbox', `<p class="small lk-pad">${icon('alert')} ${esc(h.error)}</p>`);
+  if (!h.found) return card(t, 'sandbox', `<p class="small muted lk-pad">No sandbox report for this hash.${h.link ? ` ${ext(h.link, 'Search there')}` : ''}</p>`);
+  const c = h.verdict === 'malicious' ? 'var(--crit)' : h.verdict === 'suspicious' ? 'var(--high)' : 'var(--ok)';
+  const rows = (h.reports || []).slice(0, 5).map((r) => `<tr><td class="small">${esc(r.environment || '-')}</td><td class="small">${esc(r.verdict || '-')}</td><td class="num small">${r.threat_score ?? '-'}</td><td class="small">${esc(r.family || '')}</td></tr>`).join('');
+  return card(t, h.cached ? 'cached' : 'sandbox', `<div class="lk-pad">
+    <div class="lk-vt"><b style="color:${c}">${esc(h.verdict || 'no verdict')}</b><span>${h.threat_score != null ? `threat score ${h.threat_score}/100` : ''}</span></div>
+    ${h.families && h.families.length ? `<div class="lk-tags mt-8">${h.families.map((f) => `<span class="tag tag--warn">${esc(f)}</span>`).join('')}</div>` : ''}
+    ${rows ? `<div class="table-wrap mt-8"><table class="table"><thead><tr><th>Environment</th><th>Verdict</th><th class="num">Score</th><th>Family</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+    ${h.link ? `<div class="small mt-8">${ext(h.link, 'Reports on hybrid-analysis.com')}</div>` : ''}</div>`);
 }
 
 function rdapPanel(w, ind) {
@@ -223,6 +256,8 @@ export async function feedsTab(body, { navigate }) {
         <td class="num small nowrap">${f.loaded_at ? ago(f.loaded_at) : '-'}${f.fetch_ms ? `<span class="cell-sub">${(f.fetch_ms / 1000).toFixed(1)} s</span>` : ''}</td>
         <td class="small">${feedState(f)}</td></tr>`).join('')}
       <tr><td><span class="cell-main">VirusTotal</span><span class="cell-sub">70+ engines; free key allows 4 lookups a minute, 500 a day</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num small">${d.virustotal.configured ? `${d.virustotal.used_today} today` : '-'}</td><td class="small">${d.virustotal.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set VT_API_KEY</span>'}</td></tr>
+      ${d.otx ? `<tr><td><span class="cell-main">AlienVault OTX</span><span class="cell-sub">community pulses per indicator; works without a key, OTX_API_KEY raises the limit</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.otx.keyed ? '<span class="tag tag--ok">key set</span>' : '<span class="tag tag--ok">anonymous</span>'}</td></tr>` : ''}
+      ${d.hybrid_analysis ? `<tr><td><span class="cell-main">Hybrid Analysis</span><span class="cell-sub">Falcon sandbox verdicts for file hashes</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.hybrid_analysis.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set HYBRID_ANALYSIS_API_KEY</span>'}</td></tr>` : ''}
       <tr><td><span class="cell-main">Your MISP</span><span class="cell-sub">attributes/restSearch on your own instance</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.misp.own_instance ? `<span class="tag tag--ok">${esc(new URL(d.misp.own_instance).host)}</span>` : '<span class="tag">set MISP_URL and MISP_KEY</span>'}</td></tr>
       <tr><td><span class="cell-main">RDAP, RIPEstat, Mnemonic PDNS, crt.sh</span><span class="cell-sub">queried live per lookup, cached 12 hours</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small"><span class="tag tag--ok">no key needed</span></td></tr>
     </tbody></table></div>

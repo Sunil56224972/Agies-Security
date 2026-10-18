@@ -265,6 +265,7 @@ function paintCase() {
               <dt>ATT&amp;CK</dt><dd>${(c.mitre || []).length ? c.mitre.map((m) => `<a class="tag" href="https://attack.mitre.org/techniques/${esc(m.replace('.', '/'))}/" target="_blank" rel="noopener">${esc(m)}</a>`).join(' ') : '<span class="muted">none mapped</span>'}</dd>
               <dt>Tags</dt><dd>${(c.tags || []).length ? c.tags.map((x) => `<span class="tag">${esc(x)}</span>`).join(' ') : '<span class="muted">none</span>'}</dd>
               <dt>Source</dt><dd>${esc(c.source)}</dd>
+              ${jiraRow(c, respond)}
               <dt>Last change</dt><dd><span title="${stamp(c.updated_at)}">${ago(c.updated_at)}</span></dd>
             </dl>
           </div>
@@ -277,10 +278,36 @@ function paintCase() {
     </div>`;
   $$('#cv-tabs [data-tab]', el).forEach((b) => { b.onclick = () => setCaseTab(b.dataset.tab); });
   bindCaseHead();
+  bindJira();
   bindTasks();
   hydrateIcons(el);
   setCaseTab(ctx.tab);
 }
+const jiraOn = () => Boolean(state.health && state.health.integrations && state.health.integrations.jira);
+
+function jiraRow(c, respond) {
+  const j = c.jira;
+  if (j && j.key) {
+    const tone = j.category === 'done' ? 'tag--ok' : j.category === 'indeterminate' ? 'tag--warn' : '';
+    return `<dt>Jira</dt><dd><div class="jira-box"><a class="mono" href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.key)}</a>${j.status ? `<span class="tag ${tone}">${esc(j.status)}</span>` : ''}${j.assignee ? `<span class="small muted">${esc(j.assignee)}</span>` : ''}${jiraOn() ? `<button class="btn btn--sm btn--ghost" id="cv-jira-sync" title="${j.synced_at ? `Synced ${stamp(j.synced_at)}` : 'Fetch status from Jira'}">${icon('refresh')}Sync</button>` : ''}</div></dd>`;
+  }
+  if (!jiraOn()) return '';
+  return `<dt>Jira</dt><dd>${respond ? `<button class="btn btn--sm" id="cv-jira-new">${icon('plus')}Create Jira issue</button>` : '<span class="muted">not linked</span>'}</dd>`;
+}
+
+function bindJira() {
+  const { el, data: d } = ctx;
+  const id = encodeURIComponent(d.case.case_id);
+  const mk = $('#cv-jira-new', el);
+  if (mk) mk.onclick = () => busy(mk, async () => {
+    try { const j = await api(`/cases/${id}/jira`, { method: 'POST' }); toast('Jira issue created', j.key, 'ok'); await loadCase(); } catch (e) { toast('Jira issue not created', e.message, 'error'); }
+  });
+  const sy = $('#cv-jira-sync', el);
+  if (sy) sy.onclick = () => busy(sy, async () => {
+    try { const j = await api(`/cases/${id}/jira`); toast(`${j.key}: ${j.status || 'synced'}`, '', 'ok'); await loadCase(); } catch (e) { toast('Sync failed', e.message, 'error'); }
+  });
+}
+
 function setCaseTab(tab) {
   const { el, data: d } = ctx;
   ctx.tab = ['timeline', 'alerts', 'iocs', 'response'].includes(tab) ? tab : 'timeline';

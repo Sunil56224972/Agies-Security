@@ -87,7 +87,8 @@ function normalizeCriteria(c = {}) {
 }
 
 class HuntEngine {
-  constructor(store, { sigma = null, reputation = null, hub = null } = {}) {
+  constructor(store, { sigma = null, reputation = null, hub = null, custom = null } = {}) {
+    this.custom = custom;
     this.store = store;
     this.sigma = sigma;
     this.reputation = reputation;
@@ -151,8 +152,11 @@ class HuntEngine {
     let sigmaInfo = null;
     if (c.sigma) {
       const scope = logs.filter((l) => (!ip || ip(l.client_ip) || ip(l.host_ip)) && (!text || text(l.raw_entry)));
-      const rules = this.sigma && this.sigma.available ? await this.sigma.rules(Math.min(budgetMs, 15000)) : null;
-      if (!rules) { notes.push(this.sigma && this.sigma.available ? 'Sigma rules are still downloading; run again in a minute.' : 'Sigma is disabled on this server.'); }
+      const community = this.sigma && this.sigma.available ? await this.sigma.rules(Math.min(budgetMs, 15000)) : null;
+      if (!community) notes.push(this.sigma && this.sigma.available ? 'SigmaHQ rules are still downloading; only custom rules ran.' : 'SigmaHQ is disabled on this server; only custom rules ran.');
+      const own = this.custom ? await this.custom.compiled().catch(() => []) : [];
+      const rules = community || own.length ? [...(community || []), ...own] : null;
+      if (!rules) { notes.push('No Sigma rules are available.'); }
       else {
         const matches = scanWith(rules, scope, { minLevel: 'low' }).filter((m) => !c.technique || techMatches(c.technique, techId(m.rule.technique)));
         const rulesHit = new Set();

@@ -48,7 +48,7 @@ async function setTab(tab, query = {}) {
   $$('#hn-tabs [data-tab]', el).forEach((b) => { const on = b.dataset.tab === tab; b.classList.toggle('is-on', on); b.setAttribute('aria-selected', String(on)); });
   history.replaceState(null, '', tab === 'hunt' ? '#/hunts' : `#/hunts?tab=${tab}`);
   const pane = $('#hn-pane', el);
-  if (tab === 'hunt') paintBuilder(pane, ctx.prefill || (query.technique ? { criteria: { technique: query.technique, window_hours: 720 } } : null));
+  if (tab === 'hunt') paintBuilder(pane, ctx.prefill || (query.technique ? { criteria: { technique: query.technique, window_hours: 720 } } : query.indicators ? { criteria: { indicators: String(query.indicators).split(',').filter(Boolean).slice(0, 50), window_hours: 720 } } : null));
   else if (tab === 'saved') await paintSaved(pane);
   else if (tab === 'runs') await paintRuns(pane);
   else await paintAttack(pane);

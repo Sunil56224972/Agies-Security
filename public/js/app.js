@@ -15,6 +15,11 @@ const ROUTES = {
   ip: { title: 'IP profile', load: () => import('./views/ip.js') },
   intel: { title: 'Threat intel', load: () => import('./views/intel.js') },
   telemetry: { title: 'Telemetry', load: () => import('./views/telemetry.js') },
+  assistant: { title: 'Assistant', load: () => import('./views/assistant.js') },
+  workflows: { title: 'Workflows', load: () => import('./views/workflows.js') },
+  detections: { title: 'Detections', load: () => import('./views/detections.js') },
+  documents: { title: 'Documents', load: () => import('./views/documents.js') },
+  decisions: { title: 'Decisions', load: () => import('./views/decisions.js') },
   settings: { title: 'Settings', load: () => import('./views/settings.js') }
 };
 
@@ -180,6 +185,13 @@ const JUMPS = [
   { label: 'My queue', path: 'alerts?mine=1', ic: 'user' },
   { label: 'Assets and CVE knowledge base', path: 'assets', ic: 'server' },
   { label: 'Telemetry', path: 'telemetry', ic: 'terminal' },
+  { label: 'Ask the assistant', path: 'assistant', ic: 'chat' },
+  { label: 'Workflows and playbooks', path: 'workflows', ic: 'flow' },
+  { label: 'Workflow run history', path: 'workflows?tab=runs', ic: 'activity' },
+  { label: 'Custom detection rules (Sigma)', path: 'detections', ic: 'code' },
+  { label: 'Upload a document or IOC list', path: 'documents', ic: 'upload' },
+  { label: 'Decision accuracy', path: 'decisions', ic: 'scale' },
+  { label: 'Backup and restore', path: 'settings?section=backup', ic: 'archive' },
   { label: 'Settings', path: 'settings', ic: 'sliders' }
 ];
 

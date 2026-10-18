@@ -39,7 +39,10 @@ function registerRoutes(app, ctx) {
       engine: { llm: investigator.llmAvailable, model: investigator.llmAvailable ? investigator.model : null },
       enforcement: { ...enforcer.describe(), warning: warnings.find((w) => /ENFORCEMENT/.test(w)) || null },
       intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [],
-        feeds: hub && hub.available, vt_key: Boolean(env.VT_API_KEY), abusech_key: Boolean(env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY) },
+        feeds: hub && hub.available, vt_key: Boolean(env.VT_API_KEY), abusech_key: Boolean(env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY),
+        otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(env.OTX_API_KEY), ha_key: Boolean(env.HYBRID_ANALYSIS_API_KEY) },
+      integrations: { jira: Boolean(env.JIRA_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN && env.JIRA_PROJECT), pagerduty: true, assistant: investigator.llmAvailable },
+      workbench_migration: store.pendingExtras ? store.pendingExtras.migration : null,
       sigma: sigma ? (({ loaded, loading, entries, version, loaded_at, error }) => ({ enabled: sigma.available, loaded, loading, rules: entries, version, loaded_at, error }))(sigma.status()) : { enabled: false },
       demo,
       pending_migration: store.pending ? store.pending.migration : null,
@@ -592,14 +595,24 @@ function registerRoutes(app, ctx) {
 
   // SigmaHQ rules are single-event, so they run over the new lines only. If the rule
   // set is still downloading the batch is not held up; the next one gets scanned.
+  // Analyst-written rules (Detections > Custom rules) run on every batch too,
+  // whether or not the SigmaHQ bundle has finished downloading.
   async function runSigma(batch, req, cfg) {
-    if (!sigma || !sigma.available || cfg.sigmaEnabled === false) return { raised: 0, ids: [] };
-    const s = await sigma.scan(batch, { budgetMs: 3000, minLevel: cfg.sigmaMinLevel || 'medium', disabled: cfg.sigmaDisabled || [] });
-    if (!s) return { raised: 0, ids: [], sigma: 'loading' };
-    if (!s.matches.length) return { raised: 0, ids: [], sigma: s.rules };
-    const found = toAlerts(s.matches);
-    const { inserted } = await landAlerts(found, req, { action: 'detect.raised', note: `sigma: ${[...new Set(s.matches.map((m) => m.rule.title))].slice(0, 4).join(', ')}`.slice(0, 300) });
-    return { raised: inserted.length, ids: inserted, sigma: s.rules };
+    let custom = [];
+    if (ctx.customRules && cfg.sigmaEnabled !== false) {
+      try { custom = await ctx.customRules.scan(batch); } catch (err) { console.warn('  Custom rules failed:', err.message); }
+    }
+    let s = null; let state;
+    if (sigma && sigma.available && cfg.sigmaEnabled !== false) {
+      s = await sigma.scan(batch, { budgetMs: 3000, minLevel: cfg.sigmaMinLevel || 'medium', disabled: cfg.sigmaDisabled || [] });
+      state = s ? s.rules : 'loading';
+    }
+    const matches = [...(s ? s.matches : []), ...custom];
+    if (!matches.length) return { raised: 0, ids: [], ...(state !== undefined ? { sigma: state } : {}) };
+    const found = toAlerts(matches);
+    const { inserted } = await landAlerts(found, req, { action: 'detect.raised', note: `sigma: ${[...new Set(matches.map((m) => m.rule.title))].slice(0, 4).join(', ')}`.slice(0, 300) });
+    if (custom.length) await ctx.customRules.recordHits(custom).catch(() => {});
+    return { raised: inserted.length, ids: inserted, ...(state !== undefined ? { sigma: state } : {}), ...(custom.length ? { custom: custom.length } : {}) };
   }
 
   app.post('/api/ingest/logs', requireKey('ingest'), bigJson, bigText, wrap(async (req, res) => {
