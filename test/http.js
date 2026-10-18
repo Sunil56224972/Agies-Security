@@ -439,6 +439,15 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     r = await call('GET', '/api/decisions?days=30&judged=yes');
     ok(r.json.totals.judged >= 1 && r.json.rows.every((x) => x.correct !== null) && r.json.rows.find((x) => x.investigation_id === invId).rating === 4, 'accuracy built from analyst feedback');
 
+    ok((await call('PUT', `/api/cases/${docCase}/ticket`, { body: { key: 'bad key!', system: 'ServiceNow' } })).status === 400, 'ticket key validated');
+    ok((await call('PUT', `/api/cases/${docCase}/ticket`, { body: { key: 'INC0012345', url: 'javascript:alert(1)' } })).status === 400, 'ticket url must be http(s)');
+    r = await call('PUT', `/api/cases/${docCase}/ticket`, { body: { key: 'INC0012345', system: 'ServiceNow', url: 'https://corp.service-now.com/inc/INC0012345', status: 'Open' } });
+    ok(r.status === 200 && r.json.manual === true && r.json.key === 'INC0012345', 'external ticket linked by hand');
+    r = await call('GET', `/api/cases/${docCase}`);
+    ok(r.json.case.jira && r.json.case.jira.key === 'INC0012345' && r.json.events.some((e) => /INC0012345 linked/.test(e.body)), 'linked ticket stored on the case with a timeline entry');
+    ok((await call('GET', `/api/cases/${docCase}/jira`)).json.key === 'INC0012345', 'status of a manual ticket returns without Jira');
+    ok((await call('PUT', `/api/cases/${docCase}/ticket`, { as: 'vic', body: { key: 'X-1' } })).status === 403, 'viewer cannot link tickets');
+    ok((await call('DELETE', `/api/cases/${docCase}/ticket`)).status === 200 && !(await call('GET', `/api/cases/${docCase}`)).json.case.jira, 'ticket unlinked');
     ok((await call('POST', `/api/cases/${docCase}/jira`)).status === 400 || (await call('POST', `/api/cases/${docCase}/jira`)).status === 503, 'Jira refuses cleanly when not configured');
     ok((await call('POST', '/api/notify/channels', { body: { name: 'On-call', kind: 'pagerduty', secret: 'short' } })).status === 400, 'PagerDuty key validated');
     r = await call('POST', '/api/notify/channels', { body: { name: 'On-call', kind: 'pagerduty', secret: 'a'.repeat(32), min_severity: 'CRITICAL' } });

@@ -841,6 +841,7 @@ function createWorkbench(ctx, svc) {
     const c = await store.cases.get(caseId);
     if (!c) throw fail('Case not found', 404);
     if (!c.jira || !c.jira.key) throw fail('This case has no Jira issue', 404);
+    if (c.jira.manual) return c.jira;
     const cfg = jiraCfg();
     if (!cfg) throw fail('Jira is not configured on this server', 503);
     const body = await jiraFetch(cfg, `/rest/api/3/issue/${encodeURIComponent(c.jira.key)}?fields=status,assignee,updated,resolution`);
@@ -848,6 +849,33 @@ function createWorkbench(ctx, svc) {
     const jira = { ...c.jira, status: f.status ? f.status.name : null, category: f.status && f.status.statusCategory ? f.status.statusCategory.key : null, assignee: f.assignee ? f.assignee.displayName : null, resolution: f.resolution ? f.resolution.name : null, synced_at: new Date().toISOString() };
     await store.cases.update(caseId, { jira });
     return jira;
+  }
+
+  // Link an existing ticket from any tracker (Jira, ServiceNow, GitHub...) by key and URL.
+  // Stored in the same jira column with manual: true, so no tracker credentials are needed.
+  async function linkTicket(caseId, input, who) {
+    const c = await store.cases.get(caseId);
+    if (!c) throw fail('Case not found', 404);
+    const key = str(input.key, 80);
+    const url = str(input.url, 500);
+    const system = str(input.system, 40) || 'Ticket';
+    if (!/^[\w.#:\/-]{2,80}$/.test(key)) throw fail('Ticket key must be 2-80 characters: letters, digits, - _ . # : /');
+    if (url && !/^https?:\/\/[^\s]+$/i.test(url)) throw fail('Ticket URL must start with http:// or https://');
+    if (c.jira && c.jira.key && !c.jira.manual) throw fail(`Already linked to ${c.jira.key}`, 409);
+    const jira = { key, url: url || null, system, manual: true, status: str(input.status, 40) || null, created_by: who.name, created_at: new Date().toISOString() };
+    await store.cases.update(caseId, { jira });
+    await svc.addEvent(caseId, { kind: 'comment', body: `${system} ticket ${key} linked${url ? `: ${url}` : ''}` }, who);
+    await audit(who, 'case.ticket', caseId, `${system} ${key}`);
+    return jira;
+  }
+  async function unlinkTicket(caseId, who) {
+    const c = await store.cases.get(caseId);
+    if (!c) throw fail('Case not found', 404);
+    if (!c.jira || !c.jira.key) throw fail('This case has no linked ticket', 404);
+    await store.cases.update(caseId, { jira: null });
+    await svc.addEvent(caseId, { kind: 'comment', body: `Ticket ${c.jira.key} unlinked` }, who);
+    await audit(who, 'case.ticket', caseId, `unlinked ${c.jira.key}`);
+    return { ok: true };
   }
 
   // ---- Backup and restore ---------------------------------------------------------------------
@@ -937,7 +965,7 @@ function createWorkbench(ctx, svc) {
     decisions, decision, giveFeedback,
     analyzeText, uploadDocument, listDocuments, getDocument: mustDoc, checkDocument, attachDocument, deleteDocument, lookupMany,
     listCustom, getCustom: mustRule, saveCustom, deleteCustom, testCustom, lint: (text) => lintOut(lintRule(text)),
-    jiraCreate, jiraStatus, backup, restore
+    jiraCreate, jiraStatus, linkTicket, unlinkTicket, backup, restore
   };
 }
 
@@ -970,7 +998,7 @@ function registerWorkbench(app, ctx, svc) {
     } finally { clearInterval(beat); res.end(); }
   });
   const pending = (req, res, next) => (store.pendingExtras ? bad(res, `This feature needs the ${store.pendingExtras.migration} migration. Apply it to the database and reload.`, 503) : next());
-  app.use(['/api/assistant', '/api/workflows', '/api/decisions', '/api/documents', '/api/detections/custom', '/api/cases/:id/jira'], pending);
+  app.use(['/api/assistant', '/api/workflows', '/api/decisions', '/api/documents', '/api/detections/custom', '/api/cases/:id/jira', '/api/cases/:id/ticket'], pending);
 
   app.get('/api/workbench/status', h(() => wb.integrations()));
 
@@ -1025,6 +1053,8 @@ function registerWorkbench(app, ctx, svc) {
   // Jira
   app.post('/api/cases/:id/jira', need('respond'), h((req) => wb.jiraCreate(req.params.id, who(req), origin(req)), 201));
   app.get('/api/cases/:id/jira', h((req) => wb.jiraStatus(req.params.id)));
+  app.put('/api/cases/:id/ticket', need('respond'), h((req) => wb.linkTicket(req.params.id, b(req), who(req))));
+  app.delete('/api/cases/:id/ticket', need('respond'), h((req) => wb.unlinkTicket(req.params.id, who(req))));
 
   // Backup
   app.get('/api/admin/backup', need('manage'), h(async (req) => wb.backup(who(req), { logs: req.query.logs === '1' })));

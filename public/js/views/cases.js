@@ -287,20 +287,57 @@ const jiraOn = () => Boolean(state.health && state.health.integrations && state.
 
 function jiraRow(c, respond) {
   const j = c.jira;
+  if (j && j.key && j.manual) {
+    const key = j.url ? `<a class="mono" href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.key)}</a>` : `<span class="mono">${esc(j.key)}</span>`;
+    return `<dt>Ticket</dt><dd><div class="jira-box"><span class="tag">${esc(j.system || 'Ticket')}</span>${key}${j.status ? `<span class="tag">${esc(j.status)}</span>` : ''}${respond ? `<button class="btn btn--sm btn--ghost" id="cv-ticket-link">Edit</button><button class="btn btn--sm btn--ghost" id="cv-ticket-unlink">Unlink</button>` : ''}</div></dd>`;
+  }
   if (j && j.key) {
     const tone = j.category === 'done' ? 'tag--ok' : j.category === 'indeterminate' ? 'tag--warn' : '';
     return `<dt>Jira</dt><dd><div class="jira-box"><a class="mono" href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.key)}</a>${j.status ? `<span class="tag ${tone}">${esc(j.status)}</span>` : ''}${j.assignee ? `<span class="small muted">${esc(j.assignee)}</span>` : ''}${jiraOn() ? `<button class="btn btn--sm btn--ghost" id="cv-jira-sync" title="${j.synced_at ? `Synced ${stamp(j.synced_at)}` : 'Fetch status from Jira'}">${icon('refresh')}Sync</button>` : ''}</div></dd>`;
   }
-  if (!jiraOn()) return '';
-  return `<dt>Jira</dt><dd>${respond ? `<button class="btn btn--sm" id="cv-jira-new">${icon('plus')}Create Jira issue</button>` : '<span class="muted">not linked</span>'}</dd>`;
+  const link = respond ? `<button class="btn btn--sm${jiraOn() ? ' btn--ghost' : ''}" id="cv-ticket-link">${icon('plus')}Link ticket</button>` : '';
+  if (!jiraOn()) return `<dt>Ticket</dt><dd>${link || '<span class="muted">not linked</span>'}</dd>`;
+  return `<dt>Ticket</dt><dd>${respond ? `<div class="jira-box"><button class="btn btn--sm" id="cv-jira-new">${icon('plus')}Create Jira issue</button>${link}</div>` : '<span class="muted">not linked</span>'}</dd>`;
 }
 
+function linkTicketModal(c) {
+  const j = c.jira && c.jira.manual ? c.jira : {};
+  const panel = modal(`
+    <div class="modal__head"><h2 class="modal__title">Link external ticket</h2><p class="small muted" style="margin:4px 0 0">Record the ticket this incident is tracked under in Jira, ServiceNow, GitHub or any other system.</p></div>
+    <form class="modal__body" id="tk-form" novalidate>
+      <div class="form-grid">
+        <label class="field"><span>System</span><input class="input" name="system" maxlength="40" placeholder="Jira, ServiceNow, GitHub..." value="${esc(j.system || '')}"></label>
+        <label class="field"><span>Ticket key</span><input class="input input--mono" name="key" required maxlength="80" placeholder="SEC-142 or INC0012345" value="${esc(j.key || '')}"></label>
+        <label class="field span-2"><span>URL (optional)</span><input class="input" name="url" maxlength="500" placeholder="https://..." value="${esc(j.url || '')}"></label>
+        <label class="field"><span>Status (optional)</span><input class="input" name="status" maxlength="40" placeholder="Open, In progress..." value="${esc(j.status || '')}"></label>
+      </div>
+    </form>
+    <div class="modal__foot"><span class="form-error" id="tk-err"></span><button class="btn btn--ghost" data-close>Cancel</button><button class="btn btn--primary" id="tk-save">Link ticket</button></div>`);
+  const form = $('#tk-form', panel);
+  const go = async (e) => {
+    e.preventDefault();
+    await busy($('#tk-save', panel), async () => {
+      try {
+        const t = await api(`/cases/${encodeURIComponent(c.case_id)}/ticket`, { method: 'PUT', body: Object.fromEntries(new FormData(form)) });
+        closeLayer(); toast('Ticket linked', `${t.system} ${t.key}`, 'ok'); await loadCase();
+      } catch (err) { $('#tk-err', panel).textContent = err.message; }
+    });
+  };
+  $('#tk-save', panel).onclick = go;
+  form.onsubmit = go;
+}
 function bindJira() {
   const { el, data: d } = ctx;
   const id = encodeURIComponent(d.case.case_id);
   const mk = $('#cv-jira-new', el);
   if (mk) mk.onclick = () => busy(mk, async () => {
     try { const j = await api(`/cases/${id}/jira`, { method: 'POST' }); toast('Jira issue created', j.key, 'ok'); await loadCase(); } catch (e) { toast('Jira issue not created', e.message, 'error'); }
+  });
+  const lk = $('#cv-ticket-link', el);
+  if (lk) lk.onclick = () => linkTicketModal(d.case);
+  const ul = $('#cv-ticket-unlink', el);
+  if (ul) ul.onclick = () => busy(ul, async () => {
+    try { await api(`/cases/${id}/ticket`, { method: 'DELETE' }); toast('Ticket unlinked', '', 'ok'); await loadCase(); } catch (e) { toast('Unlink failed', e.message, 'error'); }
   });
   const sy = $('#cv-jira-sync', el);
   if (sy) sy.onclick = () => busy(sy, async () => {
