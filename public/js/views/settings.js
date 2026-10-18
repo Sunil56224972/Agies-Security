@@ -143,6 +143,7 @@ function mcpPanel(manage) {
     <div class="panel__body">
       <p class="small muted" style="margin-top:0">Connect Claude, Cursor or any MCP client to this console. Every tool call runs against the same API, with the key's scope, and is written to the audit log as <code>mcp:&lt;key name&gt;</code>.</p>
       <div class="secret"><code>${esc(location.origin)}/mcp</code><button class="btn btn--sm btn--ghost" data-mcp-copy="url">Copy</button></div>
+      <p class="small muted mt-12" style="margin-bottom:0"><b>claude.ai</b>: Settings, Connectors, Add custom connector, paste this URL and leave the OAuth fields blank. Claude asks you to sign in here and acts as you, with your role. Changing your password disconnects it.</p>
       <div class="row small mt-12"><b class="grow">Client config</b><button class="btn btn--sm btn--ghost" data-mcp-copy="cfg">${icon('copy')}</button></div>
       <pre class="snippet is-code mono mt-8">${esc(mcpRemote(location.origin, 'aeg_YOUR_KEY'))}</pre>
       <div class="small muted mt-12"><b>mcp</b> scope, ${MCP_READ.length} read tools</div>

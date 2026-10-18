@@ -253,13 +253,21 @@ function buildTools(ctx, svc) {
 function registerMcp(app, ctx, svc) {
   const { store, wrap, env } = ctx;
   const tools = buildTools(ctx, svc);
+  // Web connectors send CORS preflights; tokens travel in the Authorization header, never cookies.
   const byName = new Map(tools.map((t) => [t.name, t]));
   const limiter = auth.rateLimit({ windowMs: 60000, max: Number(env.MCP_RATE_LIMIT) || 300, key: (req) => `mcp:${req.ip}` });
 
   const authKey = wrap(async (req, res, next) => {
     const raw = auth.bearer(req);
-    const deny = (code, msg) => { if (code === 401) res.set('WWW-Authenticate', 'Bearer realm="aegis-mcp"'); res.status(code).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: msg } }); };
-    if (!raw) return deny(401, 'API key required: Authorization: Bearer aeg_... (scope mcp or mcp:write)');
+    const deny = (code, msg) => { if (code === 401) res.set('WWW-Authenticate', ctx.oauth ? ctx.oauth.challenge(req) : 'Bearer realm="aegis-mcp"'); res.status(code).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: msg } }); };
+    if (!raw) return deny(401, 'Sign in with OAuth, or send an API key: Authorization: Bearer aeg_... (scope mcp or mcp:write)');
+    // OAuth access tokens (claude.ai and other web connectors) act as the signed-in user.
+    if (ctx.oauth && raw.startsWith('aeo_')) {
+      const grant = await ctx.oauth.verify(raw);
+      if (!grant) return deny(401, 'The access token is invalid, expired or revoked');
+      req.apiKey = grant;
+      return next();
+    }
     const key = await store.apiKeys.byHash(auth.hashApiKey(raw));
     if (!key) return deny(401, 'Invalid or revoked API key');
     if (!(key.scopes || []).some((s) => SCOPES.includes(s))) return deny(403, 'This key has no MCP scope; create one with "mcp" or "mcp:write" in Settings');
@@ -268,13 +276,20 @@ function registerMcp(app, ctx, svc) {
     next();
   });
 
-  // Browsers must not be able to drive the server from another site.
+  // Browsers must not be able to drive the server from another site, except the
+  // Claude web app and any origin listed in MCP_ALLOWED_ORIGINS. Auth is a bearer
+  // token in a header, never a cookie, so an allowed origin still needs a token.
+  const allowed = new Set(['https://claude.ai', 'https://claude.com', ...String(env.MCP_ALLOWED_ORIGINS || '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean)]);
   const origin = (req, res, next) => {
     const o = req.get('origin');
     if (o && o !== 'null') {
       let host = null;
       try { host = new URL(o).host; } catch { host = null; }
-      if (host !== req.get('host')) return res.status(403).json({ jsonrpc: '2.0', id: null, error: { code: -32002, message: 'Cross-origin MCP requests are not allowed' } });
+      if (host !== req.get('host')) {
+        if (!allowed.has(o)) return res.status(403).json({ jsonrpc: '2.0', id: null, error: { code: -32002, message: 'Cross-origin MCP requests are not allowed' } });
+        res.set({ 'Access-Control-Allow-Origin': o, Vary: 'Origin', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, MCP-Protocol-Version, Mcp-Session-Id', 'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS', 'Access-Control-Expose-Headers': 'WWW-Authenticate, Mcp-Session-Id' });
+        if (req.method === 'OPTIONS') return res.status(204).end();
+      }
     }
     next();
   };
@@ -342,6 +357,7 @@ function registerMcp(app, ctx, svc) {
   const noStream = (req, res) => res.status(405).set('Allow', 'POST').json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'This server is stateless; use POST' } });
 
   for (const p of ['/mcp', '/api/mcp']) {
+    app.options(p, origin, (req, res) => res.status(204).end());
     app.post(p, ...endpoint);
     app.get(p, noStream);
     app.delete(p, noStream);

@@ -17,6 +17,7 @@ const { registerCases } = require('./cases');
 const { registerMcp } = require('./mcp');
 const { registerWorkbench } = require('./workbench');
 const { registerLlm } = require('./llm-routes');
+const { registerOauth } = require('./oauth');
 const { CustomRules } = require('./engine/customrules');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -256,6 +257,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   const customRules = new CustomRules(store);
   const hunter = new HuntEngine(store, { sigma, reputation, hub, custom: customRules });
   const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, secret, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, customRules, bootedAt: Date.now() };
+  ctx.oauth = registerOauth(app, ctx);
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
   registerIntel(app, ctx);

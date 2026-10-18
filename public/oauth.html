@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Connect to Aegis</title>
+  <link rel="icon" type="image/png" href="/img/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/layout.css">
+  <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="/css/views.css">
+  <script src="/js/theme-boot.js"></script>
+</head>
+<body>
+  <div class="gate is-in" id="gate">
+    <div class="gate__side">
+      <div class="gate__brand"><img src="/img/aegis-mark.png" alt="" width="34" height="34"><span>Aegis <em>Security</em></span></div>
+      <div class="gate__copy">
+        <img class="gate__emblem" src="/img/aegis-mark.png" alt="Aegis Security" width="132" height="132">
+        <p class="gate__lede">Give an AI assistant access to this console.</p>
+        <ul class="gate__facts">
+          <li><span>Acts as</span>You, with your role. Never more.</li>
+          <li><span>Audited</span>Every tool call is logged with your name</li>
+          <li><span>Revoke</span>Change your password to cut off every connector</li>
+        </ul>
+      </div>
+      <div class="gate__foot mono" id="host"></div>
+    </div>
+    <div class="gate__main"><div class="gate__card" id="card"><div class="skeleton" style="height:220px"></div></div></div>
+  </div>
+  <script type="module" src="/js/oauth.js"></script>
+</body>
+</html>

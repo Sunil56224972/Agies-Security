@@ -54,6 +54,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
   const base = `http://127.0.0.1:${server.address().port}`;
 
   const jar = {};
+  let oauthRevoke = null;
   async function call(method, url, { body, as = 'admin', headers = {}, raw } = {}) {
     const h = { ...headers };
     if (as && jar[as]) h.Cookie = jar[as];
@@ -510,6 +511,65 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
       ok((await call('GET', '/api/workbench/status')).json.assistant === false, 'assistant off again after removal');
       ok((await call('DELETE', '/api/llm')).status === 404, 'nothing left to remove');
     } finally { fakeLlm.close(); }
+
+    // ---- OAuth for web MCP connectors (claude.ai) -------------------------------------------
+    const CB = 'https://claude.ai/api/mcp/auth_callback';
+    r = await call('POST', '/mcp', { as: null, body: { jsonrpc: '2.0', id: 1, method: 'ping' } });
+    ok(r.status === 401 && /resource_metadata=".*\/\.well-known\/oauth-protected-resource"/.test(r.headers.get('www-authenticate')), 'MCP 401 points clients at OAuth metadata');
+    r = await call('GET', '/.well-known/oauth-protected-resource', { as: null });
+    ok(r.status === 200 && r.json.resource.endsWith('/mcp') && r.json.authorization_servers.length === 1, 'protected resource metadata served');
+    const meta = (await call('GET', '/.well-known/oauth-authorization-server', { as: null })).json;
+    ok(meta.code_challenge_methods_supported.includes('S256') && meta.registration_endpoint.endsWith('/oauth/register') && meta.token_endpoint.endsWith('/oauth/token'), 'authorization server metadata served');
+    ok((await call('POST', '/oauth/register', { as: null, body: { redirect_uris: ['http://evil.example/cb'] } })).status === 400, 'registration refuses non-https redirects');
+    r = await call('POST', '/oauth/register', { as: null, body: { client_name: 'Claude', redirect_uris: [CB], token_endpoint_auth_method: 'none' } });
+    ok(r.status === 201 && r.json.client_id.startsWith('aec_') && !r.json.client_secret, 'public client registered dynamically');
+    const clientId = r.json.client_id;
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    const authq = { response_type: 'code', client_id: clientId, redirect_uri: CB, code_challenge: challenge, code_challenge_method: 'S256', state: 'st-123', scope: 'mcp mcp:write' };
+    r = await call('GET', '/oauth/authorize?' + new URLSearchParams(authq), { as: null });
+    ok(r.status === 200 && /oauth\.js/.test(r.text), 'authorize serves the consent page');
+    r = await call('GET', '/oauth/authorize/info?' + new URLSearchParams(authq), { as: null });
+    ok(r.status === 200 && r.json.client_name === 'Claude' && r.json.redirect_host === 'claude.ai' && r.json.wants_write === true, 'consent page learns who is asking');
+    ok((await call('GET', '/oauth/authorize/info?' + new URLSearchParams({ ...authq, redirect_uri: 'https://evil.example/cb' }), { as: null })).status === 400, 'unregistered redirect refused');
+    r = await call('GET', '/oauth/authorize/info?' + new URLSearchParams({ ...authq, code_challenge_method: 'plain' }), { as: null });
+    ok(r.json.redirect && /error=invalid_request/.test(r.json.redirect), 'plain PKCE refused');
+    ok((await call('POST', '/api/oauth/approve', { as: null, headers: { 'X-Aegis-Client': 'web' }, body: { ...authq, decision: 'allow' } })).status === 401, 'approval needs a signed-in user');
+    r = await call('POST', '/api/oauth/approve', { body: { ...authq, decision: 'deny' } });
+    ok(/error=access_denied/.test(r.json.redirect) && /state=st-123/.test(r.json.redirect), 'deny returns access_denied with state');
+    r = await call('POST', '/api/oauth/approve', { body: { ...authq, decision: 'allow', allow_write: false } });
+    const back = new URL(r.json.redirect);
+    ok(back.origin + back.pathname === CB && back.searchParams.get('state') === 'st-123' && back.searchParams.get('code'), 'allow redirects back with a code');
+    const code = back.searchParams.get('code');
+    const tok = (form) => fetch(base + '/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form) }).then(async (x) => ({ status: x.status, json: await x.json() }));
+    ok((await tok({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: CB, code_verifier: 'x'.repeat(43) })).status === 400, 'wrong PKCE verifier refused');
+    r = await tok({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: CB, code_verifier: verifier });
+    ok(r.status === 200 && r.json.access_token.startsWith('aeo_') && r.json.refresh_token.startsWith('aer_') && r.json.scope === 'mcp' && r.json.token_type === 'Bearer', 'code exchanged for tokens');
+    let access = r.json.access_token; const refreshTok = r.json.refresh_token;
+    ok((await tok({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: CB, code_verifier: verifier })).status === 400, 'code cannot be reused');
+    const mcpAs = (token, body, origin) => fetch(base + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(origin ? { Origin: origin } : {}) }, body: JSON.stringify(body) }).then(async (x) => ({ status: x.status, json: await x.json().catch(() => null), headers: x.headers }));
+    r = await mcpAs(access, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, 'https://claude.ai');
+    ok(r.status === 200 && r.json.result.tools.some((t) => t.name === 'overview') && !r.json.result.tools.some((t) => t.name === 'block_ip') && r.headers.get('access-control-allow-origin') === 'https://claude.ai', 'OAuth token lists read tools from claude.ai');
+    r = await mcpAs(access, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'overview', arguments: {} } });
+    ok(r.status === 200 && r.json.result.isError === false, 'OAuth token calls a tool');
+    ok((await mcpAs(access, { jsonrpc: '2.0', id: 4, method: 'ping' }, 'https://evil.example')).status === 403, 'other web origins still refused');
+    ok((await mcpAs(access.slice(0, -2) + 'xx', { jsonrpc: '2.0', id: 5, method: 'ping' })).status === 401, 'tampered token refused');
+    r = await call('POST', '/api/oauth/approve', { body: { ...authq, decision: 'allow', allow_write: true } });
+    r = await tok({ grant_type: 'authorization_code', code: new URL(r.json.redirect).searchParams.get('code'), client_id: clientId, redirect_uri: CB, code_verifier: verifier });
+    ok(r.json.scope === 'mcp mcp:write', 'admin can grant write access');
+    r = await mcpAs(r.json.access_token, { jsonrpc: '2.0', id: 6, method: 'tools/list' });
+    ok(r.json.result.tools.some((t) => t.name === 'block_ip'), 'write grant exposes action tools');
+    r = await tok({ grant_type: 'refresh_token', refresh_token: refreshTok, client_id: clientId });
+    ok(r.status === 200 && r.json.access_token.startsWith('aeo_'), 'refresh token issues a new access token');
+    access = r.json.access_token;
+    const oAudit = (await call('GET', '/api/audit?limit=300')).json;
+    ok(oAudit.some((a) => a.action === 'oauth.granted') && oAudit.some((a) => a.action === 'mcp.call' && /via Claude/.test(a.actor)), 'OAuth grants and calls are audited as the user');
+    // Viewers only ever get read access.
+    await call('POST', '/api/auth/login', { as: 'vic', body: { email: 'vic@corp.example', password: 'Another1pass' } });
+    r = await call('POST', '/api/oauth/approve', { as: 'vic', body: { ...authq, decision: 'allow', allow_write: true } });
+    r = await tok({ grant_type: 'authorization_code', code: new URL(r.json.redirect).searchParams.get('code'), client_id: clientId, redirect_uri: CB, code_verifier: verifier });
+    ok(r.json.scope === 'mcp', 'viewer cannot grant write access');
+    oauthRevoke = { access, refreshTok, clientId, tok, mcpAs };
     store.pendingExtras = { migration: '20261019000000_assistant_workflows_documents.sql', error: 'relation "workflows" does not exist' };
     ok((await call('GET', '/api/workflows')).status === 503 && (await call('GET', '/api/alerts?limit=1')).status === 200, 'missing workbench migration answers 503 without breaking the rest');
     store.pendingExtras = null;
@@ -527,6 +587,8 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok(r.status === 200, 'password changed');
     const stale = await fetch(`${base}/api/alerts`, { headers: { Cookie: oldCookie } });
     ok(stale.status === 401, 'old session invalid after password change');
+    ok((await oauthRevoke.mcpAs(oauthRevoke.access, { jsonrpc: '2.0', id: 9, method: 'ping' })).status === 401, 'password change revokes OAuth access tokens');
+    ok((await oauthRevoke.tok({ grant_type: 'refresh_token', refresh_token: oauthRevoke.refreshTok, client_id: oauthRevoke.clientId })).status === 400, 'password change revokes OAuth refresh tokens');
 
     const audit = (await call('GET', '/api/audit?limit=200')).json.map((a) => a.action);
     ok(['user.created', 'key.created', 'ingest.alerts', 'feed.pulled', 'auth.failed'].every((x) => audit.includes(x)), 'audit trail records security events');
