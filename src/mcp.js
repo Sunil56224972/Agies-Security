@@ -16,6 +16,7 @@ const { normalizeLog } = require('./ingest/normalize');
 const detect = require('./engine/detect');
 const { toAlerts } = require('./engine/sigma');
 const { extractAll, isIpType } = require('./intel/indicator');
+const crypto = require('crypto');
 const auth = require('./security/auth');
 const pkg = require('../package.json');
 
@@ -325,13 +326,16 @@ function registerMcp(app, ctx, svc) {
         const args = p.arguments && typeof p.arguments === 'object' ? p.arguments : {};
         const who = { name: `mcp:${req.apiKey.name}`, id: null };
         const started = Date.now();
+        const brief = Object.entries(args).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => `${k}=${String(v).slice(0, 40)}`).join(' ').slice(0, 200);
+        // A start row lets the console show the call while it runs; the finish row shares its id.
+        const cid = crypto.randomBytes(5).toString('hex');
+        await store.audit.add({ actor: who.name, action: 'mcp.start', target: tool.name, detail: `#${cid} ${brief}`.trim() }).catch(() => {});
         let out; let failed = null;
         try { out = await tool.run(args, who); } catch (err) {
           if (!(err instanceof ToolError) && !err.status) console.error(err);
           failed = err instanceof ToolError || err.status ? err.message : 'Internal error';
         }
-        const brief = Object.entries(args).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => `${k}=${String(v).slice(0, 40)}`).join(' ').slice(0, 200);
-        await store.audit.add({ actor: who.name, action: 'mcp.call', target: tool.name, detail: `${failed ? `failed: ${failed.slice(0, 120)}` : 'ok'} ${Date.now() - started}ms ${brief}`.trim() }).catch(() => {});
+        await store.audit.add({ actor: who.name, action: 'mcp.call', target: tool.name, detail: `#${cid} ${failed ? 'failed' : 'ok'} ${Date.now() - started}ms ${brief}${failed ? ` :: ${failed.slice(0, 160)}` : ''}`.replace(/\s+::/, ' ::').trim() }).catch(() => {});
         if (failed) return reply({ content: [{ type: 'text', text: failed }], isError: true });
         return reply({ content: [{ type: 'text', text: JSON.stringify(out, null, 1) }], isError: false });
       }
@@ -356,6 +360,19 @@ function registerMcp(app, ctx, svc) {
   })];
   const noStream = (req, res) => res.status(405).set('Allow', 'POST').json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'This server is stateless; use POST' } });
 
+  // ---- Live activity for the console ----------------------------------------------------
+  // Polled by every signed-in user so people can see what a connected assistant is doing.
+  // Reads the audit log, so it works across serverless instances.
+  const ACTIVITY = ['mcp.start', 'mcp.call', 'oauth.granted', 'oauth.denied', 'oauth.token'];
+  app.get('/api/mcp/activity', wrap(async (req, res) => {
+    const after = Math.max(0, Number(req.query.after) || 0);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 60, 1), 200);
+    const rows = store.audit.since ? await store.audit.since({ after, actions: ACTIVITY, limit })
+      : (await store.audit.list(500)).filter((a) => a.id > after && ACTIVITY.includes(a.action)).slice(0, limit);
+    res.set('Cache-Control', 'no-store');
+    res.json({ events: rows.map((a) => activityEvent(a, byName)), now: new Date().toISOString() });
+  }));
+
   for (const p of ['/mcp', '/api/mcp']) {
     app.options(p, origin, (req, res) => res.status(204).end());
     app.post(p, ...endpoint);
@@ -365,4 +382,27 @@ function registerMcp(app, ctx, svc) {
   return { tools };
 }
 
-module.exports = { registerMcp, buildTools, SCOPES, VERSIONS };
+// Turns an audit row into a structured activity event. Handles rows written before
+// call ids existed ("ok 12ms a=b" / "failed: why 12ms a=b").
+function activityEvent(a, byName) {
+  const actor = String(a.actor || '').replace(/^mcp:/, '');
+  const via = actor.lastIndexOf(' via ');
+  const base = { id: a.id, at: a.created_at, kind: a.action, user: via > 0 ? actor.slice(0, via) : actor, client: via > 0 ? actor.slice(via + 5) : null };
+  if (a.action.startsWith('oauth.')) {
+    return { ...base, user: a.action === 'oauth.token' ? actor : base.user, client: a.target, detail: a.detail || null };
+  }
+  const tool = byName.get(a.target);
+  let d = String(a.detail || '');
+  let callId = null;
+  const m = /^#([0-9a-f]+)\s?/.exec(d);
+  if (m) { callId = m[1]; d = d.slice(m[0].length); }
+  const ev = { ...base, call_id: callId, tool: a.target, title: tool ? tool.title : a.target, write: Boolean(tool && tool.write), status: 'running', ms: null, args: '', error: null };
+  if (a.action === 'mcp.start') return { ...ev, args: d };
+  let r = /^(ok|failed) (\d+)ms ?(.*?)(?: :: (.*))?$/s.exec(d);
+  if (r) return { ...ev, status: r[1], ms: Number(r[2]), args: r[3] || '', error: r[4] || null };
+  r = /^(?:(ok)|failed: (.*?)) (\d+)ms ?(.*)$/s.exec(d);
+  if (r) return { ...ev, status: r[1] ? 'ok' : 'failed', ms: Number(r[3]), args: r[4] || '', error: r[2] || null };
+  return { ...ev, status: 'ok', args: d };
+}
+
+module.exports = { registerMcp, buildTools, activityEvent, SCOPES, VERSIONS };

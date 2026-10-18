@@ -564,6 +564,24 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     access = r.json.access_token;
     const oAudit = (await call('GET', '/api/audit?limit=300')).json;
     ok(oAudit.some((a) => a.action === 'oauth.granted') && oAudit.some((a) => a.action === 'mcp.call' && /via Claude/.test(a.actor)), 'OAuth grants and calls are audited as the user');
+    // Live activity feed for the console.
+    ok((await call('GET', '/api/mcp/activity', { as: null })).status === 401, 'activity feed needs a signed-in user');
+    r = await call('GET', '/api/mcp/activity?limit=200');
+    const ev = r.json.events;
+    const done = ev.find((e) => e.kind === 'mcp.call' && e.tool === 'overview' && e.client === 'Claude');
+    ok(r.status === 200 && done && done.status === 'ok' && done.call_id && typeof done.ms === 'number' && done.title === 'SOC overview' && done.user && done.write === false, 'activity feed shows finished calls with who, what and how long');
+    ok(ev.some((e) => e.kind === 'mcp.start' && e.call_id === done.call_id), 'each call has a start event with the same id');
+    ok(ev.some((e) => e.kind === 'oauth.granted' && e.client === 'Claude'), 'activity feed shows connector sign-ins');
+    ok(ev.every((e, i) => i === 0 || ev[i - 1].id > e.id), 'activity feed is newest first');
+    const top = ev[0].id;
+    ok((await call('GET', `/api/mcp/activity?after=${top}`)).json.events.length === 0, 'after= returns only newer events');
+    await mcpAs(access, { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'get_alert', arguments: { alert_id: 'NOPE-1' } } });
+    r = await call('GET', `/api/mcp/activity?after=${top}`);
+    const failedCall = r.json.events.find((e) => e.kind === 'mcp.call' && e.tool === 'get_alert');
+    ok(failedCall && failedCall.status === 'failed' && /not found/.test(failedCall.error) && failedCall.args === 'alert_id=NOPE-1', 'failed calls carry the error and arguments');
+    const { activityEvent } = require('../src/mcp');
+    const legacy = activityEvent({ id: 1, action: 'mcp.call', actor: 'mcp:soc-agent', target: 'overview', detail: 'failed: boom 12ms q=x', created_at: new Date().toISOString() }, new Map());
+    ok(legacy.status === 'failed' && legacy.error === 'boom' && legacy.ms === 12 && legacy.args === 'q=x' && legacy.user === 'soc-agent', 'older audit rows still parse');
     // Viewers only ever get read access.
     await call('POST', '/api/auth/login', { as: 'vic', body: { email: 'vic@corp.example', password: 'Another1pass' } });
     r = await call('POST', '/api/oauth/approve', { as: 'vic', body: { ...authq, decision: 'allow', allow_write: true } });

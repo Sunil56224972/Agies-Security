@@ -47,6 +47,10 @@ const ACT = {
   'hunt.deleted': ['warn', 'deleted hunt'],
   'hunt.run': ['accent', 'ran hunt'],
   'mcp.call': ['', 'called MCP tool'],
+  'mcp.start': ['accent', 'started MCP tool'],
+  'oauth.granted': ['warn', 'connected an assistant:'],
+  'oauth.denied': ['', 'refused assistant'],
+  'oauth.token': ['', 'signed in assistant'],
   'auth.login': ['', 'signed in'],
   'auth.failed': ['warn', 'failed sign-in for'],
   'user.created': ['', 'added user'],
@@ -169,7 +173,7 @@ async function paint() {
       </section>
       <section class="panel">
         <div class="panel__head"><h2 class="panel__title">Audit log</h2></div>
-        ${d.activity.length ? `<div class="feed rows-in">${d.activity.slice(0, 9).map((a, i) => {
+        ${d.activity.some((a) => a.action !== 'mcp.start') ? `<div class="feed rows-in">${d.activity.filter((a) => a.action !== 'mcp.start').slice(0, 9).map((a, i) => {
           const [kind, verb] = ACT[a.action] || ['', a.action];
           const t = new Date(a.created_at);
           const hhmm = t.toTimeString().slice(0, 5);

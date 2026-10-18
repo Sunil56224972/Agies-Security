@@ -1,6 +1,7 @@
 import { $, $$, api, esc, sev, pill, toast, on, emit, state, closeLayer, layerOpen, modal } from './core.js';
 import { icon, hydrateIcons } from './icons.js';
 import { showGate, signOut } from './gate.js';
+import { startActivity, openActivity } from './mcp-live.js';
 
 const ROUTES = {
   overview: { title: 'Overview', load: () => import('./views/overview.js') },
@@ -196,6 +197,7 @@ const JUMPS = [
   { label: 'Connect a language model', path: 'settings?section=llm', ic: 'cpu' },
   { label: 'Settings', path: 'settings', ic: 'sliders' }
 ];
+const ACTIONS = [{ label: 'AI assistant activity (live)', run: openActivity, ic: 'cpu' }];
 
 function openPalette() {
   if (layerOpen()) return;
@@ -228,10 +230,11 @@ function openPalette() {
     el.classList.toggle('is-sel', on);
     if (on) el.scrollIntoView({ block: 'nearest' });
   });
-  const pick = (i) => { const it = items[i]; if (!it) return; closeLayer(); setTimeout(() => navigate(it.path), 10); };
+  const pick = (i) => { const it = items[i]; if (!it) return; closeLayer(); setTimeout(() => (it.run ? it.run() : navigate(it.path)), 240); };
 
   const jumpRows = (q) => JUMPS.filter((j) => j.label.toLowerCase().includes(q.toLowerCase()))
-    .map((j) => ({ lead: icon(j.ic), title: j.label, path: j.path, tail: '<span class="kbd">Go</span>' }));
+    .map((j) => ({ lead: icon(j.ic), title: j.label, path: j.path, tail: '<span class="kbd">Go</span>' }))
+    .concat(ACTIONS.filter((j) => j.label.toLowerCase().includes(q.toLowerCase())).map((j) => ({ lead: icon(j.ic), title: j.label, run: j.run, tail: '<span class="kbd">Open</span>' })));
 
   const search = async () => {
     const q = input.value.trim();
@@ -320,6 +323,7 @@ async function boot() {
   setInterval(() => { if (!document.hidden) refreshChrome(); }, 30000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleChrome(); });
   route();
+  startActivity();
 }
 boot();
 

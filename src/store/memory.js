@@ -591,7 +591,11 @@ class MemoryStore {
         s.persist();
         return rec;
       },
-      async list(limit = 50) { return [...s.db.audit].sort((a, b) => b.id - a.id).slice(0, limit).map((r) => s.clone(r)); }
+      async list(limit = 50) { return [...s.db.audit].sort((a, b) => b.id - a.id).slice(0, limit).map((r) => s.clone(r)); },
+      async since({ after = 0, actions, limit = 50 } = {}) {
+        const want = new Set(actions);
+        return s.db.audit.filter((a) => a.id > (Number(after) || 0) && want.has(a.action)).sort((a, b) => b.id - a.id).slice(0, limit).map((r) => s.clone(r));
+      }
     };
   }
 }

@@ -491,7 +491,11 @@ class SupabaseStore {
     const sb = this.sb;
     return {
       async add(entry) { return unwrap(await sb.from('audit_log').insert(entry).select().single()); },
-      async list(limit = 50) { return paged((o) => sb.from('audit_log').select('*', o).order('id', { ascending: false }), limit); }
+      async list(limit = 50) { return paged((o) => sb.from('audit_log').select('*', o).order('id', { ascending: false }), limit); },
+      // Newest first; only rows with one of `actions` and an id above `after`.
+      async since({ after = 0, actions, limit = 50 } = {}) {
+        return unwrap(await sb.from('audit_log').select('*').in('action', actions).gt('id', Number(after) || 0).order('id', { ascending: false }).limit(limit));
+      }
     };
   }
 }
