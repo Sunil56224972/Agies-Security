@@ -522,7 +522,9 @@ button.attack__tech:hover { border-color: var(--accent); color: var(--ink); }
   .cev-form .seg { width: 100%; }
   .cev-form .seg button { flex: 1; }
 }
-.setting.is-flash { animation: flash 1.6s ease-out; }
+.setting.is-flash, .panel.is-flash { animation: flash 1.6s ease-out; }
+.llm-status { align-items: flex-start; line-height: 1.5; }
+.llm-status .live-dot { margin-top: 6px; flex: none; }
 .snippet.is-code { white-space: pre; overflow-wrap: normal; overflow-x: auto; font-size: 11.5px; }
 
 /* ==== Workbench ================================================================= */

@@ -9,15 +9,17 @@ export async function render({ el, navigate, query = {} }) {
   ctx = { el, navigate };
   const manage = can('manage');
   const configure = can('configure');
-  const [config, health, audit, users, keys, channels] = await Promise.all([
+  const [config, health, audit, users, keys, channels, llm] = await Promise.all([
     api('/config'), api('/health'), api('/audit?limit=40'),
     manage ? api('/users') : Promise.resolve(null), manage ? api('/keys') : Promise.resolve(null),
-    configure ? api('/notify/channels').catch(() => []) : Promise.resolve(null)
+    configure ? api('/notify/channels').catch(() => []) : Promise.resolve(null),
+    configure ? api('/llm').catch(() => null) : Promise.resolve(null)
   ]);
   state.health = health;
   ctx.users = users;
   ctx.keys = keys;
   ctx.channels = channels;
+  ctx.llm = llm;
 
   el.innerHTML = `
     <div class="page-head">
@@ -34,7 +36,7 @@ export async function render({ el, navigate, query = {} }) {
         ${accountPanel()}
       </div>
       <div class="stack">
-        ${configure ? '<section class="panel" id="st-notify"></section>' : ''}
+        ${configure ? '<section class="panel" id="st-llm"></section><section class="panel" id="st-notify"></section>' : ''}
         ${manage ? '<section class="panel" id="st-backup"></section>' : ''}
         ${mcpPanel(manage)}
         ${integrationsPanel(health)}
@@ -47,14 +49,14 @@ export async function render({ el, navigate, query = {} }) {
 
   if (configure) bindPolicy(config);
   if (manage) { paintTeam(); paintKeys(); }
-  if (configure) paintNotify();
+  if (configure) { paintLlm(); paintNotify(); }
   if (manage) paintBackup();
   bindAccount();
   $$('[data-mcp-copy]', el).forEach((b) => { b.onclick = () => copyText(b.dataset.mcpCopy === 'url' ? `/mcp` : mcpRemote(location.origin, 'aeg_YOUR_KEY'), b); });
   const reset = $('#st-reset', el);
   if (reset) reset.onclick = openReset;
   hydrateIcons(el);
-  const jump = query.section === 'approvals' ? $('#st-approvals', el) : query.section === 'backup' ? $('#st-backup', el) : null;
+  const jump = query.section === 'approvals' ? $('#st-approvals', el) : query.section === 'backup' ? $('#st-backup', el) : query.section === 'llm' ? $('#st-llm', el) : null;
   if (jump) setTimeout(() => { jump.scrollIntoView({ behavior: 'smooth', block: 'center' }); jump.classList.add('is-flash'); }, 200);
 }
 
@@ -75,8 +77,8 @@ function policyPanel(health, configure) {
       <button class="switch" role="switch" name="isolateOnCompromise" aria-label="Isolate compromised hosts" ${dis}></button></div>
     <div class="setting"><div><div class="setting__label">Investigate ingested alerts</div><div class="setting__help">Run the engine in the background for every HIGH or CRITICAL alert that arrives through the ingest API.</div></div>
       <button class="switch" role="switch" name="autoInvestigate" aria-label="Investigate ingested alerts" ${dis}></button></div>
-    <div class="setting"><div><div class="setting__label">Investigation engine</div><div class="setting__help">The rule-based playbook runs the same steps every time and needs no external service. The LLM agent drives the same tools through Groq and falls back to the playbook on error.</div></div>
-      <div class="seg" id="st-engine"><button data-e="playbook" ${dis}>Rule-based playbook</button><button data-e="llm" ${health.engine.llm && configure ? '' : 'disabled'} ${health.engine.llm ? '' : 'title="Set GROQ_API_KEY to enable"'}>LLM agent</button></div></div>
+    <div class="setting"><div><div class="setting__label">Investigation engine</div><div class="setting__help">The rule-based playbook runs the same steps every time and needs no external service. The LLM agent drives the same tools through the connected language model and falls back to the playbook on error.</div></div>
+      <div class="seg" id="st-engine"><button data-e="playbook" ${dis}>Rule-based playbook</button><button data-e="llm" ${health.engine.llm && configure ? '' : 'disabled'} ${health.engine.llm ? '' : 'title="Connect a language model below to enable"'}>LLM agent</button></div></div>
     <div class="setting"><div><div class="setting__label">Max agent iterations</div><div class="setting__help">Upper bound on model round-trips per LLM run (4 to 30).</div></div>
       <input class="input input--mono" type="number" min="4" max="30" name="maxIterations" ${dis}></div>
     <div class="setting"><div><div class="setting__label">Retention</div><div class="setting__help">Closed alerts, their investigations and telemetry older than this are purged hourly (7 to 730 days).</div></div>
@@ -152,6 +154,101 @@ function mcpPanel(manage) {
   </section>`;
 }
 
+// ---- Language model (bring your own key) -------------------------------------------
+function paintLlm() {
+  const box = $('#st-llm', ctx.el);
+  const d = ctx.llm;
+  if (!d) { box.innerHTML = '<div class="panel__head"><h2 class="panel__title">Language model</h2></div><div class="panel__body small muted">Could not load the model settings.</div>'; return; }
+  const { active, saved, server_default: def, providers } = d;
+  const byId = new Map(providers.map((p) => [p.id, p]));
+  const start = saved ? saved.provider : 'openai';
+  const status = active.llm
+    ? `<span class="live-dot"></span><span><b>${esc(active.provider)}</b> <span class="mono">${esc(active.model)}</span> ${active.source === 'settings' ? `<span class="muted">&middot; ${saved && saved.key_hint ? `key <span class="mono">${esc(saved.key_hint)}</span> &middot; ` : ''}connected by ${esc(saved ? saved.updated_by : '')} ${saved ? ago(saved.updated_at) : ''}</span>` : '<span class="muted">&middot; server default (GROQ_API_KEY)</span>'}</span>`
+    : '<span class="live-dot live-dot--off"></span><span>No model connected. Investigations use the rule-based playbook and the Assistant is off.</span>';
+  box.innerHTML = `
+    <div class="panel__head"><h2 class="panel__title">Language model</h2><span class="panel__meta">bring your own API key</span></div>
+    <div class="panel__body">
+      <div class="row small llm-status">${status}</div>
+      ${active.warning ? `<div class="notice notice--warn mt-12">${icon('alert')}<span>${esc(active.warning)}</span></div>` : ''}
+      <p class="small muted" style="margin:10px 0 12px">Connect any OpenAI-compatible provider with your own key. It drives LLM investigations and the Assistant. The key is encrypted on the server and never shown again.${def ? ` Removing it returns to the server default (${esc(def.provider)} ${esc(def.model)}).` : ''}</p>
+      <form class="form-grid" id="llm-form" novalidate autocomplete="off">
+        <label class="field"><span>Provider</span><select class="select" name="provider">${providers.map((p) => `<option value="${esc(p.id)}" ${p.id === start ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select></label>
+        <label class="field"><span>Model</span><input class="input input--mono" name="model" list="llm-models" maxlength="120" spellcheck="false"><datalist id="llm-models"></datalist></label>
+        <label class="field span-2" id="llm-base"><span>Base URL <span class="muted">(the part before /chat/completions)</span></span><input class="input input--mono" name="base_url" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+        <label class="field span-2"><span id="llm-key-label">API key</span><input class="input input--mono" type="password" name="api_key" maxlength="400" spellcheck="false" autocomplete="new-password"></label>
+        <div class="span-2 small" id="llm-out"></div>
+        <div class="span-2 row">
+          <a class="small grow" id="llm-keys" target="_blank" rel="noopener noreferrer"></a>
+          ${saved ? `<button type="button" class="btn btn--sm btn--ghost btn--danger-text" id="llm-del">${icon('trash')}Remove</button>` : ''}
+          <button type="button" class="btn btn--sm" id="llm-test">${icon('zap')}Test</button>
+          <button type="submit" class="btn btn--sm btn--primary" id="llm-save">${icon('check')}Save</button>
+        </div>
+      </form>
+    </div>`;
+  const form = $('#llm-form', box);
+  const f = (n) => form.elements.namedItem(n);
+  const out = $('#llm-out', box);
+  const sync = (first) => {
+    const p = byId.get(f('provider').value);
+    const same = saved && saved.provider === p.id;
+    const open = p.id === 'custom' || p.id === 'ollama';
+    $('#llm-base', box).hidden = !open;
+    f('base_url').value = same ? saved.base_url : p.base_url;
+    if (first || !same) f('model').value = same ? saved.model : p.model;
+    $('#llm-models', box).innerHTML = p.models.map((m) => `<option value="${esc(m)}"></option>`).join('');
+    $('#llm-key-label', box).innerHTML = `API key${p.keyless ? ' <span class="muted">(optional for local servers)</span>' : ''}`;
+    f('api_key').value = '';
+    f('api_key').placeholder = same && saved.has_key ? `Saved key ${saved.key_hint} is kept if left blank` : p.keyless ? 'Leave blank if the server needs none' : `Paste your ${p.label} key`;
+    const keys = $('#llm-keys', box);
+    keys.hidden = !p.keys_url;
+    if (p.keys_url) { keys.href = p.keys_url; keys.textContent = `Get your ${p.label} API key`; }
+    out.innerHTML = '';
+  };
+  f('provider').onchange = () => sync(false);
+  sync(true);
+  const body = () => ({ provider: f('provider').value, model: f('model').value.trim(), base_url: f('base_url').value.trim(), api_key: f('api_key').value.trim() });
+  const say = (ok, text) => { out.innerHTML = `<div class="notice ${ok ? '' : 'notice--warn'}">${icon(ok ? 'check' : 'alert')}<span>${text}</span></div>`; hydrateIcons(out); };
+  $('#llm-test', box).onclick = () => busy($('#llm-test', box), async () => {
+    out.innerHTML = '<span class="muted">Calling the provider...</span>';
+    try {
+      const r = await api('/llm/test', { method: 'POST', body: body() });
+      if (r.ok) say(true, `Connected in ${num(r.ms)} ms. <span class="mono">${esc(r.model)}</span> accepted a tool-calling request.`);
+      else say(false, esc(r.error));
+    } catch (e) { say(false, esc(e.message)); }
+  });
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    busy($('#llm-save', box), async () => {
+      out.innerHTML = '<span class="muted">Testing before saving...</span>';
+      try {
+        const r = await api('/llm', { method: 'PUT', body: body() });
+        toast('Language model connected', `${r.active.provider} ${r.active.model}`, 'ok');
+        emit('data:changed');
+        await render({ el: ctx.el, navigate: ctx.navigate });
+      } catch (err) { say(false, esc(err.message)); }
+    });
+  };
+  const del = $('#llm-del', box);
+  if (del) del.onclick = () => {
+    if (!del.dataset.armed) {
+      del.dataset.armed = '1';
+      del.classList.add('is-armed');
+      del.lastChild.textContent = 'Click to confirm';
+      setTimeout(() => { if (del.isConnected) { delete del.dataset.armed; del.classList.remove('is-armed'); del.lastChild.textContent = 'Remove'; } }, 3000);
+      return;
+    }
+    busy(del, async () => {
+      try {
+        const r = await api('/llm', { method: 'DELETE' });
+        toast('Provider removed', r.active.llm ? `Back to ${r.active.provider} ${r.active.model}` : 'Investigations use the playbook', 'ok');
+        emit('data:changed');
+        await render({ el: ctx.el, navigate: ctx.navigate });
+      } catch (err) { say(false, esc(err.message)); }
+    });
+  };
+  hydrateIcons(box);
+}
+
 // ---- Integrations ----------------------------------------------------------
 function integrationsPanel(h) {
   const e = h.enforcement || {};
@@ -168,7 +265,7 @@ function integrationsPanel(h) {
     ${row('RDAP, RIPEstat, passive DNS', h.intel.feeds ? true : 'warn', h.intel.feeds ? 'Registration owner and domain age from the registries, BGP origin from RIPEstat, resolution history from Mnemonic, certificates from crt.sh. No keys needed.' : 'Off (AEGIS_INTEL=off).', '')}
     ${row('VirusTotal', h.intel.vt_key ? true : 'warn', h.intel.vt_key ? 'Key set. Free tier: 4 lookups a minute, 500 a day; results are cached for 12 hours.' : 'Off. A free key from virustotal.com adds 70+ engine verdicts to every lookup.', 'VT_API_KEY')}
     ${row('SigmaHQ rules', h.sigma && h.sigma.loaded ? true : h.sigma && h.sigma.enabled ? 'warn' : false, h.sigma && h.sigma.loaded ? `${num(h.sigma.rules)} rules from release ${esc(h.sigma.version || '')} run on every log batch. Tune them under Threat intel, Feeds & Sigma.` : h.sigma && h.sigma.enabled ? (h.sigma.error ? `Download failed: ${esc(h.sigma.error)}` : 'Loads from GitHub on first use (about 3 MB).') : 'Off on this server.', 'AEGIS_SIGMA=on | off')}
-    ${row('LLM agent and assistant (Groq)', h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}. Drives LLM investigations and the Assistant.` : 'Off. The rule-based playbook handles every run and the Assistant is unavailable. Add a free key from console.groq.com to turn both on.', 'GROQ_API_KEY')}
+    ${row(`Language model${h.engine.llm ? `: ${esc(h.engine.provider)}` : ''}`, h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}${h.engine.source === 'settings' ? ', connected under Settings' : ', server default'}. Drives LLM investigations and the Assistant.` : 'Off. The rule-based playbook handles every run and the Assistant is unavailable. An administrator can connect OpenAI, Gemini, Anthropic, Groq, OpenRouter, Mistral, DeepSeek or any OpenAI-compatible API with their own key under Language model.', 'Settings, Language model (or GROQ_API_KEY)')}
     ${row('AlienVault OTX', h.intel.otx_key ? true : h.intel.otx ? true : 'warn', h.intel.otx_key ? 'Key set. Pulses, related malware families and adversaries are added to every lookup.' : h.intel.otx ? 'Public indicator API, no key: pulse counts and families for IPs, domains, URLs and hashes.' : 'Off.', 'OTX_API_KEY (optional, raises rate limits)')}
     ${row('Hybrid Analysis', h.intel.ha_key ? true : 'warn', h.intel.ha_key ? 'Key set. Sandbox verdicts and threat scores for file hashes.' : 'Off. A free key from hybrid-analysis.com adds sandbox reports for hashes.', 'HYBRID_ANALYSIS_API_KEY')}
     ${row('Jira', h.integrations && h.integrations.jira ? true : 'warn', h.integrations && h.integrations.jira ? 'Cases can be pushed to Jira and their status synced back.' : 'Off. Set all four to raise Jira issues from a case.', 'JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT')}

@@ -130,7 +130,8 @@ async function refreshChrome() {
     $('#sys-store').textContent = health.storage.kind === 'supabase' ? 'Supabase' : 'Local file';
     $('#sys-store').title = health.storage.detail || '';
     $('#brand-env').textContent = health.demo ? 'demo' : health.storage.kind === 'supabase' ? 'supabase' : 'local';
-    $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? 'Groq LLM' : 'Rule-based';
+    $('#sys-engine').textContent = health.engine.llm && config.engine === 'llm' ? `LLM: ${health.engine.provider || 'model'}` : 'Rule-based';
+    $('#sys-engine').title = health.engine.llm ? `Language model: ${health.engine.provider} ${health.engine.model}` : 'No language model connected';
     $('#nav-open').textContent = count.open ? String(count.open) : '';
     $('#nav-appr').textContent = appr.pending ? String(appr.pending) : '';
   } catch {
@@ -192,6 +193,7 @@ const JUMPS = [
   { label: 'Upload a document or IOC list', path: 'documents', ic: 'upload' },
   { label: 'Decision accuracy', path: 'decisions', ic: 'scale' },
   { label: 'Backup and restore', path: 'settings?section=backup', ic: 'archive' },
+  { label: 'Connect a language model', path: 'settings?section=llm', ic: 'cpu' },
   { label: 'Settings', path: 'settings', ic: 'sliders' }
 ];
 

@@ -19,7 +19,8 @@ const ENF_STATES = ['ENFORCED', 'PENDING', 'RECORDED', 'FAILED'];
 const stripCve = ({ match_terms, cpe_matches, ...c }) => ({ ...c, cpe_ranges: (cpe_matches || []).length });
 const isSevere = (c) => c.severity === 'CRITICAL' || Number(c.cvss_score) >= 7;
 // Webhook URLs and signing secrets stay server-side; /api/notify/channels shows masked copies.
-const publicConfig = ({ notifyChannels, ...cfg }) => cfg;
+// The model provider's sealed key stays server-side too; /api/llm shows a masked copy.
+const publicConfig = ({ notifyChannels, llmProvider, ...cfg }) => cfg;
 const intIn = (v, lo, hi) => Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi;
 
 function registerRoutes(app, ctx) {
@@ -32,16 +33,16 @@ function registerRoutes(app, ctx) {
 
   // ---- System --------------------------------------------------------------
   app.get('/api/health', wrap(async (req, res) => {
-    const db = await store.health();
+    const [db, llm] = await Promise.all([store.health(), investigator.llmStatus()]);
     res.json({
       status: db.ok ? 'ok' : 'degraded',
       storage: { kind: store.kind, label: store.label, ok: db.ok, detail: db.detail, warning: warnings.find((w) => /supabase|store/i.test(w)) || null },
-      engine: { llm: investigator.llmAvailable, model: investigator.llmAvailable ? investigator.model : null },
+      engine: llm,
       enforcement: { ...enforcer.describe(), warning: warnings.find((w) => /ENFORCEMENT/.test(w)) || null },
       intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [],
         feeds: hub && hub.available, vt_key: Boolean(env.VT_API_KEY), abusech_key: Boolean(env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY),
         otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(env.OTX_API_KEY), ha_key: Boolean(env.HYBRID_ANALYSIS_API_KEY) },
-      integrations: { jira: Boolean(env.JIRA_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN && env.JIRA_PROJECT), pagerduty: true, assistant: investigator.llmAvailable },
+      integrations: { jira: Boolean(env.JIRA_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN && env.JIRA_PROJECT), pagerduty: true, assistant: llm.llm },
       workbench_migration: store.pendingExtras ? store.pendingExtras.migration : null,
       sigma: sigma ? (({ loaded, loading, entries, version, loaded_at, error }) => ({ enabled: sigma.available, loaded, loading, rules: entries, version, loaded_at, error }))(sigma.status()) : { enabled: false },
       demo,
@@ -168,7 +169,7 @@ function registerRoutes(app, ctx) {
     res.on('close', () => { closed = true; });
     const send = (data) => { if (!closed) res.write(`data: ${JSON.stringify(data)}\n\n`); };
     try {
-      send({ type: 'start', alert_id, engine: engine === 'llm' && investigator.llmAvailable ? 'llm' : 'playbook' });
+      send({ type: 'start', alert_id, engine: engine === 'llm' && (await investigator.llmStatus()).llm ? 'llm' : 'playbook' });
       await investigator.run(alert_id, send, { engine });
       await store.audit.add({ actor: actor(req), action: 'investigation.started', target: alert_id, detail: engine || 'default' });
     } catch (err) {

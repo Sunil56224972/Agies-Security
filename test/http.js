@@ -453,6 +453,63 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok((await call('POST', '/api/admin/restore', { body: { format: 'aegis-backup', version: 1, tables: { nope: [] } } })).status === 400, 'restore refuses unknown tables');
     r = await call('POST', '/api/admin/restore', { body: snap });
     ok(r.status === 200 && r.json.restored.workflows === 2 && (await call('GET', `/api/workflows/${wfId}`)).status === 200, 'restore brings the workflow back');
+
+    // ---- Bring-your-own language model ----------------------------------------------------
+    const LLM_KEY = 'sk-test-' + 'k'.repeat(40);
+    const llmSeen = [];
+    const fakeLlm = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const j = JSON.parse(body || '{}');
+        llmSeen.push({ path: req.url, auth: req.headers.authorization, model: j.model, tools: (j.tools || []).length });
+        res.setHeader('Content-Type', 'application/json');
+        if (req.headers.authorization !== `Bearer ${LLM_KEY}`) { res.writeHead(401); return res.end(JSON.stringify({ error: { message: 'Invalid API key' } })); }
+        if (j.model === 'missing-model') { res.writeHead(404); return res.end(JSON.stringify({ error: { message: 'model not found' } })); }
+        res.end(JSON.stringify({ id: 'x', model: j.model, choices: [{ index: 0, message: { role: 'assistant', content: 'OK from the fake model', reasoning: 'provider-specific extra' }, finish_reason: 'stop' }], usage: { total_tokens: 12 } }));
+      });
+    });
+    await new Promise((res) => fakeLlm.listen(0, '127.0.0.1', res));
+    const llmBase = `http://127.0.0.1:${fakeLlm.address().port}/v1`;
+    try {
+      ok((await call('GET', '/api/llm', { as: 'vic' })).status === 403, 'viewer cannot see the model settings');
+      ok((await call('PUT', '/api/llm', { as: 'vic', body: { provider: 'custom', base_url: llmBase, model: 'm', api_key: LLM_KEY } })).status === 403, 'viewer cannot connect a model');
+      r = await call('GET', '/api/llm');
+      ok(r.status === 200 && r.json.saved === null && r.json.active.llm === false && r.json.providers.some((p) => p.id === 'openai') && r.json.providers.some((p) => p.id === 'anthropic'), 'model settings list the provider presets');
+      ok((await call('PUT', '/api/llm', { body: { provider: 'nope', model: 'm' } })).status === 400, 'unknown provider refused');
+      ok((await call('PUT', '/api/llm', { body: { provider: 'openai', model: 'gpt-4.1-mini' } })).status === 400, 'hosted provider needs a key');
+      ok((await call('PUT', '/api/llm', { body: { provider: 'custom', base_url: `${llmBase}/chat/completions`, model: 'm', api_key: LLM_KEY } })).status === 400, 'base URL with /chat/completions refused');
+      ok((await call('PUT', '/api/llm', { body: { provider: 'custom', base_url: 'ftp://x.example', model: 'm', api_key: LLM_KEY } })).status === 400, 'non-http base URL refused');
+      r = await call('POST', '/api/llm/test', { body: { provider: 'custom', base_url: llmBase, model: 'good-model', api_key: 'wrong-key' } });
+      ok(r.status === 200 && r.json.ok === false && /rejected the API key/.test(r.json.error), 'test reports a rejected key');
+      r = await call('PUT', '/api/llm', { body: { provider: 'custom', base_url: llmBase, model: 'missing-model', api_key: LLM_KEY } });
+      ok(r.status === 422 && /does not know the model/.test(r.json.error), 'a provider that fails its test is not saved');
+      ok((await call('GET', '/api/llm')).json.saved === null, 'nothing saved after a failed test');
+      r = await call('PUT', '/api/llm', { body: { provider: 'custom', base_url: llmBase, model: 'good-model', api_key: LLM_KEY } });
+      ok(r.status === 200 && r.json.saved.has_key && r.json.saved.key_hint === 'sk-t...kkkk' && r.json.active.llm === true && r.json.active.model === 'good-model' && r.json.active.source === 'settings', 'custom provider connected after a passing test');
+      ok(llmSeen.some((x) => x.path === '/v1/chat/completions' && x.tools === 1 && x.auth === `Bearer ${LLM_KEY}`), 'test call is an OpenAI-style tool request with the bearer key');
+      const cfgText = JSON.stringify((await call('GET', '/api/config')).json);
+      const llmText = JSON.stringify((await call('GET', '/api/llm')).json);
+      const bk = await call('GET', '/api/admin/backup');
+      ok(!cfgText.includes(LLM_KEY) && !cfgText.includes('llmProvider') && !llmText.includes(LLM_KEY) && !llmText.includes('key_enc') && !JSON.stringify(bk.json).includes(LLM_KEY) && bk.json.config.llmProvider === undefined, 'model key never leaves the server');
+      if (!live) ok(!fs.readFileSync(store.file, 'utf8').includes(LLM_KEY), 'model key is encrypted at rest');
+      r = await call('GET', '/api/health');
+      ok(r.json.engine.llm === true && r.json.engine.model === 'good-model' && r.json.integrations.assistant === true, 'health reports the connected model');
+      r = await call('GET', '/api/workbench/status');
+      ok(r.json.assistant === true && r.json.model === 'good-model', 'assistant turns on with the connected model');
+      r = await call('PUT', '/api/llm', { body: { provider: 'custom', base_url: llmBase, model: 'good-model-2' } });
+      ok(r.status === 200 && r.json.active.model === 'good-model-2' && r.json.saved.key_hint === 'sk-t...kkkk', 'model can change without pasting the key again');
+      const th = (await call('POST', '/api/assistant/threads')).json;
+      r = await call('POST', `/api/assistant/threads/${th.thread_id}/messages`, { body: { content: 'What is happening?' } });
+      ok(r.status === 200 && r.json.messages.some((m) => m.role === 'assistant' && m.content === 'OK from the fake model'), 'assistant answers through the connected model');
+      ok(llmSeen.filter((x) => x.model === 'good-model-2' && x.tools > 1).length >= 1, 'assistant sends its tool catalogue to the provider');
+      const llmAudit = (await call('GET', '/api/audit?limit=200')).json.map((a) => a.action);
+      ok(llmAudit.includes('llm.connected') && llmAudit.includes('llm.tested'), 'model changes are audited');
+      r = await call('DELETE', '/api/llm');
+      ok(r.status === 200 && r.json.saved === null && r.json.active.llm === false, 'removing the provider reverts to the server default');
+      ok((await call('GET', '/api/workbench/status')).json.assistant === false, 'assistant off again after removal');
+      ok((await call('DELETE', '/api/llm')).status === 404, 'nothing left to remove');
+    } finally { fakeLlm.close(); }
     store.pendingExtras = { migration: '20261019000000_assistant_workflows_documents.sql', error: 'relation "workflows" does not exist' };
     ok((await call('GET', '/api/workflows')).status === 503 && (await call('GET', '/api/alerts?limit=1')).status === 200, 'missing workbench migration answers 503 without breaking the rest');
     store.pendingExtras = null;

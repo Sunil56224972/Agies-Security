@@ -16,6 +16,7 @@ const { HuntEngine } = require('./engine/hunt');
 const { registerCases } = require('./cases');
 const { registerMcp } = require('./mcp');
 const { registerWorkbench } = require('./workbench');
+const { registerLlm } = require('./llm-routes');
 const { CustomRules } = require('./engine/customrules');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -59,8 +60,8 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   // abuse.ch, MISP, RDAP, RIPEstat, passive DNS and VirusTotal behind one lookup.
   hub = hub || createHub({ env, reputation, offline: !online });
   sigma = sigma || new SigmaEngine({ offline: !online || /^(0|off|false|no)$/i.test(String(env.AEGIS_SIGMA || '')), url: env.SIGMA_RULES_URL || undefined });
-  const investigator = new Investigator(store, { groqKey: env.GROQ_API_KEY, model: env.GROQ_MODEL, enforcer, nvd, reputation, hub });
   const secret = auth.loadSecret(env);
+  const investigator = new Investigator(store, { groqKey: env.GROQ_API_KEY, model: env.GROQ_MODEL, secret, enforcer, nvd, reputation, hub });
   const secureCookie = /^(1|true|yes)$/i.test(String(env.COOKIE_SECURE || ''));
   const app = express();
   app.disable('x-powered-by');
@@ -254,12 +255,13 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   investigator.approvals = approvals;
   const customRules = new CustomRules(store);
   const hunter = new HuntEngine(store, { sigma, reputation, hub, custom: customRules });
-  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, customRules, bootedAt: Date.now() };
+  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, secret, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, customRules, bootedAt: Date.now() };
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
   registerIntel(app, ctx);
   const cases = registerCases(app, ctx);
   registerWorkbench(app, ctx, cases);
+  registerLlm(app, ctx);
   registerMcp(app, ctx, cases);
   investigator.onVerdict = casework.onVerdict;
 

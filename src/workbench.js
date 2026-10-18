@@ -13,6 +13,7 @@ const { normalizeLog } = require('./ingest/normalize');
 const { scanWith } = require('./engine/sigma');
 const { lintRule } = require('./engine/customrules');
 const auth = require('./security/auth');
+const { extras } = require('./engine/llm');
 
 const fail = (msg, status = 400) => Object.assign(new Error(msg), { status });
 const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
@@ -372,7 +373,7 @@ function createWorkbench(ctx, svc) {
     return runWorkflow(wf, input, who, emit);
   }
   // ---- AI assistant ----------------------------------------------------------------------
-  // Groq tool calling over the same tools the MCP server exposes. Read tools run at
+  // OpenAI-style tool calling (any configured provider) over the same tools the MCP server exposes. Read tools run at
   // once; anything that changes state waits in `pending` until the analyst confirms.
   const { buildTools } = require('./mcp');
   const tools = buildTools(ctx, svc);
@@ -407,19 +408,19 @@ function createWorkbench(ctx, svc) {
     })];
   }
 
-  async function complete(messages, user) {
-    const req = {
-      model: investigator.model, messages, tools: toolSpecs(user), tool_choice: 'auto', temperature: 0.2, max_tokens: 1600,
-      ...(/gpt-oss/.test(investigator.model) ? { reasoning_effort: 'low' } : {})
-    };
-    try { return await investigator.groq.chat.completions.create(req); } catch (err) {
+  async function complete(messages, user, llm) {
+    const req = { model: llm.model, messages, tools: toolSpecs(user), tool_choice: 'auto', temperature: 0.2, max_tokens: 1600, ...extras(llm.model) };
+    const name = llm.label || 'The model provider';
+    try { return await llm.client.chat.completions.create(req); } catch (err) {
       // gpt-oss occasionally emits a malformed tool call; one retry usually clears it.
       if (err.status === 400 && /tool/i.test(String(err.message))) {
-        try { return await investigator.groq.chat.completions.create(req); } catch (e2) { throw fail(`The model could not form a valid tool call: ${String(e2.message).slice(0, 200)}`, 502); }
+        try { return await llm.client.chat.completions.create(req); } catch (e2) { throw fail(`The model could not form a valid tool call: ${String(e2.message).slice(0, 200)}`, 502); }
       }
-      if (err.status === 401) throw fail('GROQ_API_KEY was rejected by Groq; set a valid key', 502);
-      if (err.status === 429) throw fail('Groq rate limit reached; wait a few seconds and send again', 429);
-      throw fail(`Groq request failed: ${String(err.message).slice(0, 200)}`, 502);
+      const where = llm.source === 'env' ? 'GROQ_API_KEY on the server' : 'the key under Settings, Language model';
+      if (err.status === 401 || err.status === 403) throw fail(`${name} rejected the API key; check ${where}`, 502);
+      if (err.status === 404) throw fail(`${name} does not know the model ${llm.model}; pick another under Settings, Language model`, 502);
+      if (err.status === 429) throw fail(`${name} rate limit or quota reached; wait a few seconds and send again`, 429);
+      throw fail(`${name} request failed: ${String(err.message).slice(0, 200)}`, 502);
     }
   }
 
@@ -441,6 +442,7 @@ function createWorkbench(ctx, svc) {
   async function converse(thread, user, emit) {
     const who = { name: user.name, id: user.id };
     const started = Date.now();
+    const llm = await ensureLlm();
     let tokens = 0;
     for (let round = 0; round < MAX_ROUNDS; round += 1) {
       if (Date.now() - started > 42000) {
@@ -448,7 +450,7 @@ function createWorkbench(ctx, svc) {
         break;
       }
       emit({ type: 'thinking', round });
-      const res = await complete(context(thread, user), user);
+      const res = await complete(context(thread, user), user, llm);
       tokens += (res.usage && res.usage.total_tokens) || 0;
       const m = res.choices[0].message;
       const calls = (m.tool_calls || []).slice(0, 6);
@@ -481,8 +483,10 @@ function createWorkbench(ctx, svc) {
     return tokens;
   }
 
-  function ensureLlm() {
-    if (!investigator.llmAvailable) throw fail('The assistant needs a Groq API key. Set GROQ_API_KEY on the server and redeploy.', 503);
+  async function ensureLlm() {
+    const l = await investigator.llm();
+    if (!l.client) throw fail('The assistant needs a language model. An administrator can connect one under Settings, Language model.', 503);
+    return l;
   }
   async function mustThread(id, user) {
     const t = await T.threads().get(id);
@@ -502,7 +506,7 @@ function createWorkbench(ctx, svc) {
     return T.threads().insert({ thread_id: newId('CHAT'), title: 'New conversation', user_id: user.id, user_name: user.name, messages: [], pending: null, tokens: 0 });
   }
   async function sendMessage(id, b, user, emit = () => {}) {
-    ensureLlm();
+    await ensureLlm();
     const t = await mustThread(id, user);
     const text = str(b.content, 4000);
     if (!text) throw fail('Write a message first');
@@ -518,7 +522,7 @@ function createWorkbench(ctx, svc) {
     return T.threads().get(id);
   }
   async function confirm(id, b, user, emit = () => {}) {
-    ensureLlm();
+    await ensureLlm();
     const t = await mustThread(id, user);
     if (!t.pending) throw fail('Nothing is waiting for confirmation', 409);
     const approve = b.approve === true;
@@ -869,8 +873,8 @@ function createWorkbench(ctx, svc) {
       out.counts[t.name] = rows.length;
     }
     const cfg = await store.config.get();
-    // Webhook URLs and routing keys are credentials; they are not exported.
-    out.config = { ...cfg, notifyChannels: undefined };
+    // Webhook URLs, routing keys and the model key are credentials; they are not exported.
+    out.config = { ...cfg, notifyChannels: undefined, llmProvider: undefined };
     out.users = (await store.users.list()).map((u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, disabled: u.disabled }));
     await audit(who, 'backup.exported', 'platform', Object.entries(out.counts).map(([k, n]) => `${k}:${n}`).join(' ').slice(0, 280));
     return out;
@@ -904,19 +908,20 @@ function createWorkbench(ctx, svc) {
       if (good.length < rows.length) skipped[t.name] = rows.length - good.length;
     }
     if (b.config && typeof b.config === 'object') {
-      const { notifyChannels, ...rest } = b.config;
+      const { notifyChannels, llmProvider, ...rest } = b.config;
       await store.config.set(rest);
     }
     if (store.afterRestore) await store.afterRestore();
     customRules.invalidate();
     await audit(who, 'backup.restored', 'platform', Object.entries(restored).map(([k, n]) => `${k}:${n}`).join(' ').slice(0, 280));
-    return { restored, skipped, note: 'Users, API keys and notification channels are never restored from a file; they stay as they are on this server.' };
+    return { restored, skipped, note: 'Users, API keys, notification channels and the model provider are never restored from a file; they stay as they are on this server.' };
   }
 
   // ---- Status ---------------------------------------------------------------------------------
-  function integrations() {
+  async function integrations() {
+    const l = await investigator.llmStatus();
     return {
-      assistant: investigator.llmAvailable, model: investigator.llmAvailable ? investigator.model : null,
+      assistant: l.llm, model: l.model, provider: l.provider,
       jira: Boolean(jiraCfg()), jira_project: jiraCfg() ? env.JIRA_PROJECT : null,
       otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(env.OTX_API_KEY), hybrid_analysis: Boolean(hub && hub.ha && hub.ha.available),
       pagerduty: true, pending_migration: store.pendingExtras ? store.pendingExtras.migration : null
@@ -976,8 +981,8 @@ function registerWorkbench(app, ctx, svc) {
   app.patch('/api/assistant/threads/:id', h((req) => wb.renameThread(req.params.id, b(req), req.user)));
   app.delete('/api/assistant/threads/:id', h((req) => wb.deleteThread(req.params.id, req.user)));
   app.post('/api/assistant/threads/:id/messages', h((req) => wb.sendMessage(req.params.id, b(req), req.user)));
-  app.post('/api/assistant/threads/:id/messages/stream', sse(async (req) => { wb.ensureLlm(); await wb.mustThread(req.params.id, req.user); }, (req, send) => wb.sendMessage(req.params.id, b(req), req.user, send)));
-  app.post('/api/assistant/threads/:id/confirm/stream', need('respond'), sse(async (req) => { wb.ensureLlm(); await wb.mustThread(req.params.id, req.user); }, (req, send) => wb.confirm(req.params.id, b(req), req.user, send)));
+  app.post('/api/assistant/threads/:id/messages/stream', sse(async (req) => { await wb.ensureLlm(); await wb.mustThread(req.params.id, req.user); }, (req, send) => wb.sendMessage(req.params.id, b(req), req.user, send)));
+  app.post('/api/assistant/threads/:id/confirm/stream', need('respond'), sse(async (req) => { await wb.ensureLlm(); await wb.mustThread(req.params.id, req.user); }, (req, send) => wb.confirm(req.params.id, b(req), req.user, send)));
   app.post('/api/assistant/threads/:id/confirm', need('respond'), h((req) => wb.confirm(req.params.id, b(req), req.user)));
 
   // Workflows

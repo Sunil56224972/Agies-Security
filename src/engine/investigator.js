@@ -1,6 +1,6 @@
 'use strict';
 
-const Groq = require('groq-sdk');
+const llm = require('./llm');
 const { SEVERITY_RANK, classifyPayload, exposureFor, assessLogs, isInternal, newId } = require('./analysis');
 const { createTools, TOOL_DEFINITIONS } = require('./tools');
 const { RecordAdapter } = require('../enforce');
@@ -17,15 +17,18 @@ const OUTCOME_STATUS = {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 class Investigator {
-  constructor(store, { groqKey, model, enforcer = new RecordAdapter(), nvd = null, reputation = null, hub = null } = {}) {
+  constructor(store, { groqKey, model, secret = null, enforcer = new RecordAdapter(), nvd = null, reputation = null, hub = null } = {}) {
     this.store = store;
     this.enforcer = enforcer;
     this.reputation = reputation;
     this.hub = hub;
     this.tools = createTools(store, { enforcer, nvd, reputation, hub });
     this.model = model || 'openai/gpt-oss-120b';
-    // Short timeout and few retries: a stalled or rate-limited model falls back to the playbook.
-    this.groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000, maxRetries: 1 }) : null;
+    // Seals the key of a provider saved under Settings; the env key is the fallback.
+    this.secret = secret;
+    // Short timeout and one retry: a stalled or rate-limited model falls back to the playbook.
+    this.envClient = groqKey ? llm.createClient({ baseUrl: llm.GROQ_URL, apiKey: groqKey }) : null;
+    this.cached = null;
     this.running = new Set();
     this.onVerdict = null;
     // Set by the app: the approval queue for actions that need a human.
@@ -57,7 +60,34 @@ class Investigator {
     return out;
   }
 
-  get llmAvailable() { return Boolean(this.groq); }
+  // The model in use: a provider saved under Settings wins over GROQ_API_KEY. Config is
+  // read on every call so all serverless instances agree; the client is rebuilt only
+  // when the saved provider changes.
+  async llm() {
+    let saved = null;
+    try { saved = (await this.store.config.get()).llmProvider || null; } catch { saved = null; }
+    const stamp = saved && saved.base_url && saved.model ? `${saved.updated_at}|${saved.base_url}|${saved.model}|${saved.key_enc || ''}` : 'env';
+    if (this.cached && this.cached.stamp === stamp) return this.cached.value;
+    const fallback = this.envClient ? { client: this.envClient, model: this.model, provider: 'groq', label: 'Groq', source: 'env' } : { client: null, model: null, provider: null, label: null, source: null };
+    let value = fallback;
+    if (stamp !== 'env') {
+      try {
+        const key = saved.key_enc ? llm.unseal(this.secret, saved.key_enc) : '';
+        value = { client: llm.createClient({ baseUrl: saved.base_url, apiKey: key }), model: saved.model, provider: saved.provider, label: saved.label || saved.provider, source: 'settings' };
+      } catch {
+        value = { ...fallback, warning: 'The saved model key could not be decrypted (SESSION_SECRET changed). Enter it again under Settings.' };
+      }
+    }
+    this.cached = { stamp, value };
+    return value;
+  }
+
+  async llmStatus() {
+    const l = await this.llm();
+    return { llm: Boolean(l.client), model: l.client ? l.model : null, provider: l.client ? l.label : null, source: l.client ? l.source : null, warning: l.warning || null };
+  }
+
+  forget() { this.cached = null; }
 
   // Runs one tool and reports it as a timeline step.
   async call(ctx, phase, tool, args, title) {
@@ -88,13 +118,13 @@ class Investigator {
       ctx.config = config;
       await this.store.alerts.update(alertId, { status: 'INVESTIGATING' });
 
-      const useLlm = (engine || config.engine) === 'llm' && this.llmAvailable;
+      const model = (engine || config.engine) === 'llm' ? await this.llm() : null;
       let verdict = null;
       ctx.engine = 'playbook';
-      if (useLlm) {
+      if (model && model.client) {
         try {
-          ctx.engine = `llm:${this.model}`;
-          verdict = await this.runLlm(ctx, alert);
+          ctx.engine = `llm:${model.model}`;
+          verdict = await this.runLlm(ctx, alert, model);
         } catch (err) {
           this.note(ctx, 'adapt', 'Model unavailable, switching to deterministic playbook', err.message, 'adaptation');
           ctx.engine = 'playbook (llm fallback)';
@@ -246,7 +276,7 @@ class Investigator {
     };
   }
 
-  async runLlm(ctx, alert) {
+  async runLlm(ctx, alert, model) {
     const system = `You are a tier-3 SOC analyst. Investigate the alert with the tools, in this order:
 packet metadata -> asset inventory (for the internal host) -> IP reputation (external party) -> lookup_indicator for any domain, URL, hash or JA3 in the indicators -> CVE knowledge base (pass asset_ip) -> host logs (pass client_ip).
 Outbound traffic from an internal host to a known C2 (Feodo, ThreatFox botnet_cc) is evidence of compromise.
@@ -259,12 +289,12 @@ Finish by calling record_investigation_verdict once, then reply with a short pla
     let assetRes = null; let verification = null;
 
     for (let i = 0; i < (config.maxIterations || 12); i++) {
-      const completion = await this.groq.chat.completions.create({
-        model: this.model, messages, tools: TOOL_DEFINITIONS, tool_choice: 'auto', temperature: 0.1, max_tokens: 1200,
-        ...(/gpt-oss/.test(this.model) ? { reasoning_effort: 'low' } : {})
+      const completion = await model.client.chat.completions.create({
+        model: model.model, messages, tools: TOOL_DEFINITIONS, tool_choice: 'auto', temperature: 0.1, max_tokens: 1200, ...llm.extras(model.model)
       });
       const msg = completion.choices[0].message;
-      messages.push(msg);
+      // Echo back only the standard fields; providers reject each other's extras.
+      messages.push({ role: 'assistant', content: msg.content || '', ...(msg.tool_calls && msg.tool_calls.length ? { tool_calls: msg.tool_calls } : {}) });
       if (!msg.tool_calls || !msg.tool_calls.length) {
         if (msg.content) this.note(ctx, 'decide', 'Analyst summary', msg.content, 'verdict');
         break;

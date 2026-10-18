@@ -34,13 +34,13 @@ export async function render({ el, query, navigate }) {
     $('#as-root', el).innerHTML = `<section class="panel as-off">
       ${icon('key')}
       <h2>The assistant needs a language model</h2>
-      <p>Set <code class="code">GROQ_API_KEY</code> on the server and redeploy. The key stays on the server; the browser never sees it.</p>
+      <p>${can('configure') ? 'Connect OpenAI, Gemini, Anthropic, Groq, OpenRouter or any OpenAI-compatible API with your own key under <a href="#/settings?section=llm">Settings, Language model</a>.' : 'Ask an administrator to connect a language model under Settings. Any OpenAI-compatible provider works with their own key.'} The key stays encrypted on the server; the browser never sees it.</p>
       <p class="small muted">Everything else in Aegis works without it. Investigations fall back to the deterministic engine.</p>
     </section>`;
     hydrateIcons(el);
     return cleanup;
   }
-  $('#as-model', el).innerHTML = `<span class="as-model" title="Model used for answers">${icon('cpu')}<span class="mono">${esc(status.model)}</span></span>`;
+  $('#as-model', el).innerHTML = `<span class="as-model" title="${esc(status.provider || 'Model')} model used for answers">${icon('cpu')}<span class="mono">${esc(status.model)}</span></span>`;
 
   $('#as-root', el).innerHTML = `
     <div class="as">
