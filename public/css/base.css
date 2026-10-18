@@ -25,6 +25,8 @@
   --med:  #d39b2a;   --med-soft:  #fcf7ec;
   --low:  #98a2b3;   --low-soft:  #f2f4f7;
   --ok:   #1d7a52;   --ok-soft:   #edf6f1;
+  /* Chart and bar fills: one red hue, lightness encodes severity. */
+  --sev-1: #991b1b;   --sev-2: #d0584e;   --sev-3: #eba8a1;   --sev-4: #cdd3db;
   --badge-bg: #ffffff;
   --badge-line: #d5d9df;
 
@@ -66,6 +68,7 @@
   --med:  #ddb056;   --med-soft:  rgba(221, 176, 86, 0.10);
   --low:  #7d8796;   --low-soft:  rgba(125, 135, 150, 0.12);
   --ok:   #4bab7d;   --ok-soft:   rgba(75, 171, 125, 0.10);
+  --sev-1: #f0726a;   --sev-2: #b4544d;   --sev-3: #77403c;   --sev-4: #4a525d;
   --badge-bg: #1b1f24;
   --badge-line: #333942;
   --rail-bg: #0b0d10;

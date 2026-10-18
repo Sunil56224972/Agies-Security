@@ -4,7 +4,7 @@ import { openAlert, openNewAlert } from '../panels.js';
 
 let ctx = null;
 
-const SEV_C = { CRITICAL: 'var(--crit)', HIGH: 'var(--high)', MEDIUM: 'var(--med)', LOW: 'var(--low)' };
+const SEV_C = { CRITICAL: 'var(--sev-1)', HIGH: 'var(--sev-2)', MEDIUM: 'var(--sev-3)', LOW: 'var(--sev-4)' };
 const ACT = {
   'investigation.closed': ['accent', 'closed investigation'],
   'investigation.override': ['warn', 'overrode verdict on'],

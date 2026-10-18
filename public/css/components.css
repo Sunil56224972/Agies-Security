@@ -49,10 +49,10 @@
 /* Badges ----------------------------------------------------------------- */
 .sev { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--ink); white-space: nowrap; }
 .sev::before { content: ""; width: 3px; height: 12px; border-radius: 1px; background: var(--c); }
-.sev--CRITICAL { --c: var(--crit); }
-.sev--HIGH { --c: var(--high); }
-.sev--MEDIUM { --c: var(--med); }
-.sev--LOW { --c: var(--low); }
+.sev--CRITICAL { --c: var(--sev-1); }
+.sev--HIGH { --c: var(--sev-2); }
+.sev--MEDIUM { --c: var(--sev-3); }
+.sev--LOW { --c: var(--sev-4); }
 
 /* Status chips are neutral (outlined, ink text); only the leading dot carries
    the state colour, which keeps dense tables calm and readable. */
