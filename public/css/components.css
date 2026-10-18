@@ -54,22 +54,28 @@
 .sev--MEDIUM { --c: var(--med); }
 .sev--LOW { --c: var(--low); }
 
+/* Status chips are neutral (outlined, ink text); only the leading dot carries
+   the state colour, which keeps dense tables calm and readable. */
 .pill {
-  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px; border-radius: 3px;
-  font-size: 11.5px; font-weight: 500; white-space: nowrap;
-  color: var(--c, var(--ink-2)); background: var(--cs, var(--surface-3));
+  display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 7px 0 6px; border-radius: 3px;
+  font-size: 11.5px; font-weight: 500; white-space: nowrap; letter-spacing: .01em;
+  color: var(--ink-2); background: var(--badge-bg); border: 1px solid var(--badge-line);
 }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--c, var(--low)); }
+.pill--BLOCK, .pill--ISOLATE, .pill--CONFIRMED, .pill--ATTACK_SUCCEEDED, .pill--EXPOSED, .pill--FAILED { color: var(--ink); }
 .pill--NEW { --c: var(--accent); --cs: var(--accent-soft); }
 .pill--INVESTIGATING { --c: var(--high); --cs: var(--high-soft); }
-.pill--INVESTIGATING::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: pulse 1.2s infinite; }
+.pill--INVESTIGATING::before { animation: pulse 1.6s infinite; }
 .pill--CONFIRMED, .pill--ATTACK_SUCCEEDED, .pill--BLOCK, .pill--EXPOSED { --c: var(--crit); --cs: var(--crit-soft); }
 .pill--CONTAINED, .pill--MITIGATED, .pill--ATTACK_FAILED, .pill--ACTIVE { --c: var(--ok); --cs: var(--ok-soft); }
 .pill--FALSE_POSITIVE, .pill--CLOSED, .pill--RECON_ONLY, .pill--DISABLED { --c: var(--low); --cs: var(--low-soft); }
 .pill--ISOLATE { --c: var(--high); --cs: var(--high-soft); }
 
 .tag { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: 3px; font: 11.5px var(--font-mono); background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); white-space: nowrap; }
-.tag--warn { background: var(--crit-soft); color: var(--crit); border-color: transparent; }
-.tag--ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.tag--warn, .tag--ok { background: var(--badge-bg); color: var(--ink-2); border-color: var(--badge-line); }
+.tag--warn::before, .tag--ok::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.tag--warn::before { background: var(--crit); }
+.tag--ok::before { background: var(--ok); }
 .flow { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 .flow svg { width: 11px; height: 11px; color: var(--ink-3); }
 
@@ -266,9 +272,9 @@ mark { background: var(--crit-soft); color: var(--crit); padding: 0 1px; }
 .pill--RECORDED, .pill--REMOVED, .pill--NO_RULE { --c: var(--low); --cs: var(--low-soft); }
 .pill--FAILED { --c: var(--crit); --cs: var(--crit-soft); }
 .pill--admin { --c: var(--accent); --cs: var(--accent-soft); }
-.pill--analyst { --c: var(--ink-2); --cs: var(--surface-3); }
+.pill--analyst { --c: var(--ink-3); }
 .pill--viewer { --c: var(--low); --cs: var(--low-soft); }
-.tag--kev { background: var(--crit-soft); color: var(--crit); border-color: transparent; font-weight: 600; }
+.tag--kev { background: var(--crit); color: #fff; border-color: var(--crit); font-weight: 600; }
 
 /* Sign-in gate ------------------------------------------------------------ */
 .gate { position: fixed; inset: 0; z-index: 100; display: grid; grid-template-columns: minmax(300px, 420px) 1fr; background: var(--bg); opacity: 0; transition: opacity .25s var(--ease-out); }

@@ -722,7 +722,8 @@ button.attack__tech:hover { border-color: var(--accent); color: var(--ink); }
 .doc-chips a.tag { text-decoration: none; transition: border-color .12s; }
 .doc-chips a.tag:hover { border-color: var(--accent); color: var(--ink); }
 .doc-chips .tag b { font-weight: 600; color: var(--ink); }
-.doc-tag--sus { background: var(--high-soft); color: var(--high); border-color: transparent; }
+.doc-tag--sus { background: var(--badge-bg); color: var(--ink-2); border-color: var(--badge-line); }
+.doc-tag--sus::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--high); }
 .doc-hash { border: 0; background: none; padding: 0; font: inherit; color: var(--ink-2); text-align: left; overflow-wrap: anywhere; cursor: copy; }
 .doc-hash:hover { color: var(--accent); }
 .doc-intel { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 13px; }

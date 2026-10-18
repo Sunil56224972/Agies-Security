@@ -18,11 +18,15 @@
   --accent-ink: #ffffff;
   --focus: rgba(45, 91, 209, 0.28);
 
-  --crit: #c9302c;   --crit-soft: #fbeceb;
-  --high: #c2610c;   --high-soft: #fcf1e6;
-  --med:  #94730b;   --med-soft:  #f8f2dd;
-  --low:  #5c6b7a;   --low-soft:  #eef1f4;
-  --ok:   #23804f;   --ok-soft:   #e8f4ed;
+  /* Severity is one warm ramp (red > vermilion > amber) ending in slate, so
+     stacked charts read as intensity rather than unrelated hues. */
+  --crit: #b42318;   --crit-soft: #fdf1f0;
+  --high: #d1531f;   --high-soft: #fdf3ee;
+  --med:  #d39b2a;   --med-soft:  #fcf7ec;
+  --low:  #98a2b3;   --low-soft:  #f2f4f7;
+  --ok:   #1d7a52;   --ok-soft:   #edf6f1;
+  --badge-bg: #ffffff;
+  --badge-line: #d5d9df;
 
   /* The rail stays dark in both themes. */
   --rail-bg: #15181d;
@@ -57,11 +61,13 @@
   --accent-soft: rgba(111, 149, 242, 0.12);
   --accent-ink: #0d1220;
   --focus: rgba(111, 149, 242, 0.35);
-  --crit: #ec6a62;   --crit-soft: rgba(236, 106, 98, 0.13);
-  --high: #eb9850;   --high-soft: rgba(235, 152, 80, 0.13);
-  --med:  #d4b45c;   --med-soft:  rgba(212, 180, 92, 0.13);
-  --low:  #8d9cad;   --low-soft:  rgba(141, 156, 173, 0.13);
-  --ok:   #58bf86;   --ok-soft:   rgba(88, 191, 134, 0.13);
+  --crit: #e5675d;   --crit-soft: rgba(229, 103, 93, 0.10);
+  --high: #e8855a;   --high-soft: rgba(232, 133, 90, 0.10);
+  --med:  #ddb056;   --med-soft:  rgba(221, 176, 86, 0.10);
+  --low:  #7d8796;   --low-soft:  rgba(125, 135, 150, 0.12);
+  --ok:   #4bab7d;   --ok-soft:   rgba(75, 171, 125, 0.10);
+  --badge-bg: #1b1f24;
+  --badge-line: #333942;
   --rail-bg: #0b0d10;
   --rail-line: #1c2026;
   --rail-hover: #15181c;
