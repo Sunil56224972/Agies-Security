@@ -131,7 +131,16 @@ async function paint() {
   const outcomes = [['ATTACK_SUCCEEDED', 'Compromise confirmed'], ['ATTACK_FAILED', 'Attempt failed'], ['FALSE_POSITIVE', 'False positive'], ['RECON_ONLY', 'Recon only']];
   const totalOut = Object.values(d.outcomes).reduce((a, b) => a + b, 0);
 
-  body.innerHTML = `
+  const su = d.setup;
+  const setup = su && su.done < su.total ? `
+    <section class="panel setup-panel">
+      <div class="panel__head"><h2 class="panel__title">Connect your environment</h2><span class="panel__meta">${su.done} of ${su.total} done</span>${can('manage') ? '<button class="panel__link" style="margin-left:12px" data-go="settings">Open settings</button>' : ''}</div>
+      <div class="panel__body setup-list">${su.steps.map((s) => `
+        <div class="setup-step ${s.done ? 'is-done' : ''}"><span class="setup-step__dot">${s.done ? '&#10003;' : ''}</span><div><div class="setup-step__label">${esc(s.label)}</div><div class="small muted">${esc(s.detail)}</div></div></div>`).join('')}
+      </div>
+    </section>` : '';
+
+  body.innerHTML = `${setup}
     <div class="kpis grid grid-kpi">
       <div class="kpi ${c.open ? 'kpi--alert' : ''}"><div class="kpi__label">Open alerts</div><div class="kpi__value">${c.open}</div><div class="kpi__foot">${c.alerts} total</div></div>
       <div class="kpi"><div class="kpi__label">Investigations</div><div class="kpi__value">${c.investigations}</div><div class="kpi__foot">${d.avg_run_ms ? `avg ${(d.avg_run_ms / 1000).toFixed(1)}s per run` : 'none yet'}</div></div>

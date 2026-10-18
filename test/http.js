@@ -170,7 +170,9 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     rules = (await call('GET', '/api/rules')).json;
     ok(rules.find((x) => x.rule_id === block.rule_id).enforcement.status === 'ENFORCED', 'pull marks the rule ENFORCED');
     r = await call('POST', '/api/verify', { body: { target_ip: '185.220.101.45' } });
-    ok(r.json.contained === true && r.json.status === 'ENFORCED', 'verify reports enforcement read-back');
+    ok(r.json.contained === true && r.json.status === 'ENFORCED', 'verify reports enforcement read-back');    r = await call('GET', '/api/overview');
+    const steps = Object.fromEntries(r.json.setup.steps.map((s) => [s.id, s]));
+    ok(r.json.setup.total === 5 && steps.enforce.done === true && steps.assets.done === true && steps.notify.done === false, 'setup checklist reflects what is actually connected');
 
     // ---- Case work: ownership, notes, timeline ---------------------------------
     r = await call('POST', `/api/alerts/${alertId}/assign`, { body: { user_id: adminId } });

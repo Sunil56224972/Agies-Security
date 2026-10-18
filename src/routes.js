@@ -31,6 +31,24 @@ function registerRoutes(app, ctx) {
   const bigJson = express.json({ limit: '5mb', type: ['application/json', '*/*+json'] });
   const bigText = express.text({ limit: '5mb', type: ['application/x-ndjson', 'text/plain', 'text/csv', 'application/xml', 'text/xml'] });
 
+  // What is wired to a real environment, from evidence only: a key counts once a
+  // sensor or firewall has used it, a feed once a firewall has pulled a rule.
+  function setupStatus({ keys, counts, assets, alerts, rules, cfg }) {
+    const live = keys.filter((k) => !k.revoked_at);
+    const used = (scope) => live.some((k) => k.scopes.includes(scope) && k.last_used_at);
+    const pulled = rules.some((r) => r.enforcement && r.enforcement.puller);
+    const pushMode = ['webhook', 'cloudflare'].includes(enforcer.mode);
+    const channels = Array.isArray(cfg.notifyChannels) ? cfg.notifyChannels.filter((c) => c.enabled !== false) : [];
+    const steps = [
+      { id: 'sensor', label: 'Connect a sensor', done: used('ingest') && alerts.length > 0, detail: alerts.length ? `${alerts.length} alerts received` : used('ingest') ? 'Key in use, no alerts yet' : live.some((k) => k.scopes.includes('ingest')) ? 'Ingest key created but never used' : 'Create an ingest key and point Suricata, Zeek or Snort at POST /api/ingest/alerts' },
+      { id: 'logs', label: 'Ship host logs', done: counts.logs > 0, detail: counts.logs ? `${counts.logs} log lines stored` : 'Run the Aegis agent or POST to /api/ingest/logs so investigations can confirm execution' },
+      { id: 'assets', label: 'Load the asset inventory', done: assets.length > 0, detail: assets.length ? `${assets.length} hosts` : 'Import an Nmap scan or CSV under Assets, or let the agent report hosts' },
+      { id: 'enforce', label: 'Connect a firewall', done: pushMode || pulled || used('feed'), detail: pushMode ? `Pushing rules via ${enforcer.mode}` : pulled || used('feed') ? 'Firewall is pulling the feed' : 'Create a feed key and have the firewall pull /api/feeds/blocklist.txt, or set ENFORCEMENT_MODE' },
+      { id: 'notify', label: 'Add a notification channel', done: channels.length > 0, detail: channels.length ? `${channels.length} channel${channels.length === 1 ? '' : 's'}` : 'Slack, Teams, PagerDuty or a signed webhook under Settings' }
+    ];
+    return { steps, done: steps.filter((s) => s.done).length, total: steps.length };
+  }
+
   // ---- System --------------------------------------------------------------
   app.get('/api/health', wrap(async (req, res) => {
     const [db, llm] = await Promise.all([store.health(), investigator.llmStatus()]);
@@ -53,8 +71,9 @@ function registerRoutes(app, ctx) {
   }));
 
   app.get('/api/overview', wrap(async (req, res) => {
-    const [alerts, investigations, rules, assets, cves, audit] = await Promise.all([
-      store.alerts.list({ lite: true, limit: 100000 }), store.investigations.list({ lite: true }), store.rules.list(), store.assets.list(), store.cves.list(), store.audit.list(12)
+    const [alerts, investigations, rules, assets, cves, audit, keys, counts, cfg] = await Promise.all([
+      store.alerts.list({ lite: true, limit: 100000 }), store.investigations.list({ lite: true }), store.rules.list(), store.assets.list(), store.cves.list(), store.audit.list(12),
+      store.apiKeys.list(), store.counts(), store.config.get()
     ]);
     const open = alerts.filter((a) => OPEN.includes(a.status));
     const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, open.filter((a) => a.severity === s).length]));
@@ -97,7 +116,8 @@ function registerRoutes(app, ctx) {
       hourly,
       queue: open.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || b.detected_at.localeCompare(a.detected_at)).slice(0, 6),
       recent_investigations: investigations.slice(0, 5),
-      activity: audit
+      activity: audit,
+      setup: setupStatus({ keys, counts, assets, alerts, rules, cfg })
     });
   }));
 

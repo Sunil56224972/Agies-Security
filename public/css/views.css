@@ -856,3 +856,10 @@ button.attack__tech:hover { border-color: var(--accent); color: var(--ink); }
 .ai-foot { margin: 0; padding: 10px 18px 14px; background: var(--surface-2); }
 @keyframes ai-in { from { opacity: 0; transform: translateY(-6px); } }
 @media (max-width: 900px) { .ai-live { width: 30px; padding: 0; justify-content: center; } .ai-live svg, .ai-live__text { display: none; } }
+/* Overview: environment setup checklist */
+.setup-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+.setup-step { display: flex; gap: 10px; align-items: flex-start; }
+.setup-step__dot { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; border: 1.5px solid var(--line-strong, currentColor); display: grid; place-items: center; font-size: 11px; opacity: .7; }
+.setup-step.is-done .setup-step__dot { background: var(--ok); border-color: var(--ok); color: #fff; opacity: 1; }
+.setup-step__label { font-weight: 600; }
+.setup-step.is-done .setup-step__label { opacity: .7; }
