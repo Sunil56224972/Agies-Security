@@ -246,7 +246,8 @@ function createWorkbench(ctx, svc) {
     },
     async notify(p, who, run) {
       const list = (await notifier.channels()).filter((c) => c.enabled !== false);
-      if (!list.length) throw fail('No notification channels are configured (Settings > Notifications)');
+      // No channels is a setup choice, not a failure of the run.
+      if (!list.length) return { skip: 'No notification channels configured (Settings > Notifications)' };
       const rows = run.steps.filter((s) => s.status !== 'pending').map((s) => `${s.id}: ${s.status}${s.summary ? ` - ${s.summary}` : ''}`).slice(0, 10);
       const evt = { type: 'test', console_url: env.PUBLIC_URL || null, data: { message: `[${run.name}] ${String(p.message).slice(0, 500)}`, rows } };
       const results = await Promise.all(list.map(async (c) => ({ c, r: await notifier.deliver(c, evt) })));
@@ -301,6 +302,12 @@ function createWorkbench(ctx, svc) {
       const t0 = Date.now();
       try {
         const out = await STEP_RUN[s.type](params, who, run);
+        if (out && typeof out.skip === 'string' && Object.keys(out).length === 1) {
+          Object.assign(rec, { status: 'skipped', ms: Date.now() - t0, summary: out.skip });
+          scope.steps[s.id] = null;
+          emit({ type: 'step', index: n, ...rec });
+          continue;
+        }
         scope.steps[s.id] = out;
         // Large outputs (hunt findings, bulk intel) are stored trimmed; the full
         // record lives on the hunt run, case or rule the step created.
