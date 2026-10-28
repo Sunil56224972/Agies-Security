@@ -96,7 +96,7 @@ class IntelHub {
     const hostIsIp = hostInd && isIpType(hostInd.type);
 
     const tasks = {
-      rep: isIpType(t) && this.reputation ? run('Reputation', () => this.reputation.check(ind.value)) : null,
+      rep: (isIpType(t) || (hostIsIp && !isInternal(hostInd.value))) && this.reputation ? run('Reputation', () => this.reputation.check(hostIsIp ? hostInd.value : ind.value)) : null,
       abuse: !isIpType(t) && t !== 'asn' ? this.abusech.lookup(ind, { budgetMs }).then(merge) : null,
       misp: !isIpType(t) && t !== 'asn' && t !== 'ja3' ? this.misp.lookup(ind, { budgetMs }).then(merge) : null,
       vt: vt && this.vt.supports(t) ? run('VirusTotal', () => this.vt.lookup(ind)) : null,
@@ -114,7 +114,9 @@ class IntelHub {
     let hits = [...(r.abuse || []), ...(r.misp || [])];
     const rep = r.rep && !r.rep.skipped ? r.rep : null;
     if (rep) {
-      hits = [...(rep.iocs || [])];
+      for (const h of rep.iocs || []) {
+        if (!hits.some((x) => x.source === h.source && x.kind === h.kind)) hits.push(h);
+      }
       ok.push(...(rep.sources_ok || []).filter((s) => !ok.includes(s)));
       failed.push(...(rep.sources_failed || []));
       ok.splice(ok.indexOf('Reputation'), 1);

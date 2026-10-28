@@ -227,8 +227,24 @@ function createWorkbench(ctx, svc) {
       const c = await svc.createCase({ title: p.title, severity: p.severity || 'MEDIUM', description: p.description, alert_ids: toList(p.alert_ids), source: 'workflow' }, who);
       return { case_id: c.case_id, title: c.title, severity: c.severity, linked: c.linked };
     },
-    async add_iocs(p, who) {
+    async add_iocs(p, who, _run, scope) {
       const r = await svc.addIocs(str(p.case_id, 60), { values: toList(p.values), note: p.note }, who);
+      if (scope && scope.steps && r.added.length) {
+        const known = new Map();
+        for (const st of Object.values(scope.steps)) {
+          if (st && Array.isArray(st.results)) {
+            for (const item of st.results) {
+              if (item && item.value && item.verdict && item.verdict !== 'error') {
+                known.set(item.value, { verdict: item.verdict, score: item.score ?? null, summary: item.summary || null, checked_at: st.checked_at || new Date().toISOString() });
+              }
+            }
+          }
+        }
+        for (const ioc of r.added) {
+          const hit = known.get(ioc.value);
+          if (hit) await store.caseIocs.update(ioc.id, hit);
+        }
+      }
       return { case_id: p.case_id, added: r.added.length, duplicates: r.duplicates };
     },
     async contain(p, who) {
@@ -302,7 +318,7 @@ function createWorkbench(ctx, svc) {
       emit({ type: 'step', index: n, ...rec, params });
       const t0 = Date.now();
       try {
-        const out = await STEP_RUN[s.type](params, who, run);
+        const out = await STEP_RUN[s.type](params, who, run, scope);
         if (out && typeof out.skip === 'string' && Object.keys(out).length === 1) {
           Object.assign(rec, { status: 'skipped', ms: Date.now() - t0, summary: out.skip });
           scope.steps[s.id] = null;
