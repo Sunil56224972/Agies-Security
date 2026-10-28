@@ -11,6 +11,7 @@
 
 const net = require('net');
 const { FeedCache, eachCsvRow, unzip, httpGet, errText, TtlCache } = require('./feeds');
+const { isSharedHost, isDdnsParent } = require('./shared');
 
 const HOUR = 3600000;
 const clean = (v) => (v == null || v === '' || v === 'None' || v === 'n/a' || v === 'null' ? null : v);
@@ -167,9 +168,22 @@ function uhHit(rec, how) {
   const online = rec.status === 'online';
   return {
     source: 'URLhaus', kind: rec.threat === 'malware_download' ? 'Malware download' : rec.threat || 'Malicious URL', c2: false, match: how,
-    malware: rec.tags.find((t) => /^[A-Z]/.test(t)) || null, detail: rec.url, status: rec.status,
-    first_seen: rec.added, last_seen: rec.last_online, tags: rec.tags, reporter: rec.reporter, link: rec.link, score: online ? 90 : 75
+    malware: (rec.tags || []).find((t) => /^[A-Z]/.test(t)) || null, detail: rec.url, status: rec.status,
+    first_seen: rec.added, last_seen: rec.last_online, tags: rec.tags || [], reporter: rec.reporter, link: rec.link,
+    // An exact URL match that is still serving is conclusive; one taken down is history.
+    score: online ? 95 : 70
   };
+}
+
+// Another URL on the same host is evidence about the host, not proof. A live
+// payload on a raw IP is a distribution server; on a domain it is often a
+// compromised site; on a shared platform (GitHub, Drive, Discord CDN) it says
+// nothing about the platform, so it is shown as context and does not score.
+function hostLevel(hit, { shared, ip }) {
+  if (shared) return { ...hit, score: null, context: true, match: `${hit.match} (shared platform, not scored)` };
+  const online = hit.status === 'online';
+  const score = hit.source === 'ThreatFox' ? (ip ? 60 : 50) : online ? (ip ? 80 : 65) : (ip ? 40 : 30);
+  return { ...hit, score };
 }
 
 class AbuseCh {
@@ -241,12 +255,14 @@ class AbuseCh {
     });
     const v = String(ind.value);
     const hostChecks = (host, how) => {
+      const ip = net.isIP(host) > 0;
+      const opt = { shared: !ip && isSharedHost(host), ip };
       if (d.threatfox) {
         for (const r of d.threatfox.ip.get(host) || []) out.hits.push(tfHit(r, how));
-        for (const r of (d.threatfox.domain.get(host) || [])) out.hits.push(tfHit(r, how));
-        for (const r of (d.threatfox.urlHost.get(host) || []).slice(0, 5)) out.hits.push(tfHit(r, `${how}, URL on this host`));
+        for (const r of (d.threatfox.domain.get(host) || [])) out.hits.push(opt.shared ? hostLevel(tfHit(r, how), opt) : tfHit(r, how));
+        for (const r of (d.threatfox.urlHost.get(host) || []).slice(0, 5)) out.hits.push(hostLevel(tfHit(r, `${how}, URL on this host`), opt));
       }
-      if (d.urlhaus) for (const r of (d.urlhaus.host.get(host) || []).slice(0, 8)) out.hits.push(uhHit(r, `${how}, URL on this host`));
+      if (d.urlhaus) for (const r of (d.urlhaus.host.get(host) || []).slice(0, 8)) out.hits.push(hostLevel(uhHit(r, `${how}, URL on this host`), opt));
     };
 
     if (ind.type === 'ipv4' || ind.type === 'ipv6') {
@@ -261,6 +277,7 @@ class AbuseCh {
       const parts = v.split('.');
       for (let i = 1; i < parts.length - 1 && d.threatfox; i++) {
         const parent = parts.slice(i).join('.');
+        if (isSharedHost(parent) || isDdnsParent(parent)) continue;
         for (const r of d.threatfox.domain.get(parent) || []) out.hits.push({ ...tfHit(r, `parent domain ${parent}`), score: Math.round(tfHit(r).score * 0.85) });
       }
     } else if (ind.type === 'url') {
@@ -287,12 +304,12 @@ class AbuseCh {
     if (this.authKey && (ind.type === 'domain' || ind.type === 'ipv4') && !out.hits.some((h) => h.source === 'URLhaus')) {
       const r = await this.urlhausHost(v);
       if (r.error) out.failed.push({ source: 'URLhaus API', error: r.error });
-      else { out.ok.push('URLhaus API'); out.hits.push(...r.hits); }
+      else { out.ok.push('URLhaus API'); const ip = ind.type === 'ipv4'; out.hits.push(...r.hits.map((h) => hostLevel(h, { shared: !ip && isSharedHost(v), ip }))); }
     }
     // One row per source/detail pair, strongest first.
     const seen = new Set();
     out.hits = out.hits.filter((h) => { const k = `${h.source}|${h.detail}`; if (seen.has(k)) return false; seen.add(k); return true; })
-      .sort((a, b) => b.score - a.score).slice(0, 20);
+      .sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, 20);
     return out;
   }
 

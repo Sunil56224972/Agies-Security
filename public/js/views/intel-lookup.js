@@ -231,9 +231,10 @@ function pdnsPanel(p, ind) {
 
 function certPanel(c) {
   if (!c) return '';
-  if (c.error) return card('Certificates', 'crt.sh', `<p class="small muted lk-pad">${esc(c.error)}. crt.sh is often slow; try again later.</p>`);
-  if (!c.certificates) return card('Certificates', 'crt.sh', '<p class="small muted lk-pad">No certificates logged for this domain.</p>');
-  return card('Certificates', 'crt.sh', `<dl class="kv lk-pad">
+  const src = c.source || 'crt.sh';
+  if (c.error) return card('Certificates', src, `<p class="small muted lk-pad">${esc(c.error)}.</p>`);
+  if (!c.certificates) return card('Certificates', src, '<p class="small muted lk-pad">No certificates logged for this domain.</p>');
+  return card('Certificates', src, `<dl class="kv lk-pad">
     <dt>Logged</dt><dd>${num(c.certificates)}</dd><dt>First issued</dt><dd>${day(c.first_issued)}</dd><dt>Latest</dt><dd>${day(c.last_issued)}</dd>
     ${c.issuers.length ? `<dt>Issuers</dt><dd class="small">${c.issuers.map(esc).join('<br>')}</dd>` : ''}
     ${c.names.length ? `<dt>Names</dt><dd class="mono small">${c.names.slice(0, 8).map(esc).join('<br>')}${c.names.length > 8 ? `<br><span class="muted">+${c.names.length - 8} more</span>` : ''}</dd>` : ''}</dl>`);
@@ -243,6 +244,7 @@ function sourcesLine(r) {
   const parts = [];
   if (r.sources_ok.length) parts.push(`<span><span class="live-dot"></span> ${r.sources_ok.map(esc).join(', ')}</span>`);
   if (r.pending.length) parts.push(`<span><span class="live-dot live-dot--warn"></span> still loading: ${r.pending.map(esc).join(', ')} <button class="btn btn--sm btn--ghost" id="lk-retry">${icon('refresh')}Check again</button></span>`);
+  if (r.sources_skipped && r.sources_skipped.length) parts.push(`<span><span class="live-dot live-dot--off"></span> skipped (no key): ${r.sources_skipped.map((f) => `<span title="${esc(f.reason)}">${esc(f.source)}</span>`).join(', ')}</span>`);
   if (r.sources_failed.length) parts.push(`<span><span class="live-dot live-dot--off"></span> no answer: ${r.sources_failed.map((f) => `<span title="${esc(f.error)}">${esc(f.source)}</span>`).join(', ')}</span>`);
   return `<div class="lk-sources small muted">${parts.join('')}<span class="grow"></span><span>checked ${stamp(r.checked_at)}</span></div>`;
 }
@@ -263,11 +265,11 @@ export async function feedsTab(body, { navigate }) {
         <td class="num">${num(f.entries)}</td><td class="num small hide-sm">${bytes(f.bytes)}</td>
         <td class="num small nowrap">${f.loaded_at ? ago(f.loaded_at) : '-'}${f.fetch_ms ? `<span class="cell-sub">${(f.fetch_ms / 1000).toFixed(1)} s</span>` : ''}</td>
         <td class="small">${feedState(f)}</td></tr>`).join('')}
-      <tr><td><span class="cell-main">VirusTotal</span><span class="cell-sub">70+ engines; free key allows 4 lookups a minute, 500 a day</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num small">${d.virustotal.configured ? `${d.virustotal.used_today} today` : '-'}</td><td class="small">${d.virustotal.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set VT_API_KEY</span>'}</td></tr>
+      <tr><td><span class="cell-main">VirusTotal</span><span class="cell-sub">70+ engines; free key allows 4 lookups a minute, 500 a day</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num small">${d.virustotal.configured ? `${d.virustotal.used_today} today` : '-'}</td><td class="small">${d.virustotal.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set key in Settings</span>'}</td></tr>
       ${d.otx ? `<tr><td><span class="cell-main">AlienVault OTX</span><span class="cell-sub">community pulses per indicator; works without a key, OTX_API_KEY raises the limit</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.otx.keyed ? '<span class="tag tag--ok">key set</span>' : '<span class="tag tag--ok">anonymous</span>'}</td></tr>` : ''}
-      ${d.hybrid_analysis ? `<tr><td><span class="cell-main">Hybrid Analysis</span><span class="cell-sub">Falcon sandbox verdicts for file hashes</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.hybrid_analysis.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set HYBRID_ANALYSIS_API_KEY</span>'}</td></tr>` : ''}
+      ${d.hybrid_analysis ? `<tr><td><span class="cell-main">Hybrid Analysis</span><span class="cell-sub">Falcon sandbox verdicts for file hashes</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.hybrid_analysis.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set key in Settings</span>'}</td></tr>` : ''}
       <tr><td><span class="cell-main">Your MISP</span><span class="cell-sub">attributes/restSearch on your own instance</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.misp.own_instance ? `<span class="tag tag--ok">${esc(new URL(d.misp.own_instance).host)}</span>` : '<span class="tag">set MISP_URL and MISP_KEY</span>'}</td></tr>
-      <tr><td><span class="cell-main">RDAP, RIPEstat, Mnemonic PDNS, crt.sh</span><span class="cell-sub">queried live per lookup, cached 12 hours</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small"><span class="tag tag--ok">no key needed</span></td></tr>
+      <tr><td><span class="cell-main">RDAP, RIPEstat, Mnemonic PDNS, crt.sh / Cert Spotter</span><span class="cell-sub">queried live per lookup, cached 12 hours</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small"><span class="tag tag--ok">no key needed</span></td></tr>
     </tbody></table></div>
     <div class="panel__body sg-head">
       <div>
@@ -358,6 +360,7 @@ function feedState(f) {
   if (f.loading && !f.loaded) return '<span class="row" style="gap:6px"><span class="spinner spinner--sm"></span>downloading</span>';
   if (f.loaded && f.error) return `<span class="tag" title="${esc(f.error)}">stale copy</span>`;
   if (f.loaded) return '<span class="tag tag--ok">loaded</span>';
+  if (f.needs_key) return `<span class="tag" title="${esc(f.error || '')}">set key in Settings</span>`;
   if (f.error) return `<span class="tag tag--warn" title="${esc(f.error)}">failed</span> <span class="cell-sub">${esc(f.error)}</span>`;
   return '<span class="muted">loads on first lookup</span>';
 }

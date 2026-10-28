@@ -443,6 +443,27 @@ test('intel hub: one lookup folds abuse.ch, RDAP and passive DNS into a verdict'
   const off = createHub({ env: {}, offline: true });
   assert.strictEqual((await off.lookup('example.org')).skipped, true);
 });
+test('intel hub: a payload on a shared platform flags the URL, not the platform', async () => {
+  const UH = '# x\n"1","2026-10-16 10:00:00","https://raw.githubusercontent.com/bad/repo/main/stealer.exe","online","2026-10-16","malware_download","Lumma,exe","https://urlhaus.abuse.ch/url/1/","r"\n'
+    + '"2","2026-10-16 10:00:00","http://203.0.113.77/bins/mips","online","2026-10-16","malware_download","Mozi,elf","https://urlhaus.abuse.ch/url/2/","r"\n';
+  const fetchImpl = async (url) => {
+    const body = /urlhaus.*\.abuse\.ch/.test(url) ? UH : /threatfox.*\.abuse\.ch/.test(url) ? makeZip([['full.csv', '# none\n']]) : null;
+    if (body == null) return { ok: false, status: 404, text: async () => '', json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
+    const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    return { ok: true, status: 200, text: async () => buf.toString(), json: async () => JSON.parse(buf.toString()), arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) };
+  };
+  const hub = createHub({ env: { ABUSECH_AUTH_KEY: 'test-key' }, fetchImpl, offline: false });
+  hub.abusech.urlhausHost = async () => ({ hits: [] });
+  const exact = await hub.lookup('https://raw.githubusercontent.com/bad/repo/main/stealer.exe');
+  assert.strictEqual(exact.verdict, 'malicious', 'the listed URL itself is malicious');
+  const other = await hub.lookup('https://raw.githubusercontent.com/nodejs/node/main/README.md');
+  assert.notStrictEqual(other.verdict, 'malicious', 'another file on the same platform is not');
+  assert.notStrictEqual(other.verdict, 'suspicious');
+  const plat = await hub.lookup('raw.githubusercontent.com');
+  assert.ok(!['malicious', 'suspicious'].includes(plat.verdict), `platform domain came back ${plat.verdict}`);
+  const dist = await hub.lookup('http://203.0.113.77/bins/arm7');
+  assert.ok(['malicious', 'suspicious'].includes(dist.verdict), 'a raw IP serving live malware still counts');
+});
 // ---- Workbench ---------------------------------------------------------------------
 const { lintRule } = require('../src/engine/customrules');
 const { otxScore } = require('../src/intel/otx');
@@ -482,9 +503,18 @@ test('custom rules: lint reports YAML position, missing fields and bad level', (
 test('intel scores: OTX pulses and Hybrid Analysis verdicts', () => {
   assert.strictEqual(otxScore(null), null);
   assert.strictEqual(otxScore({ found: true, pulses: 0 }), null);
-  assert.strictEqual(otxScore({ found: true, pulses: 1 }), 25);
-  assert.strictEqual(otxScore({ found: true, pulses: 12 }), 70);
+  assert.strictEqual(otxScore({ found: true, pulses: 1 }), 10);
+  assert.strictEqual(otxScore({ found: true, pulses: 12 }), 30, 'pulse count alone never reaches suspicious');
+  assert.strictEqual(otxScore({ found: true, pulses: 12, families: ['QakBot'] }), 50, 'pulses naming a malware family do');
   assert.strictEqual(otxScore({ found: true, pulses: 40, whitelisted: true }), null, 'allowlisted resolvers score nothing');
+  const { vtScore } = require('../src/intel/virustotal');
+  assert.strictEqual(vtScore({ found: true, malicious: 1, suspicious: 0 }), 10, 'one vendor is noise');
+  assert.ok(vtScore({ found: true, malicious: 2, suspicious: 0 }) < 40, 'two vendors stay below suspicious');
+  assert.ok(vtScore({ found: true, malicious: 3, suspicious: 0 }) >= 40, 'three vendors are suspicious');
+  assert.ok(vtScore({ found: true, malicious: 6, suspicious: 0 }) >= 75, 'five or more are malicious');
+  const { isSharedHost, isCdnOrg } = require('../src/intel/shared');
+  assert.ok(isSharedHost('raw.githubusercontent.com') && isSharedHost('github.com') && !isSharedHost('evilgithub.com'));
+  assert.ok(isCdnOrg('Cloudflare, Inc.') && !isCdnOrg('Evil Hosting LLC'));
   assert.strictEqual(haScore({ found: true, verdict: 'malicious', threat_score: 95 }), 95);
   assert.strictEqual(haScore({ found: true, verdict: 'malicious' }), 80);
   assert.strictEqual(haScore({ found: true, verdict: 'suspicious' }), 50);

@@ -67,14 +67,16 @@ class Otx {
   }
 }
 
-// Pulses on Aegis' 0-100 scale. One pulse alone stays below the suspicious
-// line; whitelisted indicators score nothing.
+// Pulses on Aegis' 0-100 scale. Pulses are community reports that list every
+// indicator seen in an incident, including resolvers, CDNs and victim sites, so
+// the count alone never makes something suspicious. Only pulses that name a
+// malware family push it over the line; whitelisted indicators score nothing.
 function otxScore(o) {
   if (!o || !o.found || o.whitelisted || !o.pulses) return null;
-  if (o.pulses >= 10) return 70;
-  if (o.pulses >= 4) return 55;
-  if (o.pulses >= 2) return 42;
-  return 25;
+  const fam = (o.families || []).length > 0;
+  if (o.pulses >= 10) return fam ? 50 : 30;
+  if (o.pulses >= 3) return fam ? 42 : 20;
+  return fam ? 25 : 10;
 }
 
 module.exports = { Otx, otxScore };

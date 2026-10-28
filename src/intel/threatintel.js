@@ -16,6 +16,7 @@
 const net = require('net');
 const { Reputation } = require('./reputation');
 const { isInternal } = require('../engine/analysis');
+const { isCdnOrg } = require('./shared');
 
 const LIST_TTL = 6 * 3600000;
 const LIST_RETRY = 10 * 60000;
@@ -63,7 +64,7 @@ function parseSpamhaus(text) {
 const LISTS = [
   { id: 'spamhaus', name: 'Spamhaus DROP', url: 'https://www.spamhaus.org/drop/drop_v4.json', score: 100, parse: parseSpamhaus },
   { id: 'firehol', name: 'FireHOL level 1', url: 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset', score: 90, parse: parseNetset },
-  { id: 'tor', name: 'Tor exit list', url: 'https://check.torproject.org/torbulkexitlist', score: 60, parse: parseNetset }
+  { id: 'tor', name: 'Tor exit list', url: 'https://check.torproject.org/torbulkexitlist', score: 50, parse: parseNetset }
 ];
 
 class ThreatIntel {
@@ -191,10 +192,20 @@ class ThreatIntel {
     if (greynoise && greynoise.classification === 'malicious') signals.push(90);
     else if (greynoise && greynoise.classification === 'suspicious') signals.push(50);
     if (shodan && shodan.tags.includes('malware')) signals.push(85);
-    if (abuse && abuse.score != null) signals.push(abuse.score);
+    // AbuseIPDB's confidence from one or two reporters is thin; whitelisted addresses do not score.
+    if (abuse && abuse.score != null && !abuse.whitelisted) signals.push((abuse.reports || 0) >= 3 ? abuse.score : Math.round(abuse.score * 0.5));
     for (const h of iocs) if (h.score != null) signals.push(h.score);
-    const benign = Boolean(greynoise && (greynoise.riot || greynoise.classification === 'benign'));
-    const score = signals.length ? Math.max(...signals) : ok.length ? 0 : null;
+    // Known business services (GreyNoise RIOT, AbuseIPDB whitelist) and shared
+    // CDN/cloud edges appear in feeds because a malicious domain resolved to
+    // them. Only a listing that names the address itself overrides that.
+    const cdn = isCdnOrg(location && location.org) || isCdnOrg(abuse && abuse.isp);
+    const known = Boolean((greynoise && (greynoise.riot || greynoise.classification === 'benign')) || (abuse && abuse.whitelisted));
+    const conclusive = hits.some((h) => h.id === 'spamhaus') || iocs.some((h) => h.source === 'Feodo Tracker' || h.source === 'SSLBL')
+      || (!cdn && !known && iocs.some((h) => h.c2 && h.match === 'exact' && (h.score || 0) >= 75));
+    const benign = known || (cdn && !conclusive);
+    let score = signals.length ? Math.max(...signals) : ok.length ? 0 : null;
+    if (score != null && !conclusive && known) score = Math.min(score, 20);
+    else if (score != null && !conclusive && cdn) score = Math.min(score, 35);
     const verdict = score == null ? 'unknown' : score >= 75 ? 'malicious' : score >= 40 ? 'suspicious' : benign ? 'benign' : 'clean';
 
     const parts = [];

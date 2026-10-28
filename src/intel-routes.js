@@ -109,10 +109,12 @@ function registerIntel(app, ctx) {
 
   app.get('/api/intel/samples', wrap(async (req, res) => {
     if (!hub.available) return res.json({ samples: [], offline: true });
+    await hub.ready();
     res.json({ samples: await hub.abusech.samples() });
   }));
 
   app.get('/api/intel/feeds', wrap(async (req, res) => {
+    await hub.ready();
     res.json({ ...hub.describe(), sigma: { enabled: sigma.available, ...sigma.status() } });
   }));
 
@@ -161,7 +163,8 @@ function registerIntel(app, ctx) {
   // ---- Bulk IOC check ----------------------------------------------------------
   app.post('/api/intel/bulk', wrap(async (req, res) => {
     if (!intelOn()) return bad(res, 'Threat intel is disabled on this server (AEGIS_INTEL=off)', 503);
-    const raw = (req.body || {}).ips;
+    const b = req.body || {};
+    const raw = b.ips ?? b.text ?? b.indicators;
     const text = Array.isArray(raw) ? raw.join('\n') : String(raw || '');
     // Accept anything pasted: CSV, firewall logs, defanged IOCs like 1.2.3[.]4.
     // IPs, domains, URLs and hashes in any order; ASNs are left to the single lookup.

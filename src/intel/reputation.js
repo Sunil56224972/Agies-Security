@@ -27,7 +27,7 @@ class Reputation {
     const data = {
       source: 'AbuseIPDB', ip: d.ipAddress || ip, score: d.abuseConfidenceScore ?? null, reports: d.totalReports ?? 0,
       country: d.countryCode || null, isp: d.isp || null, usage: d.usageType || null, domain: d.domain || null,
-      last_reported: d.lastReportedAt || null
+      last_reported: d.lastReportedAt || null, whitelisted: Boolean(d.isWhitelisted), distinct_users: d.numDistinctUsers ?? null
     };
     this.cache.set(ip, { at: Date.now(), data });
     return data;

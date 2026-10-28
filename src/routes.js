@@ -51,7 +51,7 @@ function registerRoutes(app, ctx) {
 
   // ---- System --------------------------------------------------------------
   app.get('/api/health', wrap(async (req, res) => {
-    const [db, llm] = await Promise.all([store.health(), investigator.llmStatus()]);
+    const [db, llm] = await Promise.all([store.health(), investigator.llmStatus(), intelKeys ? intelKeys.sync().catch(() => {}) : null]);
     res.json({
       status: db.ok ? 'ok' : 'degraded',
       storage: { kind: store.kind, label: store.label, ok: db.ok, detail: db.detail, warning: warnings.find((w) => /supabase|store/i.test(w)) || null },

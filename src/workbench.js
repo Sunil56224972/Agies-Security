@@ -145,7 +145,7 @@ function validateWorkflow(b) {
 }
 
 function createWorkbench(ctx, svc) {
-  const { store, investigator, hub, notifier, env, customRules } = ctx;
+  const { store, investigator, hub, notifier, env, customRules, intelKeys } = ctx;
   const T = {
     threads: () => store.coll('chat_threads', 'thread_id'),
     workflows: () => store.coll('workflows', 'workflow_id'),
@@ -947,11 +947,12 @@ function createWorkbench(ctx, svc) {
 
   // ---- Status ---------------------------------------------------------------------------------
   async function integrations() {
+    if (intelKeys) { try { await intelKeys.sync(); } catch { /* keep the keys we have */ } }
     const l = await investigator.llmStatus();
     return {
       assistant: l.llm, model: l.model, provider: l.provider,
       jira: Boolean(jiraCfg()), jira_project: jiraCfg() ? env.JIRA_PROJECT : null,
-      otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(env.OTX_API_KEY), hybrid_analysis: Boolean(hub && hub.ha && hub.ha.available),
+      otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(intelKeys ? intelKeys.has('otx') : env.OTX_API_KEY), hybrid_analysis: Boolean(hub && hub.ha && hub.ha.available),
       pagerduty: true, pending_migration: store.pendingExtras ? store.pendingExtras.migration : null
     };
   }

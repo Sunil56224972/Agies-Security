@@ -90,11 +90,17 @@ class VirusTotal {
 }
 
 // VirusTotal detections expressed on Aegis' 0-100 scale.
+// One or two vendors out of ~90 flagging something is routine noise (heuristic
+// engines, stale lists); a real detection is several independent engines.
 function vtScore(v) {
   if (!v || !v.found) return null;
-  if (v.malicious >= 5) return Math.min(100, 75 + v.malicious);
-  if (v.malicious >= 2) return 60 + v.malicious * 4;
-  if (v.malicious === 1 || v.suspicious >= 2) return 40;
+  const m = Number(v.malicious) || 0;
+  const s = Number(v.suspicious) || 0;
+  if (m >= 10) return Math.min(100, 85 + Math.floor((m - 10) / 2));
+  if (m >= 5) return 75 + (m - 5) * 2;
+  if (m >= 3) return 50 + (m - 3) * 5;
+  if (m === 2 || (m === 1 && s >= 2)) return 25;
+  if (m === 1 || s >= 2) return 10;
   return 0;
 }
 

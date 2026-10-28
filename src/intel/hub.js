@@ -15,6 +15,7 @@ const { Otx, otxScore } = require('./otx');
 const { HybridAnalysis, haScore } = require('./hybrid');
 const { errText } = require('./feeds');
 const { isInternal } = require('../engine/analysis');
+const { isSharedHost } = require('./shared');
 
 const offFlag = (v) => /^(0|off|false|no)$/i.test(String(v || ''));
 
@@ -137,17 +138,34 @@ class IntelHub {
     const hs = haScore(hx);
     if (hx && hs != null) signals.push({ source: 'Hybrid Analysis', score: hs, text: `sandbox verdict ${hx.verdict}${hx.threat_score != null ? ` (threat score ${hx.threat_score})` : ''}` });
     const reg = r.rdap && r.rdap.kind === 'domain' ? r.rdap : null;
-    if (reg && reg.fresh) signals.push({ source: 'RDAP', score: 45, text: `domain registered ${reg.age_days} days ago` });
-    else if (reg && reg.young) signals.push({ source: 'RDAP', score: 20, text: `domain is ${reg.age_days} days old` });
+    // A new domain is worth noting, not a verdict: plenty of legitimate sites are new.
+    if (reg && reg.fresh) signals.push({ source: 'RDAP', score: 35, text: `domain registered ${reg.age_days} days ago` });
+    else if (reg && reg.young) signals.push({ source: 'RDAP', score: 15, text: `domain is ${reg.age_days} days old` });
 
     const scored = signals.filter((s) => s.score != null);
     const answered = ok.length > 0;
-    let score = scored.length ? Math.max(...scored.map((s) => s.score)) : answered ? 0 : null;
+    // For an IP the reputation module already weighed its own sources (and
+    // capped CDN and known-service addresses); its signals above are for
+    // display, so only the sources it does not cover are added on top.
+    const repNames = new Set(rep ? [...hits.map((h) => h.source), ...(rep.listed || []).map((l) => l.list), 'GreyNoise', 'AbuseIPDB'] : []);
+    const extra = rep ? scored.filter((s) => !repNames.has(s.source)) : scored;
+    let score = extra.length ? Math.max(...extra.map((s) => s.score)) : answered ? 0 : null;
     if (rep && rep.score != null) score = Math.max(score ?? 0, rep.score);
     // Several independent sources agreeing is stronger than any one of them.
     const strong = new Set(scored.filter((s) => s.score >= 60).map((s) => s.source));
     if (score != null && strong.size >= 3) score = Math.min(100, score + 5);
-    const benign = Boolean((vtv && vtv.malicious === 0 && vtv.harmless > 10) || (rep && rep.verdict === 'benign') || (ox && ox.whitelisted));
+
+    // Exact listings (this IP, this domain, this URL, this hash) are evidence;
+    // other URLs on the same host and community mentions are not.
+    const exact = hits.some((h) => h.score != null && !h.context && /^exact|^certificate|^JA3|^parent domain/.test(String(h.match || 'exact')))
+      || (vtv && vtv.malicious >= 5) || (hx && hs >= 80);
+    const vtClean = Boolean(vtv && vtv.malicious <= 1 && (vtv.harmless || 0) >= 10);
+    const sharedHost = host && !hostIsIp && isSharedHost(host);
+    const benign = Boolean(vtClean || (rep && rep.verdict === 'benign') || (ox && ox.whitelisted) || (sharedHost && !exact));
+    if (score != null && !exact) {
+      if (sharedHost || (rep && rep.verdict === 'benign')) score = Math.min(score, 20);
+      else if (vtClean) score = Math.min(score, 35);
+    }
     const verdict = score == null ? 'unknown' : score >= 75 ? 'malicious' : score >= 40 ? 'suspicious' : benign ? 'benign' : 'clean';
 
     const c2 = hits.find((h) => h.c2);
@@ -155,6 +173,7 @@ class IntelHub {
     const parts = [];
     if (c2) parts.push(`known ${c2.malware ? `${c2.malware} ` : ''}C2 (${c2.source})`);
     else if (hits.some((h) => h.score != null)) parts.push(`listed by ${[...new Set(hits.filter((h) => h.score != null).map((h) => h.source))].join(', ')}`);
+    else if (hits.some((h) => h.context)) parts.push(`other URLs on this shared platform were reported (${[...new Set(hits.filter((h) => h.context).map((h) => h.source))].join(', ')}); the platform itself is not listed`);
     else if (hits.length) parts.push(`mentioned in ${hits.length} MISP event${hits.length === 1 ? '' : 's'} as context, not as an IOC`);
     if (families.length && !c2) parts.push(`linked to ${families.join(', ')}`);
     if (vtv) parts.push(`VirusTotal ${vtv.malicious}/${vtv.total}`);

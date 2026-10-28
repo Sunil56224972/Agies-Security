@@ -9,7 +9,7 @@ let ctx = null;
 const MAX = 5 * 1024 * 1024;
 const ACCEPT = '.txt,.log,.csv,.tsv,.json,.jsonl,.ndjson,.xml,.yml,.yaml,.md,.ioc,.rules,.conf,.ini,.eml,.html,.htm';
 const size = (b) => (b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`);
-const VERDICT_CLS = { malicious: 'tag--warn', suspicious: 'doc-tag--sus', clean: 'tag--ok', harmless: 'tag--ok' };
+const VERDICT_CLS = { malicious: 'tag--warn', suspicious: 'doc-tag--sus', clean: 'tag--ok', benign: 'tag--ok', harmless: 'tag--ok' };
 
 export async function render({ el, query }) {
   ctx = { el, docs: [], open: query.d || null };
