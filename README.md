@@ -193,6 +193,14 @@ Set `ENFORCEMENT_MODE` in `.env`:
 - PAN-OS: Objects > External Dynamic Lists, type IP List, source the blocklist URL, then reference the EDL in a deny policy.
 - FortiGate: Security Fabric > External Connectors > Threat Feeds > IP Address, then use it in a deny policy.
 - pfSense / OPNsense: Firewall > Aliases, type URL Table (IPs), then use the alias in a block rule.
+- No network firewall? Run the bundled agent on the server itself and it becomes the firewall that pulls the feed. It drops every blocklisted address in iptables/ip6tables (Linux), Windows Firewall or pf (macOS), and keeps the rules in sync every 60 seconds. Run it as root or Administrator. It never blocks the host's own addresses or the console. `--enforce-clear` removes the rules again. Only the BLOCK feed is pulled, so ISOLATE rules stay `Pending` until a network device takes them.
+
+```bash
+curl -fsSO https://aegis.example.com/agent/aegis-agent.js
+sudo AEGIS_URL=https://aegis.example.com AEGIS_FEED_KEY=aeg_... node aegis-agent.js --enforce-only
+# or ship logs and enforce in one process (the key needs both the ingest and feed scopes):
+sudo AEGIS_URL=https://aegis.example.com AEGIS_KEY=aeg_... node aegis-agent.js --auth /var/log/auth.log --enforce
+```
 
 **Webhook.** The body is `{"event": "rule.created" | "rule.removed", "sent_at", "rule": {rule_id, action, target_ip, ip_version, reason, enacted_by, investigation_id}}`. When `ENFORCEMENT_WEBHOOK_SECRET` is set, each request carries `X-Aegis-Timestamp` and `X-Aegis-Signature: sha256=<hex>`, an HMAC-SHA256 of `"<timestamp>.<raw body>"`. Verify it and reject old timestamps:
 

@@ -19,9 +19,18 @@
 //
 // Other flags: --host-ip IP (address to report, default: first private IPv4), --criticality LEVEL,
 // --owner TEAM, --no-inventory, --inventory-only, --from-start, --dry-run, --verbose.
+//
+// Enforcement (run as root / Administrator; the key needs the "feed" scope):
+//   --enforce            pull /api/feeds/blocklist.txt and drop those addresses in the
+//                        host firewall (iptables/ip6tables, Windows Firewall, macOS pf)
+//   --enforce-only       enforce without shipping logs or inventory
+//   --enforce-every SEC  pull interval, default 60   --feed-key KEY (or AEGIS_FEED_KEY)
+//   --enforce-clear      remove every Aegis firewall rule from this host and exit
 
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
+const dns = require('dns');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -34,7 +43,7 @@ const MAX_READ = 4 * 1024 * 1024;
 
 // ---- Arguments -----------------------------------------------------------------
 function parseArgs(argv) {
-  const o = { eve: [], access: [], auth: [], syslog: [], inventory: true, inventoryEvery: 60, state: null, dryRun: false, verbose: false, fromStart: false, inventoryOnly: false };
+  const o = { eve: [], access: [], auth: [], syslog: [], inventory: true, inventoryEvery: 60, state: null, dryRun: false, verbose: false, fromStart: false, inventoryOnly: false, enforce: false, enforceOnly: false, enforceEvery: 60, enforceClear: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => { const v = argv[++i]; if (v === undefined) die(`${a} needs a value`); return v; };
@@ -55,16 +64,24 @@ function parseArgs(argv) {
       case '--inventory-only': o.inventoryOnly = true; break;
       case '--from-start': o.fromStart = true; break;
       case '--dry-run': o.dryRun = true; break;
+      case '--enforce': o.enforce = true; break;
+      case '--enforce-only': o.enforce = true; o.enforceOnly = true; break;
+      case '--enforce-every': o.enforceEvery = Math.max(15, Number(val()) || 60); break;
+      case '--enforce-clear': o.enforceClear = true; break;
+      case '--feed-key': o.feedKey = val(); break;
       case '--verbose': case '-v': o.verbose = true; break;
       case '--version': console.log(VERSION); process.exit(0); break;
-      case '--help': case '-h': console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(3, 22).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); process.exit(0); break;
+      case '--help': case '-h': console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(3, 29).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); process.exit(0); break;
       default: die(`Unknown option ${a}. Try --help.`);
     }
   }
   o.url = (o.url || process.env.AEGIS_URL || '').replace(/\/+$/, '');
   o.key = o.key || process.env.AEGIS_KEY || '';
-  if (!o.dryRun && !/^https?:\/\//.test(o.url)) die('Set AEGIS_URL (or --url) to the console address, e.g. https://aegis.example.com');
-  if (!o.dryRun && !o.key) die('Set AEGIS_KEY (or --key) to an API key with the "ingest" scope');
+  o.feedKey = o.feedKey || process.env.AEGIS_FEED_KEY || o.key;
+  const needsConsole = !o.dryRun && !o.enforceClear;
+  if (needsConsole && !/^https?:\/\//.test(o.url)) die('Set AEGIS_URL (or --url) to the console address, e.g. https://aegis.example.com');
+  if (needsConsole && !o.enforceOnly && !o.key) die('Set AEGIS_KEY (or --key) to an API key with the "ingest" scope');
+  if (needsConsole && o.enforce && !o.feedKey) die('Set AEGIS_FEED_KEY (or --feed-key, or AEGIS_KEY) to an API key with the "feed" scope');
   if (o.url.startsWith('http://') && !/^http:\/\/(localhost|127\.|\[::1\])/.test(o.url)) warn('AEGIS_URL is plain http; the API key travels unencrypted');
   o.state = o.state || process.env.AEGIS_STATE || path.join(process.platform === 'win32' ? os.tmpdir() : (fs.existsSync('/var/lib') && canWrite('/var/lib') ? '/var/lib' : os.tmpdir()), 'aegis-agent.state.json');
   return o;
@@ -321,16 +338,159 @@ async function shipInventory() {
   } catch (err) { warn(`Inventory failed: ${err.message}`); }
 }
 
+// ---- Enforcement -------------------------------------------------------------------------------
+// Pulls the BLOCK feed and mirrors it into the host firewall, so a rule published in
+// the console is actually dropped on this machine. Only blocklist.txt is pulled:
+// pulling isolate.txt would tell the console those rules are enforced, and this
+// agent does not quarantine hosts.
+const FW_NAME = 'AEGIS-BLOCK';
+const PF_ANCHOR = 'com.apple/aegis'; // macOS' default pf.conf evaluates com.apple/* anchors
+
+function sh(cmd, args, timeout = 20000) {
+  return new Promise((resolve) => {
+    if (opts.dryRun) { log(`[dry-run] ${cmd} ${args.join(' ')}`); return resolve({ code: 0, stdout: '', stderr: '' }); }
+    execFile(cmd, args, { timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || (err && err.message) || '') }));
+  });
+}
+
+async function mustSh(cmd, args) {
+  const r = await sh(cmd, args);
+  if (r.code !== 0) throw new Error(`${cmd} ${args.slice(0, 3).join(' ')}... failed: ${(r.stderr || r.stdout).trim().split('\n')[0] || `exit ${r.code}`}`);
+  return r;
+}
+
+// Addresses that must never be blocked: this host and the console it reports to.
+async function protectedIps() {
+  const keep = new Set(['127.0.0.1', '::1', HOST_IP]);
+  for (const n of Object.values(os.networkInterfaces()).flat()) if (n && n.address) keep.add(n.address);
+  try {
+    const host = new URL(opts.url).hostname.replace(/^\[|\]$/g, '');
+    if (net.isIP(host)) keep.add(host);
+    else for (const a of await dns.promises.lookup(host, { all: true })) keep.add(a.address);
+  } catch { /* console unresolvable right now; the fetch will fail anyway */ }
+  return keep;
+}
+
+async function pullBlocklist() {
+  const res = await fetch(`${opts.url}/api/feeds/blocklist.txt`, {
+    headers: { Authorization: `Bearer ${opts.feedKey}`, 'User-Agent': `aegis-agent/${VERSION} (${os.hostname()})` },
+    signal: AbortSignal.timeout(30000)
+  });
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) { const e = new Error(`console refused the feed key (HTTP ${res.status}); it needs the "feed" scope`); e.fatal = true; throw e; }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+const firewall = {
+  linux: {
+    async apply(v4, v6) {
+      for (const [bin, ips] of [['iptables', v4], ['ip6tables', v6]]) {
+        if (bin === 'ip6tables' && !ips.length && (await sh('ip6tables', ['-w', '-L', FW_NAME, '-n'])).code !== 0) continue;
+        await sh(bin, ['-w', '-N', FW_NAME]); // fails harmlessly when the chain exists
+        for (const parent of ['INPUT', 'OUTPUT', 'FORWARD']) {
+          if ((await sh(bin, ['-w', '-C', parent, '-j', FW_NAME])).code !== 0) await mustSh(bin, ['-w', '-I', parent, '1', '-j', FW_NAME]);
+        }
+        await mustSh(bin, ['-w', '-F', FW_NAME]);
+        for (const ip of ips) {
+          await mustSh(bin, ['-w', '-A', FW_NAME, '-s', ip, '-j', 'DROP']);
+          await mustSh(bin, ['-w', '-A', FW_NAME, '-d', ip, '-j', 'DROP']);
+        }
+      }
+    },
+    async clear() {
+      for (const bin of ['iptables', 'ip6tables']) {
+        for (const parent of ['INPUT', 'OUTPUT', 'FORWARD']) while ((await sh(bin, ['-w', '-D', parent, '-j', FW_NAME])).code === 0 && !opts.dryRun) { /* remove every jump */ }
+        await sh(bin, ['-w', '-F', FW_NAME]);
+        await sh(bin, ['-w', '-X', FW_NAME]);
+      }
+    }
+  },
+  win32: {
+    async apply(v4, v6) {
+      await this.clear();
+      const ips = [...v4, ...v6];
+      // netsh caps the length of remoteip, so large lists are split over several rules with one name.
+      for (let i = 0; i < ips.length; i += 200) {
+        const list = ips.slice(i, i + 200).join(',');
+        for (const dir of ['in', 'out']) {
+          await mustSh('netsh', ['advfirewall', 'firewall', 'add', 'rule', `name=${FW_NAME}`, `dir=${dir}`, 'action=block', 'enable=yes', 'profile=any', `remoteip=${list}`]);
+        }
+      }
+    },
+    async clear() { await sh('netsh', ['advfirewall', 'firewall', 'delete', 'rule', `name=${FW_NAME}`]); }
+  },
+  darwin: {
+    async apply(v4, v6) {
+      const ips = [...v4, ...v6];
+      const file = path.join(os.tmpdir(), 'aegis-pf.conf');
+      fs.writeFileSync(file, `table <aegis_block> persist { ${ips.join(' ')} }\nblock drop quick from <aegis_block> to any\nblock drop quick from any to <aegis_block>\n`);
+      await mustSh('pfctl', ['-a', PF_ANCHOR, '-f', file]);
+      await sh('pfctl', ['-E']);
+    },
+    async clear() { await sh('pfctl', ['-a', PF_ANCHOR, '-F', 'all']); }
+  }
+};
+
+async function enforceClear() {
+  const fw = firewall[process.platform];
+  if (!fw) die(`Enforcement is not supported on ${process.platform}`);
+  await fw.clear();
+  log('Removed Aegis firewall rules from this host');
+}
+
+let lastApplied = null;
+let enforceFatal = false;
+async function enforceOnce() {
+  const fw = firewall[process.platform];
+  try {
+    const feed = await pullBlocklist();
+    const keep = await protectedIps();
+    const valid = [...new Set(feed.filter((ip) => net.isIP(ip)))];
+    const skipped = valid.filter((ip) => keep.has(ip));
+    if (skipped.length) warn(`Not blocking ${skipped.join(', ')}: this host or the console`);
+    const ips = valid.filter((ip) => !keep.has(ip)).sort();
+    const sig = ips.join(',');
+    if (sig === lastApplied) { debug(`Blocklist unchanged (${ips.length} addresses)`); return; }
+    const v4 = ips.filter((ip) => net.isIPv4(ip)), v6 = ips.filter((ip) => net.isIPv6(ip));
+    await fw.apply(v4, v6);
+    lastApplied = sig;
+    log(`Firewall updated: blocking ${ips.length} address${ips.length === 1 ? '' : 'es'}${ips.length ? ` (${ips.slice(0, 5).join(', ')}${ips.length > 5 ? ', ...' : ''})` : ''}`);
+  } catch (err) {
+    if (err.fatal) { enforceFatal = true; warn(`Enforcement stopped: ${err.message}`); return; }
+    warn(`Enforcement failed: ${err.message}${/permission|denied|not permitted|elevation|requires/i.test(err.message) ? ' (run the agent as root / Administrator)' : ''}`);
+  }
+}
+
+async function startEnforcement() {
+  if (!firewall[process.platform]) die(`Enforcement is not supported on ${process.platform}`);
+  log(`Enforcing ${opts.url}/api/feeds/blocklist.txt into the ${process.platform === 'win32' ? 'Windows Firewall' : process.platform === 'darwin' ? 'pf' : 'iptables'} every ${opts.enforceEvery}s`);
+  await enforceOnce();
+  return setInterval(() => { if (!enforceFatal) enforceOnce(); }, opts.enforceEvery * 1000);
+}
+
 // ---- Main ------------------------------------------------------------------------------------------
 async function main() {
+  if (opts.enforceClear) { await enforceClear(); return; }
   log(`aegis-agent ${VERSION} on ${os.hostname()} (${HOST_IP}) -> ${opts.dryRun ? 'dry run' : opts.url}`);
   if (opts.inventoryOnly) { await shipInventory(); return; }
+  if (opts.enforceOnly) {
+    const t = await startEnforcement();
+    const stop = () => { clearInterval(t); log('Stopping; firewall rules stay in place (use --enforce-clear to remove them)'); process.exit(0); };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+    const watch = setInterval(() => { if (enforceFatal) process.exit(1); }, 1000);
+    if (opts.dryRun) { clearInterval(t); clearInterval(watch); }
+    return;
+  }
+  if (opts.enforce) await startEnforcement();
 
   const tails = [
     ...opts.eve.map((f) => new Tail(f, 'eve')), ...opts.access.map((f) => new Tail(f, 'access')),
     ...opts.auth.map((f) => new Tail(f, 'auth')), ...opts.syslog.map((f) => new Tail(f, 'syslog'))
   ];
-  if (!tails.length && !opts.inventory) die('Nothing to do: pass --eve, --access, --auth or --syslog, or leave inventory on');
+  if (!tails.length && !opts.inventory && !opts.enforce) die('Nothing to do: pass --eve, --access, --auth or --syslog, or leave inventory on');
 
   if (opts.inventory) {
     await shipInventory();
