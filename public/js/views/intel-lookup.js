@@ -253,23 +253,38 @@ function sourcesLine(r) {
 export async function feedsTab(body, { navigate }) {
   const [d, cfg] = await Promise.all([api('/intel/feeds'), api('/config')]);
   const configure = can('configure');
-  const feeds = [...d.abusech.feeds, ...d.misp.feeds];
+  const feeds = [...d.abusech.feeds, ...d.misp.feeds, ...(d.reputation_lists || [])];
   const s = d.sigma;
+  const liveApis = [
+    d.otx ? { name: 'AlienVault OTX', sub: 'Community pulses, malware families and adversary tags per indicator', scope: 'IPs, domains, URLs, hashes', mode: d.otx.keyed ? 'Authenticated API (6h cache)' : 'Public API (6h cache)', tag: d.otx.keyed ? 'key set' : 'active' } : null,
+    d.hybrid_analysis && d.hybrid_analysis.configured ? { name: 'Hybrid Analysis', sub: 'Falcon Sandbox verdicts and threat scores for file hashes', scope: 'MD5, SHA1, SHA256', mode: 'Falcon Sandbox v2 (6h cache)', tag: 'key set' } : null,
+    d.virustotal && d.virustotal.configured ? { name: 'VirusTotal', sub: '70+ antivirus and URL engines', scope: 'IPs, domains, URLs, hashes', mode: `${d.virustotal.used_today} lookups today`, tag: 'key set' } : null,
+    d.misp && d.misp.own_instance ? { name: 'Your MISP', sub: 'attributes/restSearch on your own instance', scope: 'All indicator types', mode: new URL(d.misp.own_instance).host, tag: 'connected' } : null,
+    { name: 'GreyNoise, Shodan InternetDB, ipwho.is', sub: 'Internet-wide scanner classification, open ports, CVEs and ASN/geolocation', scope: 'IPv4, IPv6', mode: 'Live query (6h cache)', tag: 'active' },
+    { name: 'RDAP, RIPEstat, Mnemonic PDNS, crt.sh / Cert Spotter', sub: 'Domain registration age, BGP routing, passive DNS history and Certificate Transparency logs', scope: 'IPs, domains, URLs, ASNs', mode: 'Live query (12h cache)', tag: 'active' }
+  ].filter(Boolean);
   body.innerHTML = `
     <div class="panel__body row wrap" style="justify-content:space-between">
       <div class="small muted" style="max-width:72ch">Bulk feeds are downloaded and indexed in memory, so a lookup is a local match. A feed that fails to refresh keeps serving its last good copy.${d.offline ? ' <b>Threat intel is switched off on this server (AEGIS_INTEL=off).</b>' : ''}</div>
       ${configure && !d.offline ? `<button class="btn btn--sm" id="fd-refresh">${icon('refresh')}Refresh all</button>` : ''}
     </div>
-    <div class="table-wrap"><table class="table"><thead><tr><th>Feed</th><th class="num">Entries</th><th class="num hide-sm">Size</th><th class="num">Updated</th><th>Status</th></tr></thead><tbody class="rows-in">
+    <div class="table-wrap"><table class="table"><thead><tr><th>Feed</th><th class="num">Entries</th><th class="num hide-sm">Size</th><th class="num">Updated</th><th>Status</th></tr></thead><tbody class="rows-in" id="fd-rows">
       ${feeds.map((f, i) => `<tr style="--i:${i}"><td><span class="cell-main">${esc(f.name)}</span><span class="cell-sub">${esc(f.note || f.provider)}</span></td>
         <td class="num">${num(f.entries)}</td><td class="num small hide-sm">${bytes(f.bytes)}</td>
         <td class="num small nowrap">${f.loaded_at ? ago(f.loaded_at) : '-'}${f.fetch_ms ? `<span class="cell-sub">${(f.fetch_ms / 1000).toFixed(1)} s</span>` : ''}</td>
         <td class="small">${feedState(f)}</td></tr>`).join('')}
-      <tr><td><span class="cell-main">VirusTotal</span><span class="cell-sub">70+ engines; free key allows 4 lookups a minute, 500 a day</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num small">${d.virustotal.configured ? `${d.virustotal.used_today} today` : '-'}</td><td class="small">${d.virustotal.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set key in Settings</span>'}</td></tr>
-      ${d.otx ? `<tr><td><span class="cell-main">AlienVault OTX</span><span class="cell-sub">community pulses per indicator; works without a key, OTX_API_KEY raises the limit</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.otx.keyed ? '<span class="tag tag--ok">key set</span>' : '<span class="tag tag--ok">anonymous</span>'}</td></tr>` : ''}
-      ${d.hybrid_analysis ? `<tr><td><span class="cell-main">Hybrid Analysis</span><span class="cell-sub">Falcon sandbox verdicts for file hashes</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.hybrid_analysis.configured ? '<span class="tag tag--ok">key set</span>' : '<span class="tag">set key in Settings</span>'}</td></tr>` : ''}
-      <tr><td><span class="cell-main">Your MISP</span><span class="cell-sub">attributes/restSearch on your own instance</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small">${d.misp.own_instance ? `<span class="tag tag--ok">${esc(new URL(d.misp.own_instance).host)}</span>` : '<span class="tag">set MISP_URL and MISP_KEY</span>'}</td></tr>
-      <tr><td><span class="cell-main">RDAP, RIPEstat, Mnemonic PDNS, crt.sh / Cert Spotter</span><span class="cell-sub">queried live per lookup, cached 12 hours</span></td><td class="num">-</td><td class="num hide-sm">-</td><td class="num">-</td><td class="small"><span class="tag tag--ok">no key needed</span></td></tr>
+    </tbody></table></div>
+    <div class="panel__body sg-head">
+      <div>
+        <h3 class="section-title" style="margin:0">Live lookup APIs</h3>
+        <div class="small muted mt-8">Queried on demand per indicator and cached in memory.${configure ? ' Optional provider keys (VirusTotal, AbuseIPDB, abuse.ch v2) can be managed in <a href="#/settings">Settings</a>.' : ''}</div>
+      </div>
+    </div>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th class="hide-sm">Indicators</th><th class="hide-sm">Mode</th><th>Status</th></tr></thead><tbody class="rows-in">
+      ${liveApis.map((a, i) => `<tr style="--i:${i}"><td><span class="cell-main">${esc(a.name)}</span><span class="cell-sub">${esc(a.sub)}</span></td>
+        <td class="small hide-sm">${esc(a.scope)}</td>
+        <td class="small muted hide-sm">${esc(a.mode)}</td>
+        <td class="small"><span class="tag tag--ok">${esc(a.tag)}</span></td></tr>`).join('')}
     </tbody></table></div>
     <div class="panel__body sg-head">
       <div>
@@ -305,6 +320,24 @@ export async function feedsTab(body, { navigate }) {
       feedsTab(body, { navigate });
     } catch (e) { toast('Refresh failed', e.message, 'error'); }
   });
+
+  if (feeds.some((f) => f.loading && !f.loaded)) {
+    const pollFeeds = async (tries = 0) => {
+      const tb = $('#fd-rows', body);
+      if (!tb || !document.body.contains(tb) || tries >= 6) return;
+      try {
+        const next = await api('/intel/feeds');
+        if (!document.body.contains(tb)) return;
+        const rows = [...next.abusech.feeds, ...next.misp.feeds, ...(next.reputation_lists || [])];
+        tb.innerHTML = rows.map((f, i) => `<tr style="--i:${i}"><td><span class="cell-main">${esc(f.name)}</span><span class="cell-sub">${esc(f.note || f.provider)}</span></td>
+          <td class="num">${num(f.entries)}</td><td class="num small hide-sm">${bytes(f.bytes)}</td>
+          <td class="num small nowrap">${f.loaded_at ? ago(f.loaded_at) : '-'}${f.fetch_ms ? `<span class="cell-sub">${(f.fetch_ms / 1000).toFixed(1)} s</span>` : ''}</td>
+          <td class="small">${feedState(f)}</td></tr>`).join('');
+        if (rows.some((f) => f.loading && !f.loaded)) setTimeout(() => pollFeeds(tries + 1), 3000);
+      } catch { /* ignore poll errors */ }
+    };
+    setTimeout(() => pollFeeds(0), 2500);
+  }
 
   let timer = 0;
   let limit = 25;

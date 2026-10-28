@@ -62,9 +62,9 @@ function parseSpamhaus(text) {
 }
 
 const LISTS = [
-  { id: 'spamhaus', name: 'Spamhaus DROP', url: 'https://www.spamhaus.org/drop/drop_v4.json', score: 100, parse: parseSpamhaus },
-  { id: 'firehol', name: 'FireHOL level 1', url: 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset', score: 90, parse: parseNetset },
-  { id: 'tor', name: 'Tor exit list', url: 'https://check.torproject.org/torbulkexitlist', score: 50, parse: parseNetset }
+  { id: 'spamhaus', name: 'Spamhaus DROP', url: 'https://www.spamhaus.org/drop/drop_v4.json', score: 100, parse: parseSpamhaus, note: 'Hijacked and criminal netblocks published by Spamhaus' },
+  { id: 'firehol', name: 'FireHOL level 1', url: 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset', score: 90, parse: parseNetset, note: 'Aggregated cybercrime and attack source netblocks' },
+  { id: 'tor', name: 'Tor exit list', url: 'https://check.torproject.org/torbulkexitlist', fallbackUrl: 'https://raw.githubusercontent.com/SecOps-Institute/Tor-IP-Addresses/master/tor-exit-nodes.lst', score: 50, parse: parseNetset, note: 'Current Tor exit relay addresses' }
 ];
 
 class ThreatIntel {
@@ -100,32 +100,55 @@ class ThreatIntel {
       sources: [...LISTS.map((l) => l.name), 'GreyNoise', 'Shodan InternetDB', 'ipwho.is', ...(this.feeds ? ['Feodo Tracker', 'ThreatFox', 'URLhaus', 'MISP OSINT'] : []), ...(this.abuse ? ['AbuseIPDB'] : [])],
       lists: LISTS.map((l) => {
         const s = this.lists.get(l.id);
-        return { id: l.id, name: l.name, entries: s && s.data ? s.data.ranges.length + s.data.exact.size : null, loaded_at: s && s.data ? new Date(s.at).toISOString() : null, error: s ? s.error || null : null };
+        const ok = Boolean(s && s.data);
+        return {
+          id: l.id, name: l.name, provider: l.name, url: l.url, note: l.note,
+          loaded: ok, loading: this.loading.has(l.id),
+          entries: ok ? s.data.ranges.length + s.data.exact.size : null,
+          bytes: ok ? s.bytes || null : null,
+          loaded_at: ok ? new Date(s.at).toISOString() : null,
+          fetch_ms: ok ? s.ms || null : null,
+          error: s ? s.error || null : null
+        };
       })
     };
   }
 
-  get(url) {
-    return this.fetch(url, { headers: { Accept: 'application/json, text/plain', 'User-Agent': 'aegis-security/4' }, signal: AbortSignal.timeout(this.timeoutMs) });
+  warm() { if (!this.offline) LISTS.forEach((l) => this.loadList(l).catch(() => {})); }
+
+  refresh() { return Promise.all(LISTS.map((l) => this.loadList(l, { force: true }))); }
+
+  get(url, timeoutMs = this.timeoutMs) {
+    return this.fetch(url, { headers: { Accept: 'application/json, text/plain', 'User-Agent': 'aegis-security/4' }, signal: AbortSignal.timeout(timeoutMs) });
   }
 
-  async loadList(def) {
+  async loadList(def, { force = false } = {}) {
     const have = this.lists.get(def.id);
-    if (have && have.data && Date.now() - have.at < LIST_TTL) return have;
-    if (have && !have.data && Date.now() - have.at < LIST_RETRY) return have;
+    if (!force && have && have.data && Date.now() - have.at < LIST_TTL) return have;
+    if (!force && have && !have.data && Date.now() - have.at < LIST_RETRY) return have;
     if (this.loading.has(def.id)) return this.loading.get(def.id);
     const p = (async () => {
+      const t0 = Date.now();
       try {
-        const res = await this.get(def.url);
+        let res;
+        try {
+          res = await this.get(def.url, Math.max(this.timeoutMs, 10000));
+          if (!res.ok && def.fallbackUrl) res = await this.get(def.fallbackUrl, Math.max(this.timeoutMs, 10000));
+        } catch (e) {
+          if (!def.fallbackUrl) throw e;
+          res = await this.get(def.fallbackUrl, Math.max(this.timeoutMs, 10000));
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = def.parse(await res.text());
+        const text = await res.text();
+        const data = def.parse(text);
         if (!data.ranges.length && !data.exact.size) throw new Error('list was empty');
-        const rec = { at: Date.now(), data, error: null };
+        const rec = { at: Date.now(), data, error: null, bytes: Buffer.byteLength(text, 'utf8'), ms: Date.now() - t0 };
         this.lists.set(def.id, rec);
         return rec;
       } catch (err) {
         // A stale copy beats no copy.
-        const rec = have && have.data ? { ...have, error: err.message } : { at: Date.now(), data: null, error: err.message };
+        const msg = err && err.name === 'TimeoutError' ? 'timed out' : err.message;
+        const rec = have && have.data ? { ...have, error: msg } : { at: Date.now(), data: null, error: msg };
         this.lists.set(def.id, rec);
         return rec;
       } finally { this.loading.delete(def.id); }

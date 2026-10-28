@@ -125,19 +125,29 @@ class FeedCache {
             return httpGet(this.fetch, url, { timeoutMs: def.timeoutMs || 30000, headers: def.headers });
           }
         };
-        let res;
-        for (let i = 0; i < urls.length; i++) {
-          res = await get(urls[i]);
-          if (res.status !== 404 || i === urls.length - 1) break;
+        let body;
+        if (Array.isArray(def.mergeUrls) && def.mergeUrls.length) {
+          const parts = await Promise.all(def.mergeUrls.map(async (u) => {
+            const r = await get(u);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return def.binary ? Buffer.from(await r.arrayBuffer()) : await r.text();
+          }));
+          body = def.binary ? Buffer.concat(parts) : parts.join('\n');
+        } else {
+          let res;
+          for (let i = 0; i < urls.length; i++) {
+            res = await get(urls[i]);
+            if (res.status !== 404 || i === urls.length - 1) break;
+          }
+          if (res.status === 401 || res.status === 403) throw new Error(def.authError || `HTTP ${res.status}: access refused`);
+          if (res.status === 410) throw new Error('HTTP 410: the provider retired this download');
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          body = def.binary ? Buffer.from(await res.arrayBuffer()) : await res.text();
         }
-        if (res.status === 401 || res.status === 403) throw new Error(def.authError || `HTTP ${res.status}: access refused`);
-        if (res.status === 410) throw new Error('HTTP 410: the provider retired this download');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = def.binary ? Buffer.from(await res.arrayBuffer()) : await res.text();
         const data = def.parse(body);
         const entries = def.size ? def.size(data) : null;
         if (entries === 0) throw new Error('feed was empty');
-        const rec = { at: Date.now(), data, error: null, entries, bytes: body.length, ms: Date.now() - t0 };
+        const rec = { at: Date.now(), data, error: null, entries, bytes: Buffer.isBuffer(body) ? body.length : Buffer.byteLength(body, 'utf8'), ms: Date.now() - t0 };
         this.state.set(def.id, rec);
         return rec;
       } catch (err) {

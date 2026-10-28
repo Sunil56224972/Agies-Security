@@ -49,15 +49,15 @@ class IntelHub {
     };
   }
 
-  warm() { if (!this.offline) { this.abusech.warm(); this.misp.warm(); } }
+  warm() { if (!this.offline) { this.abusech.warm(); this.misp.warm(); if (this.reputation && this.reputation.warm) this.reputation.warm(); } }
 
   // Forces a fresh download of every feed. A feed that fails keeps its last good copy.
   async refresh() {
     if (this.offline) return { ok: [], failed: [] };
     await this.ready();
-    const r = await Promise.allSettled([this.abusech.refresh(), this.misp.refresh()]);
+    const r = await Promise.allSettled([this.abusech.refresh(), this.misp.refresh(), ...(this.reputation && this.reputation.refresh ? [this.reputation.refresh()] : [])]);
     const failed = [];
-    for (const f of [...this.abusech.describe().feeds, ...this.misp.describe().feeds]) if (f.error && !f.needs_key) failed.push({ source: f.name, error: f.error });
+    for (const f of [...this.abusech.describe().feeds, ...this.misp.describe().feeds, ...(this.reputation && this.reputation.describe ? this.reputation.describe().lists : [])]) if (f.error && !f.needs_key) failed.push({ source: f.name, error: f.error });
     return { ok: r.filter((x) => x.status === 'fulfilled').length, failed };
   }
 

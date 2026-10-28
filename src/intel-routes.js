@@ -115,6 +115,17 @@ function registerIntel(app, ctx) {
 
   app.get('/api/intel/feeds', wrap(async (req, res) => {
     await hub.ready();
+    if (hub.available) {
+      hub.warm();
+      const desc = hub.describe();
+      const all = [...desc.abusech.feeds, ...desc.misp.feeds, ...(desc.reputation_lists || [])];
+      if (all.some((f) => !f.loaded && !f.needs_key)) {
+        await Promise.race([
+          hub.refresh().catch(() => {}),
+          new Promise((r) => setTimeout(r, 5000))
+        ]);
+      }
+    }
     res.json({ ...hub.describe(), sigma: { enabled: sigma.available, ...sigma.status() } });
   }));
 

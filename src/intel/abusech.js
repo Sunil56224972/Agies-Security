@@ -27,7 +27,8 @@ function splitHostPort(v) {
   return i > 0 && net.isIPv4(s.slice(0, i)) ? [s.slice(0, i), Number(s.slice(i + 1)) || null] : [s.toLowerCase(), null];
 }
 
-// ThreatFox: either the zipped full dump or a plain CSV export.
+// ThreatFox: either the zipped full dump, a plain CSV export, or the keyless
+// public mirrors (stamparm/blackbook C2 domains + ThreatFox IOC IPs).
 function parseThreatFox(body) {
   let text;
   if (Buffer.isBuffer(body) && body[0] === 0x50 && body[1] === 0x4b) {
@@ -39,19 +40,38 @@ function parseThreatFox(body) {
   const newest = {};
   let rows = 0;
   eachCsvRow(text, (r) => {
-    if (r.length < 10 || !r[2]) return;
-    const type = r[3];
-    const rec = {
-      id: r[1], value: r[2], type, threat: r[4], malware: clean(r[7]) || clean(r[5]), malware_id: clean(r[5]), alias: clean(r[6]),
-      first_seen: clean(r[0]), last_seen: clean(r[8]), confidence: Number(r[9]) || null, tags: tagList(r[12]), reporter: clean(r[14])
-    };
-    rows += 1;
-    if (type === 'ip:port') { const [h, p] = splitHostPort(r[2]); rec.port = p; addTo(ip, h, rec); }
-    else if (type === 'domain') addTo(domain, r[2].toLowerCase(), rec);
-    else if (type === 'url') { url.set(r[2], rec); const h = hostOf(r[2]); if (h) addTo(urlHost, h, rec); }
-    else if (/_hash$/.test(type)) hash.set(r[2].toLowerCase(), rec);
-    else return;
-    if (!newest[type] || String(rec.first_seen) > String(newest[type].first_seen)) newest[type] = rec;
+    if (r.length >= 10 && r[2]) {
+      const type = r[3];
+      const rec = {
+        id: r[1], value: r[2], type, threat: r[4], malware: clean(r[7]) || clean(r[5]), malware_id: clean(r[5]), alias: clean(r[6]),
+        first_seen: clean(r[0]), last_seen: clean(r[8]), confidence: Number(r[9]) || null, tags: tagList(r[12]), reporter: clean(r[14])
+      };
+      rows += 1;
+      if (type === 'ip:port') { const [h, p] = splitHostPort(r[2]); rec.port = p; addTo(ip, h, rec); }
+      else if (type === 'domain') addTo(domain, r[2].toLowerCase(), rec);
+      else if (type === 'url') { url.set(r[2], rec); const h = hostOf(r[2]); if (h) addTo(urlHost, h, rec); }
+      else if (/_hash$/.test(type)) hash.set(r[2].toLowerCase(), rec);
+      else return;
+      if (!newest[type] || String(rec.first_seen) > String(newest[type].first_seen)) newest[type] = rec;
+    } else if (r.length === 4 && r[0] && r[0] !== 'Domain' && r[0].includes('.')) {
+      const d = r[0].toLowerCase();
+      const rec = {
+        id: null, value: d, type: 'domain', threat: 'botnet_cc', malware: clean(r[1]), malware_id: clean(r[1]), alias: null,
+        first_seen: clean(r[2]), last_seen: clean(r[2]), confidence: 85, tags: [clean(r[3])].filter(Boolean), reporter: clean(r[3]) || 'ThreatFox'
+      };
+      rows += 1;
+      addTo(domain, d, rec);
+      if (!newest.domain || String(rec.first_seen) > String(newest.domain.first_seen)) newest.domain = rec;
+    } else if (r.length === 1 && net.isIP(r[0])) {
+      const h = r[0].toLowerCase();
+      const rec = {
+        id: null, value: h, type: 'ip:port', port: null, threat: 'botnet_cc', malware: 'ThreatFox IOC', malware_id: null, alias: null,
+        first_seen: null, last_seen: null, confidence: 80, tags: ['ThreatFox'], reporter: 'ThreatFox'
+      };
+      rows += 1;
+      addTo(ip, h, rec);
+      if (!newest['ip:port']) newest['ip:port'] = rec;
+    }
   });
   return { ip, domain, url, urlHost, hash, rows, newest };
 }
@@ -67,41 +87,60 @@ function csvText(body) {
   return textOf(body);
 }
 
-// URLhaus: id, dateadded, url, url_status, last_online, threat, tags, urlhaus_link, reporter.
-// Rows in another layout still count by their URL column.
+// URLhaus: id, dateadded, url, url_status, last_online, threat, tags, urlhaus_link, reporter,
+// or the keyless urlhaus-filter-online.txt mirror built from urlhaus.abuse.ch/api/.
 function parseUrlhaus(body) {
   const url = new Map(); const host = new Map();
-  let rows = 0; let newest = null;
-  eachCsvRow(csvText(body), (r) => {
+  let rows = 0; let newest = null; let updated = null;
+  const text = csvText(body);
+  for (const m of text.matchAll(/^[!#]\s*Updated:\s*(\S+)/gim)) updated = m[1];
+  eachCsvRow(text, (r) => {
+    if (!r.length || !r[0] || r[0].startsWith('!')) return;
     let rec;
     if (r.length >= 8 && /^\w+:\/\//.test(r[2] || '')) {
       rec = { id: r[0], added: r[1], url: r[2], status: r[3], last_online: clean(r[4]), threat: clean(r[5]), tags: tagList(r[6]), link: clean(r[7]), reporter: clean(r[8]) };
+    } else if (r.length === 1 && (r[0].startsWith('||') || (!r[0].includes(' ') && r[0].includes('.')))) {
+      const raw = r[0].replace(/^\|\|/, '').replace(/\^.*$/, '').trim();
+      if (!raw || raw.startsWith('!') || raw.startsWith('#')) return;
+      const full = /^\w+:\/\//.test(raw) ? raw : `http://${raw}`;
+      rec = { id: null, added: updated, url: full, status: 'online', last_online: updated, threat: 'malware_download', tags: ['URLhaus'], link: 'https://urlhaus.abuse.ch/browse/', reporter: 'URLhaus' };
     } else {
       const i = r.findIndex((v) => /^https?:\/\//i.test(v || ''));
       if (i < 0) return;
-      rec = { id: null, added: r.find((v) => /^\d{4}-\d{2}-\d{2}/.test(v || '')) || null, url: r[i], status: r.find((v) => /^(online|offline)$/i.test(v || '')) || null, last_online: null, threat: null, tags: [], link: r.find((v, j) => j !== i && /urlhaus\.abuse\.ch\/url\//.test(v || '')) || null, reporter: null };
+      rec = { id: null, added: r.find((v) => /^\d{4}-\d{2}-\d{2}/.test(v || '')) || updated, url: r[i], status: r.find((v) => /^(online|offline)$/i.test(v || '')) || null, last_online: null, threat: null, tags: [], link: r.find((v, j) => j !== i && /urlhaus\.abuse\.ch\/url\//.test(v || '')) || null, reporter: null };
     }
     rows += 1;
     url.set(rec.url, rec);
+    if (r.length === 1 && rec.url.startsWith('http://')) url.set(`https://${rec.url.slice(7)}`, rec);
     const h = hostOf(rec.url);
     if (h) addTo(host, h, rec, 15);
-    if (!newest || String(rec.added) > String(newest.added)) newest = rec;
+    const hasPath = rec.url.indexOf('/', 8) > 0 && rec.url.indexOf('/', 8) < rec.url.length - 1;
+    if (!newest || (hasPath && !newest.url.includes('/', 8)) || (hasPath === (newest.url.indexOf('/', 8) > 0) && String(rec.added) > String(newest.added))) newest = rec;
   });
   return { url, host, rows, newest };
 }
 
-// MalwareBazaar: first_seen_utc, sha256, md5, sha1, reporter, file_name, file_type_guess, mime_type, signature, clamav, vtpercent, imphash, ssdeep, tlsh
+// MalwareBazaar: first_seen_utc, sha256, md5, sha1, reporter, file_name, file_type_guess, mime_type, signature, clamav, vtpercent, imphash, ssdeep, tlsh,
+// or the keyless MalwareBazaar hash mirrors (SHA256 / SHA1 / MD5).
 function parseBazaar(body) {
   const hash = new Map();
   let rows = 0; let newest = null;
   eachCsvRow(csvText(body), (r) => {
-    if (r.length < 9 || !/^[a-f0-9]{64}$/i.test(r[1] || '')) return;
-    const rec = { first_seen: r[0], sha256: r[1].toLowerCase(), md5: clean(r[2]), sha1: clean(r[3]), reporter: clean(r[4]), file_name: clean(r[5]), file_type: clean(r[6]), mime: clean(r[7]), signature: clean(r[8]), clamav: clean(r[9]), vt_percent: clean(r[10]) };
-    rows += 1;
-    hash.set(rec.sha256, rec);
-    if (rec.md5) hash.set(rec.md5.toLowerCase(), rec);
-    if (rec.sha1) hash.set(rec.sha1.toLowerCase(), rec);
-    if (!newest || rec.first_seen > newest.first_seen) newest = rec;
+    if (r.length >= 9 && /^[a-f0-9]{64}$/i.test(r[1] || '')) {
+      const rec = { first_seen: r[0], sha256: r[1].toLowerCase(), md5: clean(r[2]), sha1: clean(r[3]), reporter: clean(r[4]), file_name: clean(r[5]), file_type: clean(r[6]), mime: clean(r[7]), signature: clean(r[8]), clamav: clean(r[9]), vt_percent: clean(r[10]) };
+      rows += 1;
+      hash.set(rec.sha256, rec);
+      if (rec.md5) hash.set(rec.md5.toLowerCase(), rec);
+      if (rec.sha1) hash.set(rec.sha1.toLowerCase(), rec);
+      if (!newest || rec.first_seen > newest.first_seen) newest = rec;
+    } else if (r.length === 1 && /^[a-f0-9]{32,64}$/i.test(r[0] || '')) {
+      const h = r[0].toLowerCase();
+      if (h.length !== 32 && h.length !== 40 && h.length !== 64) return;
+      const rec = { first_seen: null, sha256: h.length === 64 ? h : null, md5: h.length === 32 ? h : null, sha1: h.length === 40 ? h : null, reporter: 'MalwareBazaar', file_name: null, file_type: null, mime: null, signature: 'Malware sample', clamav: null, vt_percent: null };
+      rows += 1;
+      hash.set(h, rec);
+      if (!newest && h.length === 64) newest = rec;
+    }
   });
   return { hash, rows, newest };
 }
@@ -134,9 +173,31 @@ function parseJa3(body) {
 // which is what the console shows.
 const v2 = (host) => `https://${host}/v2/files/exports`;
 const FEEDS = {
-  threatfox: { id: 'threatfox', name: 'ThreatFox IOC database', provider: 'ThreatFox', auth: true, base: v2('threatfox-api.abuse.ch'), files: ['full.csv.zip', 'recent.csv'], url: `${v2('threatfox-api.abuse.ch')}/<auth-key>/full.csv.zip`, binary: true, ttl: 3 * HOUR, timeoutMs: 90000, parse: parseThreatFox, size: (d) => d.rows, note: 'C2 servers, payload hosts and malware hashes shared by researchers' },
-  urlhaus: { id: 'urlhaus', name: 'URLhaus malware URLs', provider: 'URLhaus', auth: true, base: v2('urlhaus-api.abuse.ch'), files: ['online.csv', 'recent.csv'], url: `${v2('urlhaus-api.abuse.ch')}/<auth-key>/online.csv`, binary: true, ttl: HOUR, timeoutMs: 60000, parse: parseUrlhaus, size: (d) => d.rows, note: 'Malware distribution URLs, refreshed every 5 minutes by abuse.ch' },
-  bazaar: { id: 'bazaar', name: 'MalwareBazaar recent samples', provider: 'MalwareBazaar', auth: true, base: v2('mb-api.abuse.ch'), files: ['recent.csv'], url: `${v2('mb-api.abuse.ch')}/<auth-key>/recent.csv`, binary: true, ttl: HOUR, timeoutMs: 45000, parse: parseBazaar, size: (d) => d.rows, note: 'Newest submissions; any other sample is looked up live through the API' },
+  threatfox: {
+    id: 'threatfox', name: 'ThreatFox IOC database', provider: 'ThreatFox', auth: true,
+    base: v2('threatfox-api.abuse.ch'), files: ['full.csv.zip', 'recent.csv'],
+    publicMergeUrls: [
+      'https://raw.githubusercontent.com/stamparm/blackbook/master/blackbook.csv',
+      'https://raw.githubusercontent.com/elliotwutingfeng/ThreatFox-IOC-IPs/main/ips.txt'
+    ],
+    url: `${v2('threatfox-api.abuse.ch')}/<auth-key>/full.csv.zip`, binary: true, ttl: 3 * HOUR, timeoutMs: 90000, parse: parseThreatFox, size: (d) => d.rows, note: 'C2 servers, payload hosts and malware hashes shared by researchers'
+  },
+  urlhaus: {
+    id: 'urlhaus', name: 'URLhaus malware URLs', provider: 'URLhaus', auth: true,
+    base: v2('urlhaus-api.abuse.ch'), files: ['online.csv', 'recent.csv'],
+    publicUrls: ['https://raw.githubusercontent.com/curbengh/urlhaus-filter/gh-pages/urlhaus-filter-online.txt'],
+    url: `${v2('urlhaus-api.abuse.ch')}/<auth-key>/online.csv`, binary: true, ttl: HOUR, timeoutMs: 60000, parse: parseUrlhaus, size: (d) => d.rows, note: 'Malware distribution URLs, refreshed every 5 minutes by abuse.ch'
+  },
+  bazaar: {
+    id: 'bazaar', name: 'MalwareBazaar recent samples', provider: 'MalwareBazaar', auth: true,
+    base: v2('mb-api.abuse.ch'), files: ['recent.csv'],
+    publicMergeUrls: [
+      'https://raw.githubusercontent.com/romainmarcoux/malicious-hash/main/sources/bazaar.abuse.ch.sha256.txt',
+      'https://raw.githubusercontent.com/romainmarcoux/malicious-hash/main/full-hash-md5-aa.txt',
+      'https://raw.githubusercontent.com/romainmarcoux/malicious-hash/main/full-hash-sha1-aa.txt'
+    ],
+    url: `${v2('mb-api.abuse.ch')}/<auth-key>/recent.csv`, binary: true, ttl: HOUR, timeoutMs: 45000, parse: parseBazaar, size: (d) => d.rows, note: 'Newest submissions; any other sample is looked up live through the API'
+  },
   feodo: { id: 'feodo', name: 'Feodo Tracker C2 list', provider: 'Feodo Tracker', url: 'https://feodotracker.abuse.ch/downloads/ipblocklist.json', ttl: HOUR, timeoutMs: 20000, parse: parseFeodo, size: (d) => d.rows, note: 'Botnet C2 servers for QakBot, Emotet, Pikabot and similar' },
   sslbl: { id: 'sslbl', name: 'SSLBL certificate blacklist', provider: 'SSLBL', url: 'https://sslbl.abuse.ch/blacklist/sslblacklist.csv', ttl: 6 * HOUR, timeoutMs: 30000, parse: parseSslbl, size: (d) => d.rows, note: 'SHA1 of TLS certificates used by malware C2' },
   ja3: { id: 'ja3', name: 'SSLBL JA3 fingerprints', provider: 'SSLBL', url: 'https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv', ttl: 24 * HOUR, timeoutMs: 20000, parse: parseJa3, size: (d) => d.rows, note: 'TLS client fingerprints of malware; no longer updated by abuse.ch' }
@@ -159,7 +220,7 @@ function tfHit(rec, how) {
     source: 'ThreatFox', kind: THREAT_LABEL[rec.threat] || rec.threat, c2, malware: rec.malware, match: how,
     detail: `${rec.value}${rec.port && !String(rec.value).endsWith(`:${rec.port}`) ? `:${rec.port}` : ''}`,
     first_seen: rec.first_seen, last_seen: rec.last_seen, confidence: rec.confidence, tags: rec.tags, reporter: rec.reporter,
-    link: `https://threatfox.abuse.ch/ioc/${rec.id}/`,
+    link: rec.id ? `https://threatfox.abuse.ch/ioc/${rec.id}/` : `https://threatfox.abuse.ch/browse.php?search=ioc%3A${encodeURIComponent(rec.value)}`,
     score: Math.round(base * Math.max(0.6, (rec.confidence || 75) / 100))
   };
 }
@@ -208,43 +269,52 @@ class AbuseCh {
     return true;
   }
 
-  // The feed definition with this deployment's key filled in.
+  // The feed definition with this deployment's key filled in, or its keyless public mirror.
   feed(id) {
     const f = FEEDS[id];
     if (!f.auth) return f;
-    if (!this.authKey) return { ...f, unavailable: NEEDS_KEY };
+    if (!this.authKey) {
+      if (f.publicMergeUrls) return { ...f, mergeUrls: f.publicMergeUrls, binary: false };
+      if (f.publicUrls) return { ...f, urls: f.publicUrls, binary: false };
+      return { ...f, unavailable: NEEDS_KEY };
+    }
     return { ...f, urls: f.files.map((name) => `${f.base}/${encodeURIComponent(this.authKey)}/${name}`), authError: 'abuse.ch rejected the Auth-Key; check it at auth.abuse.ch' };
   }
 
   describe() {
-    return { auth_key: Boolean(this.authKey), feeds: Object.values(FEEDS).map((f) => ({ ...this.cache.status(f), needs_key: Boolean(f.auth && !this.authKey), error: f.auth && !this.authKey ? NEEDS_KEY : this.cache.status(f).error })) };
+    return {
+      auth_key: Boolean(this.authKey),
+      feeds: Object.values(FEEDS).map((f) => {
+        const hasFallback = Boolean(f.publicMergeUrls || f.publicUrls);
+        const needsKey = Boolean(f.auth && !this.authKey && !hasFallback);
+        const st = this.cache.status(f);
+        return { ...st, needs_key: needsKey, error: needsKey ? NEEDS_KEY : st.error };
+      })
+    };
   }
 
-  refresh() { return Promise.all(Object.keys(FEEDS).filter((id) => !FEEDS[id].auth || this.authKey).map((id) => this.cache.load(this.feed(id), { force: true }))); }
+  refresh() { return Promise.all(Object.keys(FEEDS).map((id) => this.cache.load(this.feed(id), { force: true }))); }
 
-  // Loads the light feeds now so the first lookup is not the one paying for downloads.
-  warm() { if (!this.offline) for (const id of ['feodo', 'bazaar', 'urlhaus', 'threatfox']) if (!FEEDS[id].auth || this.authKey) this.cache.load(this.feed(id)).catch(() => {}); }
+  // Loads the feeds now so the first lookup and Feeds tab are ready immediately.
+  warm() { if (!this.offline) for (const id of Object.keys(FEEDS)) this.cache.load(this.feed(id)).catch(() => {}); }
 
   // The newest real entry from each feed, used as one-click examples in the console.
   async samples() {
-    const [tf, uh, mb, fe] = await Promise.all(['threatfox', 'urlhaus', 'bazaar', 'feodo'].map((id) => (FEEDS[id].auth && !this.authKey ? { data: null } : this.cache.within(this.feed(id), 1500))));
+    const [tf, uh, mb, fe] = await Promise.all(['threatfox', 'urlhaus', 'bazaar', 'feodo'].map((id) => this.cache.within(this.feed(id), 1500)));
     const out = [];
     const c2 = fe.data && (fe.data.list.find((e) => e.status === 'online') || fe.data.list[0]);
     if (c2) out.push({ type: 'ipv4', value: c2.ip, label: `${c2.malware || 'Botnet'} C2`, source: 'Feodo Tracker' });
     if (tf.data && tf.data.newest.domain) out.push({ type: 'domain', value: tf.data.newest.domain.value, label: `${tf.data.newest.domain.malware || 'Malware'} domain`, source: 'ThreatFox' });
     if (tf.data && tf.data.newest['ip:port']) out.push({ type: 'ipv4', value: splitHostPort(tf.data.newest['ip:port'].value)[0], label: `${tf.data.newest['ip:port'].malware || 'Malware'} server`, source: 'ThreatFox' });
     if (uh.data && uh.data.newest) out.push({ type: 'url', value: uh.data.newest.url, label: 'Live malware URL', source: 'URLhaus' });
-    if (mb.data && mb.data.newest) out.push({ type: 'sha256', value: mb.data.newest.sha256, label: `${mb.data.newest.signature || mb.data.newest.file_type || 'Malware'} sample`, source: 'MalwareBazaar' });
+    if (mb.data && mb.data.newest) out.push({ type: 'sha256', value: mb.data.newest.sha256, label: `${String(mb.data.newest.signature || mb.data.newest.file_type || 'Malware').replace(/\s*sample$/i, '')} sample`, source: 'MalwareBazaar' });
     return out;
   }
 
   async lookup(ind, { budgetMs = 15000 } = {}) {
     const out = { hits: [], ok: [], failed: [], pending: [], skipped: [] };
     if (this.offline) return { ...out, skipped: true };
-    // Keyed feeds without a key are reported as skipped, not as failures.
-    const all = NEEDS[ind.type] || [];
-    for (const id of all) if (FEEDS[id].auth && !this.authKey && !out.skipped.includes(FEEDS[id].provider)) out.skipped.push(FEEDS[id].provider);
-    const need = all.filter((id) => !FEEDS[id].auth || this.authKey);
+    const need = NEEDS[ind.type] || [];
     const recs = await Promise.all(need.map((id) => this.cache.within(this.feed(id), budgetMs)));
     const d = {};
     need.forEach((id, i) => {
@@ -348,11 +418,12 @@ class AbuseCh {
 }
 
 function bazaarHit(r) {
+  const h = r.sha256 || r.sha1 || r.md5;
   return {
     source: 'MalwareBazaar', kind: 'Malware sample', c2: false, malware: r.signature || null, match: 'exact hash',
-    detail: [r.file_name, r.file_type].filter(Boolean).join(', ') || r.sha256,
+    detail: [r.file_name, r.file_type].filter(Boolean).join(', ') || h,
     first_seen: r.first_seen, tags: [r.file_type, r.clamav, ...(r.tags || [])].filter(Boolean).slice(0, 6), reporter: r.reporter,
-    link: `https://bazaar.abuse.ch/sample/${r.sha256}/`, score: 100
+    link: r.sha256 ? `https://bazaar.abuse.ch/sample/${r.sha256}/` : `https://bazaar.abuse.ch/browse.php?search=${encodeURIComponent(h)}`, score: 100
   };
 }
 
