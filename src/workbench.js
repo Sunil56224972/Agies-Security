@@ -902,7 +902,7 @@ function createWorkbench(ctx, svc) {
     }
     const cfg = await store.config.get();
     // Webhook URLs, routing keys and the model key are credentials; they are not exported.
-    out.config = { ...cfg, notifyChannels: undefined, llmProvider: undefined };
+    out.config = { ...cfg, notifyChannels: undefined, llmProvider: undefined, intelKeys: undefined };
     out.users = (await store.users.list()).map((u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, disabled: u.disabled }));
     await audit(who, 'backup.exported', 'platform', Object.entries(out.counts).map(([k, n]) => `${k}:${n}`).join(' ').slice(0, 280));
     return out;
@@ -936,7 +936,7 @@ function createWorkbench(ctx, svc) {
       if (good.length < rows.length) skipped[t.name] = rows.length - good.length;
     }
     if (b.config && typeof b.config === 'object') {
-      const { notifyChannels, llmProvider, ...rest } = b.config;
+      const { notifyChannels, llmProvider, intelKeys, ...rest } = b.config;
       await store.config.set(rest);
     }
     if (store.afterRestore) await store.afterRestore();

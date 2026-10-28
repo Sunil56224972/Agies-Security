@@ -21,6 +21,7 @@ class Otx {
   get available() { return !this.offline; }
   supports(type) { return Boolean(SECTION[type]); }
   describe() { return { enabled: !this.offline, keyed: Boolean(this.key) }; }
+  setKey(key) { const k = key ? String(key).trim() : null; if (k === this.key) return false; this.key = k; return true; }
 
   async lookup(ind) {
     if (this.offline) return { skipped: true, reason: 'Threat intel disabled (AEGIS_INTEL=off)' };

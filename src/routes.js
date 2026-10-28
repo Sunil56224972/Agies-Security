@@ -20,11 +20,11 @@ const stripCve = ({ match_terms, cpe_matches, ...c }) => ({ ...c, cpe_ranges: (c
 const isSevere = (c) => c.severity === 'CRITICAL' || Number(c.cvss_score) >= 7;
 // Webhook URLs and signing secrets stay server-side; /api/notify/channels shows masked copies.
 // The model provider's sealed key stays server-side too; /api/llm shows a masked copy.
-const publicConfig = ({ notifyChannels, llmProvider, ...cfg }) => cfg;
+const publicConfig = ({ notifyChannels, llmProvider, intelKeys, ...cfg }) => cfg;
 const intIn = (v, lo, hi) => Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi;
 
 function registerRoutes(app, ctx) {
-  const { store, investigator, enforcer, nvd, reputation, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt, notifier } = ctx;
+  const { store, investigator, enforcer, nvd, reputation, hub, sigma, demo, warnings, env, wrap, bad, need, requireKey, actor, bootedAt, notifier, intelKeys } = ctx;
   const origin = (req) => env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
   const timeline = (alertId, body, req) => store.notes.add({ alert_id: alertId, kind: 'event', author: actor(req), author_id: req.user ? req.user.id : null, body });
   const tools = investigator.tools;
@@ -57,9 +57,9 @@ function registerRoutes(app, ctx) {
       storage: { kind: store.kind, label: store.label, ok: db.ok, detail: db.detail, warning: warnings.find((w) => /supabase|store/i.test(w)) || null },
       engine: llm,
       enforcement: { ...enforcer.describe(), warning: warnings.find((w) => /ENFORCEMENT/.test(w)) || null },
-      intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [],
-        feeds: hub && hub.available, vt_key: Boolean(env.VT_API_KEY), abusech_key: Boolean(env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY),
-        otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(env.OTX_API_KEY), ha_key: Boolean(env.HYBRID_ANALYSIS_API_KEY) },
+      intel: { nvd: Boolean(nvd), nvd_key: Boolean(env.NVD_API_KEY), reputation: Boolean(reputation && reputation.available), abuseipdb: Boolean(intelKeys ? intelKeys.has('abuseipdb') : env.ABUSEIPDB_API_KEY), sources: reputation && reputation.describe ? reputation.describe().sources : [],
+        feeds: hub && hub.available, vt_key: Boolean(intelKeys ? intelKeys.has('vt') : env.VT_API_KEY), abusech_key: Boolean(intelKeys ? intelKeys.has('abusech') : env.ABUSECH_AUTH_KEY), misp_own: Boolean(env.MISP_URL && env.MISP_KEY),
+        otx: Boolean(hub && hub.otx && hub.otx.available), otx_key: Boolean(intelKeys ? intelKeys.has('otx') : env.OTX_API_KEY), ha_key: Boolean(intelKeys ? intelKeys.has('ha') : env.HYBRID_ANALYSIS_API_KEY) },
       integrations: { jira: Boolean(env.JIRA_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN && env.JIRA_PROJECT), pagerduty: true, assistant: llm.llm },
       workbench_migration: store.pendingExtras ? store.pendingExtras.migration : null,
       sigma: sigma ? (({ loaded, loading, entries, version, loaded_at, error }) => ({ enabled: sigma.available, loaded, loading, rules: entries, version, loaded_at, error }))(sigma.status()) : { enabled: false },

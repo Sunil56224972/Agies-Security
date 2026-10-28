@@ -9,17 +9,19 @@ export async function render({ el, navigate, query = {} }) {
   ctx = { el, navigate };
   const manage = can('manage');
   const configure = can('configure');
-  const [config, health, audit, users, keys, channels, llm] = await Promise.all([
+  const [config, health, audit, users, keys, channels, llm, intelKeysData] = await Promise.all([
     api('/config'), api('/health'), api('/audit?limit=40'),
     manage ? api('/users') : Promise.resolve(null), manage ? api('/keys') : Promise.resolve(null),
     configure ? api('/notify/channels').catch(() => []) : Promise.resolve(null),
-    configure ? api('/llm').catch(() => null) : Promise.resolve(null)
+    configure ? api('/llm').catch(() => null) : Promise.resolve(null),
+    configure ? api('/intel/keys').catch(() => null) : Promise.resolve(null)
   ]);
   state.health = health;
   ctx.users = users;
   ctx.keys = keys;
   ctx.channels = channels;
   ctx.llm = llm;
+  ctx.intelKeysData = intelKeysData;
 
   el.innerHTML = `
     <div class="page-head">
@@ -36,7 +38,7 @@ export async function render({ el, navigate, query = {} }) {
         ${accountPanel()}
       </div>
       <div class="stack">
-        ${configure ? '<section class="panel" id="st-llm"></section><section class="panel" id="st-notify"></section>' : ''}
+        ${configure ? '<section class="panel" id="st-llm"></section><section class="panel" id="st-intel-keys"></section><section class="panel" id="st-notify"></section>' : ''}
         ${manage ? '<section class="panel" id="st-backup"></section>' : ''}
         ${mcpPanel(manage)}
         ${integrationsPanel(health)}
@@ -49,14 +51,14 @@ export async function render({ el, navigate, query = {} }) {
 
   if (configure) bindPolicy(config);
   if (manage) { paintTeam(); paintKeys(); }
-  if (configure) { paintLlm(); paintNotify(); }
+  if (configure) { paintLlm(); paintIntelKeys(); paintNotify(); }
   if (manage) paintBackup();
   bindAccount();
   $$('[data-mcp-copy]', el).forEach((b) => { b.onclick = () => copyText(b.dataset.mcpCopy === 'url' ? `/mcp` : mcpRemote(location.origin, 'aeg_YOUR_KEY'), b); });
   const reset = $('#st-reset', el);
   if (reset) reset.onclick = openReset;
   hydrateIcons(el);
-  const jump = query.section === 'approvals' ? $('#st-approvals', el) : query.section === 'backup' ? $('#st-backup', el) : query.section === 'llm' ? $('#st-llm', el) : null;
+  const jump = query.section === 'approvals' ? $('#st-approvals', el) : query.section === 'backup' ? $('#st-backup', el) : query.section === 'llm' ? $('#st-llm', el) : query.section === 'intel-keys' ? $('#st-intel-keys', el) : null;
   if (jump) setTimeout(() => { jump.scrollIntoView({ behavior: 'smooth', block: 'center' }); jump.classList.add('is-flash'); }, 200);
 }
 
@@ -250,25 +252,110 @@ function paintLlm() {
   hydrateIcons(box);
 }
 
+// ---- Threat intel keys -------------------------------------------------------
+function paintIntelKeys() {
+  const box = $('#st-intel-keys', ctx.el);
+  const d = ctx.intelKeysData;
+  if (!d || !d.providers) {
+    box.innerHTML = '<div class="panel__head"><h2 class="panel__title">Threat intel keys</h2></div><div class="panel__body small muted">Could not load intel key settings.</div>';
+    return;
+  }
+  const providers = d.providers;
+  box.innerHTML = `
+    <div class="panel__head"><h2 class="panel__title">Threat intel keys</h2><span class="panel__meta">paste, test and save</span></div>
+    <div class="panel__body">
+      <p class="small muted" style="margin:0 0 12px">Connect external threat intel providers with your own API keys. Keys are encrypted on the server and never shown again. Saved keys override the matching environment variable.</p>
+      ${providers.map((p) => `
+        <div class="ik-provider" data-ik-id="${esc(p.id)}">
+          <div class="row" style="gap:8px;align-items:center">
+            <span class="live-dot ${p.connected ? '' : 'live-dot--off'}"></span>
+            <b class="grow">${esc(p.label)}</b>
+            ${p.connected ? `<span class="tag ${p.source === 'settings' ? 'tag--ok' : ''}">${p.source === 'settings' ? 'Settings' : 'env'}</span>` : '<span class="tag tag--warn">off</span>'}
+          </div>
+          <div class="small muted" style="margin:4px 0 4px 20px">${esc(p.help)}</div>
+          ${p.key_hint ? `<div class="small mono" style="margin:0 0 4px 20px">Key: ${esc(p.key_hint)}${p.updated_by ? ` · saved by ${esc(p.updated_by)} ${p.updated_at ? ago(p.updated_at) : ''}` : ''}</div>` : ''}
+          ${p.error ? `<div class="notice notice--warn small" style="margin:4px 0 4px 20px">${icon('alert')}<span>${esc(p.error)}</span></div>` : ''}
+          <div class="row" style="gap:6px;margin:6px 0 0 20px;flex-wrap:nowrap">
+            <input class="input input--mono" type="password" placeholder="${p.connected && p.source === 'settings' ? 'Paste a new key to replace' : `Paste your ${esc(p.label)} key`}" data-ik-key autocomplete="off" spellcheck="false" style="flex:1;min-width:0">
+            <button class="btn btn--sm" data-ik-test>${icon('zap')}Test</button>
+            <button class="btn btn--sm btn--primary" data-ik-save>${icon('check')}Save</button>
+            ${p.saved ? `<button class="btn btn--sm btn--ghost btn--danger-text" data-ik-del>${icon('trash')}</button>` : ''}
+          </div>
+          <div class="small" style="margin:4px 0 8px 20px" data-ik-out></div>
+          <a class="small" style="margin:0 0 0 20px" href="${esc(p.keys_url)}" target="_blank" rel="noopener noreferrer">Get a ${esc(p.label)} key →</a>
+          <hr style="margin:12px 0;border:none;border-top:1px solid var(--border)">
+        </div>`).join('')}
+    </div>`;
+  // Wire up each provider's buttons
+  $$('[data-ik-id]', box).forEach((row) => {
+    const id = row.dataset.ikId;
+    const p = providers.find((x) => x.id === id);
+    const keyInput = $('[data-ik-key]', row);
+    const out = $('[data-ik-out]', row);
+    const say = (ok, text) => { out.innerHTML = `<div class="notice ${ok ? '' : 'notice--warn'}">${icon(ok ? 'check' : 'alert')}<span>${text}</span></div>`; hydrateIcons(out); };
+    $('[data-ik-test]', row).onclick = (e) => busy(e.currentTarget, async () => {
+      out.innerHTML = '<span class="muted">Testing...</span>';
+      try {
+        const body = keyInput.value.trim() ? { key: keyInput.value.trim() } : {};
+        const r = await api(`/intel/keys/${id}/test`, { method: 'POST', body });
+        if (r.ok) say(true, `Connected in ${num(r.ms)} ms. ${esc(r.detail || '')}`);
+        else say(false, esc(r.error));
+      } catch (err) { say(false, esc(err.message)); }
+    });
+    $('[data-ik-save]', row).onclick = (e) => busy(e.currentTarget, async () => {
+      const key = keyInput.value.trim();
+      if (!key) { say(false, 'Paste a key first'); return; }
+      out.innerHTML = '<span class="muted">Testing before saving...</span>';
+      try {
+        const r = await api(`/intel/keys/${id}`, { method: 'PUT', body: { key } });
+        toast(`${p.label} connected`, r.test.detail || '', 'ok');
+        keyInput.value = '';
+        emit('data:changed');
+        ctx.intelKeysData = await api('/intel/keys').catch(() => ctx.intelKeysData);
+        paintIntelKeys();
+      } catch (err) { say(false, esc(err.message)); }
+    });
+    const del = $('[data-ik-del]', row);
+    if (del) del.onclick = () => {
+      if (!del.dataset.armed) {
+        del.dataset.armed = '1'; del.classList.add('is-armed');
+        del.title = 'Click again to remove';
+        setTimeout(() => { if (del.isConnected) { delete del.dataset.armed; del.classList.remove('is-armed'); del.title = 'Remove'; } }, 3000);
+        return;
+      }
+      busy(del, async () => {
+        try {
+          await api(`/intel/keys/${id}`, { method: 'DELETE' });
+          toast(`${p.label} key removed`, p.env_set ? `Falling back to ${p.env}` : 'Source off', 'ok');
+          emit('data:changed');
+          ctx.intelKeysData = await api('/intel/keys').catch(() => ctx.intelKeysData);
+          paintIntelKeys();
+        } catch (err) { say(false, esc(err.message)); }
+      });
+    };
+  });
+  hydrateIcons(box);
+}
+
 // ---- Integrations ----------------------------------------------------------
 function integrationsPanel(h) {
   const e = h.enforcement || {};
   const isSb = h.storage.kind === 'supabase';
   const row = (name, ok, text, env) => `<div class="setting"><div><div class="setting__label row"><span class="live-dot ${ok === true ? '' : ok === 'warn' ? 'live-dot--warn' : 'live-dot--off'}"></span>${name}</div><div class="setting__help">${text}${env ? `<br><span class="mono">${env}</span>` : ''}</div></div></div>`;
   return `<section class="panel">
-    <div class="panel__head"><h2 class="panel__title">Integrations</h2><span class="panel__meta small muted">set in .env, restart to apply</span></div>
+    <div class="panel__head"><h2 class="panel__title">Integrations</h2><span class="panel__meta small muted">set in .env or paste under Threat intel keys</span></div>
     ${row(`Enforcement: ${esc(e.label || e.mode)}`, e.mode === 'record' ? 'warn' : e.warning ? 'warn' : true, esc(e.warning || e.detail || ''), 'ENFORCEMENT_MODE=feed | webhook | cloudflare | record')}
     ${row(`Storage: ${isSb ? 'Supabase Postgres' : 'Local JSON file'}`, h.storage.ok ? (isSb ? true : 'warn') : false, esc(h.storage.warning || h.storage.detail || (h.storage.ok ? 'Connected' : 'Unavailable')) + (isSb ? '' : '. Fine for one node; use Supabase for anything shared.'), isSb ? '' : 'SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY')}
     ${row('NVD CVE API', h.intel.nvd_key ? true : 'warn', h.intel.nvd_key ? 'API key set: 50 requests per 30 s.' : 'No key: NVD allows 5 requests per 30 s, so sync is slow.', 'NVD_API_KEY')}
     ${row('IP reputation', h.intel.reputation ? true : 'warn', h.intel.reputation ? `Checked live against ${esc((h.intel.sources || []).join(', '))}.${h.intel.abuseipdb ? '' : ' Add an AbuseIPDB key for community report counts.'}` : 'Off (AEGIS_INTEL=off).', 'ABUSEIPDB_API_KEY (optional)')}
-    ${row('abuse.ch feeds', h.intel.feeds ? true : 'warn', h.intel.feeds ? `ThreatFox, URLhaus, MalwareBazaar, Feodo Tracker and SSLBL bulk exports, refreshed hourly.${h.intel.abusech_key ? ' Auth key set: any hash or host can also be queried live.' : ' Add an abuse.ch Auth-Key to query any hash or host live, not only the exported ones.'}` : 'Off (AEGIS_INTEL=off).', 'ABUSECH_AUTH_KEY (optional)')}
+    ${row('abuse.ch feeds', h.intel.feeds ? true : 'warn', h.intel.feeds ? `ThreatFox, URLhaus, MalwareBazaar, Feodo Tracker and SSLBL bulk exports, refreshed hourly.${h.intel.abusech_key ? ' Auth key set: any hash or host can also be queried live.' : ' Paste an abuse.ch Auth-Key under Threat intel keys to unlock keyed exports and live lookups.'}` : 'Off (AEGIS_INTEL=off).', 'ABUSECH_AUTH_KEY or Settings → Threat intel keys')}
     ${row('MISP', h.intel.feeds ? true : 'warn', h.intel.misp_own ? 'Your MISP instance plus the botvrij.eu OSINT feed.' : 'botvrij.eu OSINT feed (public MISP feed). Point Aegis at your own instance to search it too.', 'MISP_URL, MISP_KEY (optional)')}
     ${row('RDAP, RIPEstat, passive DNS', h.intel.feeds ? true : 'warn', h.intel.feeds ? 'Registration owner and domain age from the registries, BGP origin from RIPEstat, resolution history from Mnemonic, certificates from crt.sh. No keys needed.' : 'Off (AEGIS_INTEL=off).', '')}
-    ${row('VirusTotal', h.intel.vt_key ? true : 'warn', h.intel.vt_key ? 'Key set. Free tier: 4 lookups a minute, 500 a day; results are cached for 12 hours.' : 'Off. A free key from virustotal.com adds 70+ engine verdicts to every lookup.', 'VT_API_KEY')}
+    ${row('VirusTotal', h.intel.vt_key ? true : 'warn', h.intel.vt_key ? 'Key set. Free tier: 4 lookups a minute, 500 a day; results are cached for 12 hours.' : 'Off. Paste a free key under Threat intel keys above, or set VT_API_KEY, to add 70+ engine verdicts to every lookup.', h.intel.vt_key ? '' : 'VT_API_KEY or Settings → Threat intel keys')}
     ${row('SigmaHQ rules', h.sigma && h.sigma.loaded ? true : h.sigma && h.sigma.enabled ? 'warn' : false, h.sigma && h.sigma.loaded ? `${num(h.sigma.rules)} rules from release ${esc(h.sigma.version || '')} run on every log batch. Tune them under Threat intel, Feeds & Sigma.` : h.sigma && h.sigma.enabled ? (h.sigma.error ? `Download failed: ${esc(h.sigma.error)}` : 'Loads from GitHub on first use (about 3 MB).') : 'Off on this server.', 'AEGIS_SIGMA=on | off')}
     ${row(`Language model${h.engine.llm ? `: ${esc(h.engine.provider)}` : ''}`, h.engine.llm ? true : 'warn', h.engine.llm ? `Model ${esc(h.engine.model)}${h.engine.source === 'settings' ? ', connected under Settings' : ', server default'}. Drives LLM investigations and the Assistant.` : 'Off. The rule-based playbook handles every run and the Assistant is unavailable. An administrator can connect OpenAI, Gemini, Anthropic, Groq, OpenRouter, Mistral, DeepSeek or any OpenAI-compatible API with their own key under Language model.', 'Settings, Language model (or GROQ_API_KEY)')}
-    ${row('AlienVault OTX', h.intel.otx_key ? true : h.intel.otx ? true : 'warn', h.intel.otx_key ? 'Key set. Pulses, related malware families and adversaries are added to every lookup.' : h.intel.otx ? 'Public indicator API, no key: pulse counts and families for IPs, domains, URLs and hashes.' : 'Off.', 'OTX_API_KEY (optional, raises rate limits)')}
-    ${row('Hybrid Analysis', h.intel.ha_key ? true : 'warn', h.intel.ha_key ? 'Key set. Sandbox verdicts and threat scores for file hashes.' : 'Off. A free key from hybrid-analysis.com adds sandbox reports for hashes.', 'HYBRID_ANALYSIS_API_KEY')}
+    ${row('AlienVault OTX', h.intel.otx_key ? true : h.intel.otx ? true : 'warn', h.intel.otx_key ? 'Key set. Pulses, related malware families and adversaries are added to every lookup.' : h.intel.otx ? 'Public indicator API, no key: pulse counts and families for IPs, domains, URLs and hashes.' : 'Off.', 'OTX_API_KEY or Settings → Threat intel keys')}
+    ${row('Hybrid Analysis', h.intel.ha_key ? true : 'warn', h.intel.ha_key ? 'Key set. Sandbox verdicts and threat scores for file hashes.' : 'Off. Paste a free key under Threat intel keys above, or set HYBRID_ANALYSIS_API_KEY, for sandbox reports.', 'HYBRID_ANALYSIS_API_KEY or Settings → Threat intel keys')}
     ${row('Jira', h.integrations && h.integrations.jira ? true : 'warn', h.integrations && h.integrations.jira ? 'Cases can be pushed to Jira and their status synced back.' : 'Off. Set all four to raise Jira issues from a case.', 'JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT')}
     ${row('PagerDuty', true, 'Add a PagerDuty channel under Notifications with an Events API v2 integration key. Repeats of the same alert collapse into one incident.', '')}
     ${h.workbench_migration ? row('Workbench tables', false, `The ${esc(h.workbench_migration)} migration is not applied. Assistant, workflows, documents, decisions and custom detections are disabled until it is.`, 'supabase db push') : ''}

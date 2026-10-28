@@ -55,18 +55,36 @@ function parseThreatFox(body) {
   return { ip, domain, url, urlHost, hash, rows, newest };
 }
 
-// URLhaus csv_online: id, dateadded, url, url_status, last_online, threat, tags, urlhaus_link, reporter
+// The keyed v2 exports may arrive zipped or as plain CSV.
+function csvText(body) {
+  if (Buffer.isBuffer(body) && body[0] === 0x50 && body[1] === 0x4b) {
+    const entries = unzip(body);
+    const entry = entries.find((e) => /\.(csv|txt)$/i.test(e.name)) || entries[0];
+    if (!entry) throw new Error('empty archive');
+    return entry.data().toString('utf8');
+  }
+  return textOf(body);
+}
+
+// URLhaus: id, dateadded, url, url_status, last_online, threat, tags, urlhaus_link, reporter.
+// Rows in another layout still count by their URL column.
 function parseUrlhaus(body) {
   const url = new Map(); const host = new Map();
   let rows = 0; let newest = null;
-  eachCsvRow(textOf(body), (r) => {
-    if (r.length < 8 || !/^\w+:\/\//.test(r[2] || '')) return;
-    const rec = { id: r[0], added: r[1], url: r[2], status: r[3], last_online: clean(r[4]), threat: clean(r[5]), tags: tagList(r[6]), link: clean(r[7]), reporter: clean(r[8]) };
+  eachCsvRow(csvText(body), (r) => {
+    let rec;
+    if (r.length >= 8 && /^\w+:\/\//.test(r[2] || '')) {
+      rec = { id: r[0], added: r[1], url: r[2], status: r[3], last_online: clean(r[4]), threat: clean(r[5]), tags: tagList(r[6]), link: clean(r[7]), reporter: clean(r[8]) };
+    } else {
+      const i = r.findIndex((v) => /^https?:\/\//i.test(v || ''));
+      if (i < 0) return;
+      rec = { id: null, added: r.find((v) => /^\d{4}-\d{2}-\d{2}/.test(v || '')) || null, url: r[i], status: r.find((v) => /^(online|offline)$/i.test(v || '')) || null, last_online: null, threat: null, tags: [], link: r.find((v, j) => j !== i && /urlhaus\.abuse\.ch\/url\//.test(v || '')) || null, reporter: null };
+    }
     rows += 1;
-    url.set(r[2], rec);
-    const h = hostOf(r[2]);
+    url.set(rec.url, rec);
+    const h = hostOf(rec.url);
     if (h) addTo(host, h, rec, 15);
-    if (!newest || rec.added > newest.added) newest = rec;
+    if (!newest || String(rec.added) > String(newest.added)) newest = rec;
   });
   return { url, host, rows, newest };
 }
@@ -75,7 +93,7 @@ function parseUrlhaus(body) {
 function parseBazaar(body) {
   const hash = new Map();
   let rows = 0; let newest = null;
-  eachCsvRow(textOf(body), (r) => {
+  eachCsvRow(csvText(body), (r) => {
     if (r.length < 9 || !/^[a-f0-9]{64}$/i.test(r[1] || '')) return;
     const rec = { first_seen: r[0], sha256: r[1].toLowerCase(), md5: clean(r[2]), sha1: clean(r[3]), reporter: clean(r[4]), file_name: clean(r[5]), file_type: clean(r[6]), mime: clean(r[7]), signature: clean(r[8]), clamav: clean(r[9]), vt_percent: clean(r[10]) };
     rows += 1;
@@ -109,14 +127,20 @@ function parseJa3(body) {
   return { ja3, rows: ja3.size };
 }
 
+// ThreatFox, URLhaus and MalwareBazaar retired their keyless downloads (HTTP 410)
+// in favour of v2 exports with the Auth-Key in the path. Feodo Tracker and SSLBL
+// are still public. `files` are tried in order; the key never appears in `url`,
+// which is what the console shows.
+const v2 = (host) => `https://${host}/v2/files/exports`;
 const FEEDS = {
-  threatfox: { id: 'threatfox', name: 'ThreatFox IOC database', provider: 'ThreatFox', url: 'https://threatfox.abuse.ch/export/csv/full/', binary: true, ttl: 3 * HOUR, timeoutMs: 60000, parse: parseThreatFox, size: (d) => d.rows, note: 'C2 servers, payload hosts and malware hashes shared by researchers' },
-  urlhaus: { id: 'urlhaus', name: 'URLhaus online URLs', provider: 'URLhaus', url: 'https://urlhaus.abuse.ch/downloads/csv_online/', ttl: HOUR, timeoutMs: 45000, parse: parseUrlhaus, size: (d) => d.rows, note: 'Malware distribution URLs that are live right now' },
-  bazaar: { id: 'bazaar', name: 'MalwareBazaar recent samples', provider: 'MalwareBazaar', url: 'https://bazaar.abuse.ch/export/csv/recent/', ttl: HOUR, timeoutMs: 30000, parse: parseBazaar, size: (d) => d.rows, note: 'Newest submissions; set ABUSECH_AUTH_KEY to look up any sample' },
+  threatfox: { id: 'threatfox', name: 'ThreatFox IOC database', provider: 'ThreatFox', auth: true, base: v2('threatfox-api.abuse.ch'), files: ['full.csv.zip', 'recent.csv'], url: `${v2('threatfox-api.abuse.ch')}/<auth-key>/full.csv.zip`, binary: true, ttl: 3 * HOUR, timeoutMs: 90000, parse: parseThreatFox, size: (d) => d.rows, note: 'C2 servers, payload hosts and malware hashes shared by researchers' },
+  urlhaus: { id: 'urlhaus', name: 'URLhaus malware URLs', provider: 'URLhaus', auth: true, base: v2('urlhaus-api.abuse.ch'), files: ['online.csv', 'recent.csv'], url: `${v2('urlhaus-api.abuse.ch')}/<auth-key>/online.csv`, binary: true, ttl: HOUR, timeoutMs: 60000, parse: parseUrlhaus, size: (d) => d.rows, note: 'Malware distribution URLs, refreshed every 5 minutes by abuse.ch' },
+  bazaar: { id: 'bazaar', name: 'MalwareBazaar recent samples', provider: 'MalwareBazaar', auth: true, base: v2('mb-api.abuse.ch'), files: ['recent.csv'], url: `${v2('mb-api.abuse.ch')}/<auth-key>/recent.csv`, binary: true, ttl: HOUR, timeoutMs: 45000, parse: parseBazaar, size: (d) => d.rows, note: 'Newest submissions; any other sample is looked up live through the API' },
   feodo: { id: 'feodo', name: 'Feodo Tracker C2 list', provider: 'Feodo Tracker', url: 'https://feodotracker.abuse.ch/downloads/ipblocklist.json', ttl: HOUR, timeoutMs: 20000, parse: parseFeodo, size: (d) => d.rows, note: 'Botnet C2 servers for QakBot, Emotet, Pikabot and similar' },
   sslbl: { id: 'sslbl', name: 'SSLBL certificate blacklist', provider: 'SSLBL', url: 'https://sslbl.abuse.ch/blacklist/sslblacklist.csv', ttl: 6 * HOUR, timeoutMs: 30000, parse: parseSslbl, size: (d) => d.rows, note: 'SHA1 of TLS certificates used by malware C2' },
   ja3: { id: 'ja3', name: 'SSLBL JA3 fingerprints', provider: 'SSLBL', url: 'https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv', ttl: 24 * HOUR, timeoutMs: 20000, parse: parseJa3, size: (d) => d.rows, note: 'TLS client fingerprints of malware; no longer updated by abuse.ch' }
 };
+const NEEDS_KEY = 'needs an abuse.ch Auth-Key (free at auth.abuse.ch), set it under Settings, Threat intel keys';
 
 const NEEDS = {
   ipv4: ['feodo', 'threatfox', 'urlhaus'], ipv6: ['threatfox', 'urlhaus'],
@@ -159,18 +183,37 @@ class AbuseCh {
 
   get available() { return !this.offline; }
 
-  describe() {
-    return { auth_key: Boolean(this.authKey), feeds: Object.values(FEEDS).map((f) => this.cache.status(f)) };
+  // Swaps the Auth-Key at runtime (Settings). Keyed feeds and API answers made
+  // with the old key are dropped so the next lookup uses the new one.
+  setKey(key) {
+    const k = key ? String(key).trim() : null;
+    if (k === this.authKey) return false;
+    this.authKey = k;
+    for (const f of Object.values(FEEDS)) if (f.auth) this.cache.forget(f.id);
+    this.api = new TtlCache(1000, 6 * HOUR);
+    return true;
   }
 
-  refresh() { return Promise.all(Object.values(FEEDS).map((f) => this.cache.load(f, { force: true }))); }
+  // The feed definition with this deployment's key filled in.
+  feed(id) {
+    const f = FEEDS[id];
+    if (!f.auth) return f;
+    if (!this.authKey) return { ...f, unavailable: NEEDS_KEY };
+    return { ...f, urls: f.files.map((name) => `${f.base}/${encodeURIComponent(this.authKey)}/${name}`), authError: 'abuse.ch rejected the Auth-Key; check it at auth.abuse.ch' };
+  }
+
+  describe() {
+    return { auth_key: Boolean(this.authKey), feeds: Object.values(FEEDS).map((f) => ({ ...this.cache.status(f), needs_key: Boolean(f.auth && !this.authKey), error: f.auth && !this.authKey ? NEEDS_KEY : this.cache.status(f).error })) };
+  }
+
+  refresh() { return Promise.all(Object.keys(FEEDS).filter((id) => !FEEDS[id].auth || this.authKey).map((id) => this.cache.load(this.feed(id), { force: true }))); }
 
   // Loads the light feeds now so the first lookup is not the one paying for downloads.
-  warm() { if (!this.offline) for (const id of ['feodo', 'bazaar', 'urlhaus', 'threatfox']) this.cache.load(FEEDS[id]).catch(() => {}); }
+  warm() { if (!this.offline) for (const id of ['feodo', 'bazaar', 'urlhaus', 'threatfox']) if (!FEEDS[id].auth || this.authKey) this.cache.load(this.feed(id)).catch(() => {}); }
 
   // The newest real entry from each feed, used as one-click examples in the console.
   async samples() {
-    const [tf, uh, mb, fe] = await Promise.all(['threatfox', 'urlhaus', 'bazaar', 'feodo'].map((id) => this.cache.within(FEEDS[id], 1500)));
+    const [tf, uh, mb, fe] = await Promise.all(['threatfox', 'urlhaus', 'bazaar', 'feodo'].map((id) => (FEEDS[id].auth && !this.authKey ? { data: null } : this.cache.within(this.feed(id), 1500))));
     const out = [];
     const c2 = fe.data && (fe.data.list.find((e) => e.status === 'online') || fe.data.list[0]);
     if (c2) out.push({ type: 'ipv4', value: c2.ip, label: `${c2.malware || 'Botnet'} C2`, source: 'Feodo Tracker' });
@@ -182,10 +225,13 @@ class AbuseCh {
   }
 
   async lookup(ind, { budgetMs = 15000 } = {}) {
-    const out = { hits: [], ok: [], failed: [], pending: [] };
+    const out = { hits: [], ok: [], failed: [], pending: [], skipped: [] };
     if (this.offline) return { ...out, skipped: true };
-    const need = NEEDS[ind.type] || [];
-    const recs = await Promise.all(need.map((id) => this.cache.within(FEEDS[id], budgetMs)));
+    // Keyed feeds without a key are reported as skipped, not as failures.
+    const all = NEEDS[ind.type] || [];
+    for (const id of all) if (FEEDS[id].auth && !this.authKey && !out.skipped.includes(FEEDS[id].provider)) out.skipped.push(FEEDS[id].provider);
+    const need = all.filter((id) => !FEEDS[id].auth || this.authKey);
+    const recs = await Promise.all(need.map((id) => this.cache.within(this.feed(id), budgetMs)));
     const d = {};
     need.forEach((id, i) => {
       const prov = FEEDS[id].provider;

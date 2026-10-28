@@ -28,7 +28,11 @@ class IntelHub {
     this.otx = otx;
     this.ha = ha;
     this.offline = offline;
+    // Set by IntelKeys: loads keys saved under Settings before a lookup.
+    this.beforeUse = null;
   }
+
+  async ready() { if (this.beforeUse) { try { await this.beforeUse(); } catch { /* keep the keys we have */ } } }
 
   get available() { return !this.offline; }
 
@@ -49,9 +53,10 @@ class IntelHub {
   // Forces a fresh download of every feed. A feed that fails keeps its last good copy.
   async refresh() {
     if (this.offline) return { ok: [], failed: [] };
+    await this.ready();
     const r = await Promise.allSettled([this.abusech.refresh(), this.misp.refresh()]);
     const failed = [];
-    for (const f of [...this.abusech.describe().feeds, ...this.misp.describe().feeds]) if (f.error) failed.push({ source: f.name, error: f.error });
+    for (const f of [...this.abusech.describe().feeds, ...this.misp.describe().feeds]) if (f.error && !f.needs_key) failed.push({ source: f.name, error: f.error });
     return { ok: r.filter((x) => x.status === 'fulfilled').length, failed };
   }
 
@@ -60,6 +65,7 @@ class IntelHub {
   async ipHits(ip, budgetMs = 5000) {
     const ind = classify(ip);
     if (!ind || this.offline) return { hits: [], ok: [], failed: [], pending: [] };
+    await this.ready();
     const [a, m] = await Promise.all([this.abusech.lookup(ind, { budgetMs }), this.misp.lookup(ind, { budgetMs })]);
     return { hits: [...a.hits, ...m.hits], ok: [...a.ok, ...m.ok], failed: [...a.failed, ...m.failed], pending: [...a.pending, ...m.pending] };
   }
@@ -70,18 +76,19 @@ class IntelHub {
     const base = { query: String(query).trim(), indicator: ind, checked_at: new Date().toISOString() };
     if (isIpType(ind.type) && isInternal(ind.value)) return { ...base, verdict: 'internal', score: null, signals: [], hits: [], sources_ok: [], sources_failed: [], pending: [] };
     if (this.offline) return { ...base, verdict: 'unknown', score: null, skipped: true, reason: 'Threat intel disabled (AEGIS_INTEL=off)', signals: [], hits: [], sources_ok: [], sources_failed: [], pending: [] };
+    await this.ready();
 
-    const ok = []; const failed = []; const pending = [];
+    const ok = []; const failed = []; const pending = []; const skipped = [];
     const run = async (name, fn) => {
       try {
         const v = await fn();
-        if (v && v.skipped) return v;
+        if (v && v.skipped) { skipped.push({ source: name, reason: v.reason || 'not configured' }); return v; }
         if (v && v.error) { failed.push({ source: name, error: v.error }); return v; }
         ok.push(name);
         return v;
       } catch (err) { failed.push({ source: name, error: errText(err) }); return null; }
     };
-    const merge = (r) => { if (!r) return []; ok.push(...r.ok); failed.push(...r.failed); pending.push(...r.pending); return r.hits; };
+    const merge = (r) => { if (!r) return []; ok.push(...r.ok); failed.push(...r.failed); pending.push(...r.pending); if (Array.isArray(r.skipped)) for (const s of r.skipped) skipped.push({ source: s, reason: 'needs an abuse.ch Auth-Key' }); return r.hits; };
     const t = ind.type;
     const host = t === 'url' ? ind.host : t === 'domain' ? ind.value : null;
     const hostInd = host ? classify(host) : null;
@@ -161,7 +168,7 @@ class IntelHub {
       ...base, verdict, score, summary, c2: Boolean(c2), families, signals: signals.sort((a, b) => (b.score ?? -1) - (a.score ?? -1)), hits,
       reputation: rep ? { verdict: rep.verdict, score: rep.score, listed: rep.listed, greynoise: rep.greynoise, shodan: rep.shodan, geo: rep.geo, abuseipdb: rep.abuseipdb, cached: rep.cached || false } : null,
       virustotal: r.vt || null, otx: r.otx || null, hybrid: r.ha || null, whois: r.rdap || null, bgp: r.bgp || null, pdns: r.pdns || null, certs: r.certs || null,
-      sources_ok: [...new Set(ok)], sources_failed: failed, pending: [...new Set(pending)]
+      sources_ok: [...new Set(ok)], sources_failed: failed, sources_skipped: skipped, pending: [...new Set(pending)]
     };
   }
 }
@@ -174,7 +181,7 @@ function createHub({ env = process.env, reputation = null, fetchImpl = globalThi
     abusech: new AbuseCh({ fetchImpl, offline: off, authKey: env.ABUSECH_AUTH_KEY }),
     misp: new Misp({ fetchImpl, offline: off, url: env.MISP_URL, key: env.MISP_KEY }),
     whois: new Whois({ fetchImpl, offline: off }),
-    vt: new VirusTotal({ apiKey: env.VT_API_KEY, fetchImpl, offline: off }),
+    vt: new VirusTotal({ apiKey: env.VT_API_KEY, fetchImpl, offline: off, perMinute: Math.max(1, Number(env.VT_RATE_PER_MIN) || 4) }),
     otx: new Otx({ apiKey: env.OTX_API_KEY, fetchImpl, offline: off }),
     ha: new HybridAnalysis({ apiKey: env.HYBRID_ANALYSIS_API_KEY, fetchImpl, offline: off })
   });

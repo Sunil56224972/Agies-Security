@@ -113,14 +113,25 @@ class FeedCache {
     const p = (async () => {
       const t0 = Date.now();
       try {
+        if (def.unavailable) throw new Error(def.unavailable);
+        // def.urls lists candidates in order of preference; a 404 moves on to the next one.
+        const urls = Array.isArray(def.urls) && def.urls.length ? def.urls : [def.url];
+        const get = async (url) => {
+          try { return await httpGet(this.fetch, url, { timeoutMs: def.timeoutMs || 30000, headers: def.headers }); }
+          catch (err) {
+            // One retry for a dropped connection; a timeout already waited long enough.
+            if (err && err.name === 'TimeoutError') throw err;
+            await new Promise((r) => setTimeout(r, 1500));
+            return httpGet(this.fetch, url, { timeoutMs: def.timeoutMs || 30000, headers: def.headers });
+          }
+        };
         let res;
-        try { res = await httpGet(this.fetch, def.url, { timeoutMs: def.timeoutMs || 30000, headers: def.headers }); }
-        catch (err) {
-          // One retry for a dropped connection; a timeout already waited long enough.
-          if (err && err.name === 'TimeoutError') throw err;
-          await new Promise((r) => setTimeout(r, 1500));
-          res = await httpGet(this.fetch, def.url, { timeoutMs: def.timeoutMs || 30000, headers: def.headers });
+        for (let i = 0; i < urls.length; i++) {
+          res = await get(urls[i]);
+          if (res.status !== 404 || i === urls.length - 1) break;
         }
+        if (res.status === 401 || res.status === 403) throw new Error(def.authError || `HTTP ${res.status}: access refused`);
+        if (res.status === 410) throw new Error('HTTP 410: the provider retired this download');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = def.binary ? Buffer.from(await res.arrayBuffer()) : await res.text();
         const data = def.parse(body);
@@ -149,6 +160,9 @@ class FeedCache {
     const late = new Promise((resolve) => { timer = setTimeout(() => resolve({ data: null, loading: true, error: 'still downloading, ask again in a few seconds' }), budgetMs); });
     try { return await Promise.race([p, late]); } finally { clearTimeout(timer); }
   }
+
+  // Drops what is known about a feed, e.g. after its credentials change.
+  forget(id) { this.state.delete(id); }
 
   status(def) {
     const s = this.state.get(def.id);

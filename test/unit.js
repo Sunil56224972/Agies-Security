@@ -412,8 +412,8 @@ test('cases: kill-chain checklist follows the evidence', () => {
 test('intel hub: one lookup folds abuse.ch, RDAP and passive DNS into a verdict', async () => {
   const today = new Date(Date.now() - 5 * 86400000).toISOString();
   const routes = [
-    [/threatfox\.abuse\.ch/, () => makeZip([['full.csv', TF_CSV]])],
-    [/urlhaus\.abuse\.ch/, () => '# none\n'],
+    [/threatfox.*\.abuse\.ch/, () => makeZip([['full.csv', TF_CSV]])],
+    [/urlhaus.*\.abuse\.ch/, () => '# none\n'],
     [/data\.iana\.org\/rdap\/dns\.json/, () => JSON.stringify({ services: [[['org'], ['https://rdap.example-registry.test/']]] })],
     [/rdap\.example-registry\.test\/domain\//, () => JSON.stringify({ ldhName: '88mdc.org', events: [{ eventAction: 'registration', eventDate: today }], entities: [{ roles: ['registrar'], vcardArray: ['vcard', [['fn', {}, 'text', 'Test Registrar']]] }] })],
     [/api\.mnemonic\.no/, () => JSON.stringify({ count: 1, data: [{ query: 'n.88mdc.org', answer: '203.0.113.9', rrtype: 'a', times: 3, firstSeenTimestamp: Date.now() - 86400000, lastSeenTimestamp: Date.now() }] })],
@@ -427,7 +427,7 @@ test('intel hub: one lookup folds abuse.ch, RDAP and passive DNS into a verdict'
     const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
     return { ok: true, status: 200, text: async () => buf.toString(), json: async () => JSON.parse(buf.toString()), arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) };
   };
-  const hub = createHub({ env: {}, fetchImpl, offline: false });
+  const hub = createHub({ env: { ABUSECH_AUTH_KEY: 'test-key' }, fetchImpl, offline: false });
   const r = await hub.lookup('hxxp://n.88mdc[.]org/gate');
   assert.strictEqual(r.indicator.type, 'url');
   assert.strictEqual(r.verdict, 'malicious');

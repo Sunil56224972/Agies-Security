@@ -19,6 +19,7 @@ const { registerWorkbench } = require('./workbench');
 const { registerLlm } = require('./llm-routes');
 const { registerOauth } = require('./oauth');
 const { CustomRules } = require('./engine/customrules');
+const { IntelKeys, registerIntelKeys } = require('./intel/keys');
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
@@ -62,6 +63,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   hub = hub || createHub({ env, reputation, offline: !online });
   sigma = sigma || new SigmaEngine({ offline: !online || /^(0|off|false|no)$/i.test(String(env.AEGIS_SIGMA || '')), url: env.SIGMA_RULES_URL || undefined });
   const secret = auth.loadSecret(env);
+  const intelKeys = new IntelKeys({ store, secret, env, hub, reputation, fetchImpl: globalThis.fetch });
   const investigator = new Investigator(store, { groqKey: env.GROQ_API_KEY, model: env.GROQ_MODEL, secret, enforcer, nvd, reputation, hub });
   const secureCookie = /^(1|true|yes)$/i.test(String(env.COOKIE_SECURE || ''));
   const app = express();
@@ -256,7 +258,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   investigator.approvals = approvals;
   const customRules = new CustomRules(store);
   const hunter = new HuntEngine(store, { sigma, reputation, hub, custom: customRules });
-  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, secret, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, customRules, bootedAt: Date.now() };
+  const ctx = { store, investigator, enforcer, nvd, reputation, kev, hub, sigma, demo, warnings, env, secret, wrap, bad, need, requireKey, actor, notifier, approvals, hunter, customRules, intelKeys, bootedAt: Date.now() };
   ctx.oauth = registerOauth(app, ctx);
   const jobs = registerRoutes(app, ctx);
   const casework = registerCasework(app, ctx);
@@ -264,6 +266,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   const cases = registerCases(app, ctx);
   registerWorkbench(app, ctx, cases);
   registerLlm(app, ctx);
+  registerIntelKeys(app, ctx);
   registerMcp(app, ctx, cases);
   investigator.onVerdict = casework.onVerdict;
 
@@ -284,7 +287,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
     res.status(500).json({ error: env.NODE_ENV === 'production' ? 'Internal error' : err.message || 'Internal error' });
   });
 
-  return { app, investigator, jobs, notifier, hub, sigma, approvals, cases };
+  return { app, investigator, jobs, notifier, hub, sigma, approvals, cases, intelKeys };
 }
 
 module.exports = { createApp };

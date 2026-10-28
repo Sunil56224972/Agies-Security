@@ -19,6 +19,7 @@ class HybridAnalysis {
   get available() { return Boolean(this.key) && !this.offline; }
   supports(type) { return HASHES.includes(type); }
   describe() { return { configured: Boolean(this.key) }; }
+  setKey(key) { const k = key ? String(key).trim() : null; if (k === this.key) return false; this.key = k; return true; }
 
   async lookup(ind) {
     if (!this.key) return { skipped: true, reason: 'Add HYBRID_ANALYSIS_API_KEY (free at hybrid-analysis.com) for sandbox verdicts' };

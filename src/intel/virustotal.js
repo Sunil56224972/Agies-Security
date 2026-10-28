@@ -24,6 +24,16 @@ class VirusTotal {
   supports(type) { return Boolean(PATH[type]); }
   describe() { return { configured: Boolean(this.key), used_today: this.used.day === new Date().toISOString().slice(0, 10) ? this.used.n : 0, per_minute: this.perMinute }; }
 
+  // Swaps the key at runtime (Settings). Answers cached under the old key are kept
+  // only if they came from VirusTotal itself, which they did, so the cache stays.
+  setKey(key) {
+    const k = key ? String(key).trim() : null;
+    if (k === this.key) return false;
+    this.key = k;
+    this.calls = [];
+    return true;
+  }
+
   // Waits for a free slot in the per-minute window, at most maxWaitMs.
   async slot(maxWaitMs) {
     const now = Date.now();
@@ -36,7 +46,7 @@ class VirusTotal {
   }
 
   async lookup(ind, { maxWaitMs = 8000 } = {}) {
-    if (!this.key) return { skipped: true, reason: 'Add VT_API_KEY (free at virustotal.com) to include 70+ engine verdicts' };
+    if (!this.key) return { skipped: true, reason: 'Not connected: add a VirusTotal API key under Settings, Threat intel keys (or VT_API_KEY) for 70+ engine verdicts' };
     if (this.offline) return { skipped: true, reason: 'Threat intel disabled (AEGIS_INTEL=off)' };
     const path = PATH[ind.type];
     if (!path) return { skipped: true, reason: `VirusTotal does not cover ${ind.type}` };
@@ -44,7 +54,7 @@ class VirusTotal {
     const key = `${path}/${id}`;
     const have = this.cache.get(key);
     if (have) return { ...have, cached: true };
-    if (!(await this.slot(maxWaitMs))) return { error: 'free-tier limit of 4 lookups a minute reached, try again shortly', rate_limited: true };
+    if (!(await this.slot(maxWaitMs))) return { error: `VirusTotal limit of ${this.perMinute} lookups a minute reached, try again shortly (raise VT_RATE_PER_MIN on a premium key)`, rate_limited: true };
     const today = new Date().toISOString().slice(0, 10);
     if (this.used.day !== today) this.used = { day: today, n: 0 };
     this.used.n += 1;

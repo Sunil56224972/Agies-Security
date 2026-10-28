@@ -179,15 +179,34 @@ class Whois {
     const have = this.cache.get(key);
     if (have) return { ...have, cached: true };
     if (this.offline) return { skipped: true, reason: 'Threat intel disabled (AEGIS_INTEL=off)' };
-    const res = await httpGet(this.fetch, `https://crt.sh/?q=${encodeURIComponent(domain)}&output=json&exclude=expired`, { timeoutMs: 8000, headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`crt.sh HTTP ${res.status}`);
-    const list = JSON.parse((await res.text()) || '[]');
+    // crt.sh is free but often answers 502/503 under load: retry once, then ask
+    // SSLMate Cert Spotter, which reads the same CT logs.
+    let list = null; let source = 'crt.sh'; let lastErr = null;
+    for (let attempt = 0; attempt < 2 && !list; attempt++) {
+      try {
+        const res = await httpGet(this.fetch, `https://crt.sh/?q=${encodeURIComponent(domain)}&output=json&exclude=expired`, { timeoutMs: 10000, headers: { Accept: 'application/json' } });
+        if (res.ok) { list = JSON.parse((await res.text()) || '[]'); break; }
+        lastErr = new Error(`crt.sh HTTP ${res.status}`);
+        if (res.status < 500 && res.status !== 429) break;
+      } catch (err) { lastErr = err; }
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 800));
+    }
+    if (!list) {
+      try {
+        const res = await httpGet(this.fetch, `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer`, { timeoutMs: 10000, headers: { Accept: 'application/json' } });
+        if (!res.ok) throw new Error(`Cert Spotter HTTP ${res.status}`);
+        list = (await res.json()).map((c) => ({ not_before: c.not_before, name_value: (c.dns_names || []).join('\n'), issuer_name: c.issuer ? `O=${c.issuer.friendly_name || (String(c.issuer.name || '').match(/O=([^,]+)/) || [])[1] || 'unknown'}` : '' }));
+        source = 'Cert Spotter';
+      } catch (err) {
+        throw new Error(`${errText(lastErr)}; fallback ${errText(err)}`);
+      }
+    }
     const issued = list.map((c) => c.not_before).filter(Boolean).sort();
     const names = new Set();
     for (const c of list) for (const n of String(c.name_value || '').split('\n')) if (n && names.size < 30) names.add(n.toLowerCase());
     const issuers = {};
     for (const c of list) { const m = String(c.issuer_name || '').match(/O=([^,]+)/); if (m) issuers[m[1]] = (issuers[m[1]] || 0) + 1; }
-    return this.cache.set(key, { domain, certificates: list.length, first_issued: issued[0] || null, last_issued: issued[issued.length - 1] || null, names: [...names], issuers: Object.entries(issuers).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k) });
+    return this.cache.set(key, { domain, source, certificates: list.length, first_issued: issued[0] || null, last_issued: issued[issued.length - 1] || null, names: [...names], issuers: Object.entries(issuers).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k) });
   }
 }
 

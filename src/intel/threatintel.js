@@ -81,6 +81,15 @@ class ThreatIntel {
   // abuse.ch and MISP feed matches (src/intel/hub.js) count towards every IP verdict.
   attachFeeds(hub) { this.feeds = hub; }
 
+  // Swaps the AbuseIPDB key at runtime (Settings); cached verdicts made without it are dropped.
+  setAbuseKey(key) {
+    const k = key ? String(key).trim() : null;
+    if (k === (this.abuse ? this.abuse.apiKey : null)) return false;
+    this.abuse = k ? new Reputation({ apiKey: k, fetchImpl: this.fetch }) : null;
+    this.cache.clear();
+    return true;
+  }
+
   // Public sources need no key, so reputation is on unless explicitly disabled.
   get available() { return !this.offline; }
 
@@ -135,6 +144,7 @@ class ThreatIntel {
   async check(ipIn) {
     const ip = String(ipIn || '').trim().toLowerCase();
     if (!net.isIP(ip)) throw new Error('Not an IP address');
+    if (this.beforeUse) { try { await this.beforeUse(); } catch { /* keep the keys we have */ } }
     if (isInternal(ip)) return { ip, skipped: true, reason: 'Internal address' };
     if (this.offline) return { ip, skipped: true, reason: 'Threat intel disabled (AEGIS_INTEL=off)' };
     const hit = this.cache.get(ip);
