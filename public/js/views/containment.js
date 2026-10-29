@@ -55,7 +55,7 @@ export async function render({ el, navigate, query }) {
             <div class="mt-12 stack" style="gap:6px">
               <div class="secret"><code>${esc(location.origin)}/api/feeds/blocklist.txt</code><button class="btn btn--sm btn--ghost" data-copy="${esc(location.origin)}/api/feeds/blocklist.txt">Copy</button></div>
               <div class="secret"><code>${esc(location.origin)}/api/feeds/isolate.txt</code><button class="btn btn--sm btn--ghost" data-copy="${esc(location.origin)}/api/feeds/isolate.txt">Copy</button></div>
-              <span class="small muted">Authenticate with an API key that has the <code>feed</code> scope (Bearer, or Basic with the key as password).</span>
+              <span class="small muted">Authenticate with an API key that has the <code>feed</code> scope (Bearer, Basic with the key as password, or <code>?key=aeg_...</code> for URL tables).</span>
             </div>` : ''}
             ${mode.warning ? `<div class="notice notice--warn mt-12">${icon('alert')}<div class="small">${esc(mode.warning)}</div></div>` : ''}
           </div>

@@ -565,7 +565,7 @@ function showKey(m, rec) {
     snippets.push(['Send host logs', `curl -sS -X POST "${o}/api/ingest/logs?host_ip=10.0.0.5" \\\n  -H "Authorization: Bearer ${rec.key}" -H "Content-Type: text/plain" \\\n  --data-binary @/var/log/nginx/access.log`]);
   }
   if (rec.scopes.includes('feed')) {
-    snippets.push(['Firewall feed URL (PAN-OS EDL, FortiGate threat feed, pfSense URL table)', `${o}/api/feeds/blocklist.txt\nAuth: Basic, any username, password = the key\n\ncurl -sS -H "Authorization: Bearer ${rec.key}" ${o}/api/feeds/blocklist.txt`]);
+    snippets.push(['Firewall feed URL (PAN-OS EDL, FortiGate threat feed, pfSense / OPNsense URL table)', `${o}/api/feeds/blocklist.txt\nAuth: Basic (any username, password = the key) or URL query ?key= for pfSense/OPNsense\n\n# pfSense / OPNsense URL Table (IPs):\n${o}/api/feeds/blocklist.txt?key=${rec.key}\n\n# curl / script:\ncurl -sS -H "Authorization: Bearer ${rec.key}" ${o}/api/feeds/blocklist.txt`]);
   }
   if (rec.scopes.includes('mcp') || rec.scopes.includes('mcp:write')) {
     snippets.push(['MCP client config (Claude Desktop, Cursor, VS Code): remote server', mcpRemote(o, rec.key)]);

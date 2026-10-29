@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { TOOL_DEFINITIONS } = require('./engine/tools');
-const { isIP, newId, exposureFor, SEVERITY_RANK } = require('./engine/analysis');
+const { isIP, isInternal, newId, exposureFor, SEVERITY_RANK } = require('./engine/analysis');
 const { normalizeAlert, normalizeLog, normalizeAsset, parseCsv, parseBatch } = require('./ingest/normalize');
 const { CVE_RE } = require('./intel/nvd');
 const { CLOSED_STATUSES } = require('./store/shared');
@@ -224,6 +224,7 @@ function registerRoutes(app, ctx) {
     const { target_ip, action, reason, ttl_hours } = req.body || {};
     if (!isIP(target_ip)) return bad(res, 'Enter a valid IP address');
     if (!['BLOCK', 'ISOLATE'].includes(action)) return bad(res, 'Action must be BLOCK or ISOLATE');
+    if (action === 'BLOCK' && isInternal(target_ip)) return bad(res, 'Blocking an internal address cuts off your own network; isolate the host instead');
     if (!reason || String(reason).trim().length < 4) return bad(res, 'Give a reason so the next shift knows why');
     const noTtl = ttl_hours === undefined || ttl_hours === null || ttl_hours === '' || Number(ttl_hours) === 0;
     if (!noTtl && !intIn(ttl_hours, 1, 8760)) return bad(res, 'Expiry must be 1-8760 hours, or empty for a permanent rule');
@@ -239,6 +240,7 @@ function registerRoutes(app, ctx) {
     if (!rule) return bad(res, 'Rule not found', 404);
     const activate = !rule.is_active;
     if (activate) {
+      if (rule.action === 'BLOCK' && isInternal(rule.target_ip)) return bad(res, 'Blocking an internal address cuts off your own network; isolate the host instead');
       const clash = (await store.rules.activeFor(rule.target_ip)).find((r) => r.action === rule.action);
       if (clash) return bad(res, `${rule.target_ip} already has an active ${rule.action} rule (${clash.rule_id})`, 409);
     }
@@ -663,10 +665,28 @@ function registerRoutes(app, ctx) {
   const feed = (action) => wrap(async (req, res) => {
     await expireRules();
     const at = new Date().toISOString();
-    const rules = (await store.rules.active(action)).filter((r) => !r.expires_at || r.expires_at > at);
+    const rules = (await store.rules.active(action)).filter((r) => (!r.expires_at || r.expires_at > at) && (action !== 'BLOCK' || !isInternal(r.target_ip)));
     const pending = rules.filter((r) => enforcer.mode === 'feed' && (!r.enforcement || r.enforcement.status === 'PENDING'));
+    const invIds = new Set();
     for (const r of pending) {
       await store.rules.update(r.rule_id, { enforcement: { mode: 'feed', status: 'ENFORCED', detail: `Pulled by ${req.apiKey.name} at ${at}`, puller: req.apiKey.name, at } });
+      if (r.investigation_id) invIds.add(r.investigation_id);
+    }
+    if (invIds.size) {
+      const allRules = await store.rules.list();
+      for (const invId of invIds) {
+        const own = allRules.filter((r) => r.investigation_id === invId && r.is_active);
+        if (own.length && own.every((r) => r.enforcement && r.enforcement.status === 'ENFORCED')) {
+          const inv = await store.investigations.get(invId);
+          if (inv && inv.outcome === 'ATTACK_SUCCEEDED') {
+            const al = await store.alerts.get(inv.alert_id);
+            if (al && al.status === 'CONFIRMED') {
+              await store.alerts.update(al.alert_id, { status: 'CONTAINED' });
+              await timeline(al.alert_id, `Containment enforced after ${req.apiKey.name} pulled the ${action.toLowerCase()} feed`, req).catch(() => {});
+            }
+          }
+        }
+      }
     }
     if (pending.length) await store.audit.add({ actor: actor(req), action: 'feed.pulled', target: `${action.toLowerCase()} feed`, detail: `${pending.length} new rules picked up` });
     const ips = [...new Set(rules.map((r) => r.target_ip))];

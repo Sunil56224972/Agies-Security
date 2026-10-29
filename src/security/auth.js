@@ -97,6 +97,10 @@ function bearer(req) {
     const decoded = Buffer.from(h.replace(/^basic\s+/i, ''), 'base64').toString();
     return decoded.slice(decoded.indexOf(':') + 1);
   }
+  // Firewalls with URL-only table aliases (pfSense, OPNsense, MikroTik) on read-only feed endpoints.
+  if (['GET', 'HEAD'].includes(req.method) && /^\/(api\/)?feeds\//.test(req.originalUrl || req.url || '') && req.query && req.query.key) {
+    return String(req.query.key).trim();
+  }
   return null;
 }
 

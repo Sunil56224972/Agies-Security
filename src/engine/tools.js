@@ -109,6 +109,7 @@ function createTools(store, { enforcer = new RecordAdapter(), nvd = null, reputa
         return { status: 'DEACTIVATED', target_ip, rules: active.map((r) => r.rule_id) };
       }
       if (!['BLOCK', 'ISOLATE'].includes(action)) return { error: `Unsupported action ${action}` };
+      if (action === 'BLOCK' && isInternal(target_ip)) return { error: 'Blocking an internal address cuts off your own network; isolate the host instead' };
       const existing = (await store.rules.activeFor(target_ip)).find((r) => r.action === action);
       if (existing) return { status: 'ALREADY_ENFORCED', rule: existing };
       // Engine-created blocks take the policy TTL; callers pass ttl_hours (or null) explicitly.

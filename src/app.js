@@ -117,7 +117,7 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
     if (!key) return bad(res, 'Invalid or revoked API key', 401);
     if (!(key.scopes || []).includes(scope)) return bad(res, `This key does not have the "${scope}" scope`, 403);
     req.apiKey = key;
-    store.apiKeys.touch(key.id).catch(() => {});
+    await store.apiKeys.touch(key.id).catch(() => {});
     next();
   });
 
