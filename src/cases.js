@@ -276,6 +276,17 @@ function createCaseService(ctx) {
       const r = await store.caseIocs.insert({ case_id: id, type: i.type, value: i.value, note, created_by: who.name });
       if (r) added.push(r);
     }
+    if (hub && hub.available && added.length <= 25) {
+      await Promise.all(added.map(async (ioc) => {
+        try {
+          const r = await hub.lookup(ioc.value, { budgetMs: 8000 });
+          if (r && !r.skipped) {
+            const u = await store.caseIocs.update(ioc.id, { verdict: r.verdict, score: r.score, summary: r.summary || r.reason || null, checked_at: r.checked_at });
+            if (u) Object.assign(ioc, u);
+          }
+        } catch { /* analyst can re-check manually */ }
+      }));
+    }
     if (added.length) await log(id, who, `Added ${plural(added.length, 'indicator')}: ${added.map((x) => x.value).slice(0, 8).join(', ')}`);
     return { added, duplicates: inds.length - added.length };
   }

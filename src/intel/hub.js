@@ -15,7 +15,7 @@ const { Otx, otxScore } = require('./otx');
 const { HybridAnalysis, haScore } = require('./hybrid');
 const { errText } = require('./feeds');
 const { isInternal } = require('../engine/analysis');
-const { isSharedHost } = require('./shared');
+const { isSharedHost, reservedRange } = require('./shared');
 
 const offFlag = (v) => /^(0|off|false|no)$/i.test(String(v || ''));
 
@@ -159,13 +159,17 @@ class IntelHub {
 
     // Exact listings (this IP, this domain, this URL, this hash) are evidence;
     // other URLs on the same host and community mentions are not.
-    const exact = hits.some((h) => h.score != null && !h.context && /^exact|^certificate|^JA3|^parent domain/.test(String(h.match || 'exact')))
+    const repBenign = Boolean(rep && rep.verdict === 'benign');
+    const exact = (!repBenign && hits.some((h) => h.score != null && !h.context && /^exact|^certificate|^JA3|^parent domain/.test(String(h.match || 'exact'))))
       || (vtv && vtv.malicious >= 5) || (hx && hs >= 80);
     const vtClean = Boolean(vtv && vtv.malicious <= 1 && (vtv.harmless || 0) >= 10);
     const sharedHost = host && !hostIsIp && isSharedHost(host);
-    const benign = Boolean(vtClean || (rep && rep.verdict === 'benign') || (ox && ox.whitelisted) || (sharedHost && !exact));
+    const resv = isIpType(t) ? reservedRange(ind.value) : hostIsIp ? reservedRange(hostInd.value) : null;
+    const resvClean = Boolean(resv && !hits.some((h) => h.score != null && !h.context));
+    const benign = Boolean(vtClean || repBenign || (ox && ox.whitelisted) || (sharedHost && !exact) || resvClean);
     if (score != null && !exact) {
-      if (sharedHost || (rep && rep.verdict === 'benign')) score = Math.min(score, 20);
+      if (resvClean) score = 0;
+      else if (sharedHost || repBenign || (ox && ox.whitelisted)) score = Math.min(score, 20);
       else if (vtClean) score = Math.min(score, 35);
     }
     const verdict = score == null ? 'unknown' : score >= 75 ? 'malicious' : score >= 40 ? 'suspicious' : benign ? 'benign' : 'clean';

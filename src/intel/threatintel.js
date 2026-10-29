@@ -6,7 +6,7 @@
 //
 //   Blocklists (downloaded, cached for 6 h)
 //     Spamhaus DROP        hijacked and criminal netblocks
-//     FireHOL level 1      aggregated attack sources
+//     FireHOL blocklist    active attack and brute-force sources (last 48h, no bogons)
 //     Tor exit list        current Tor exit relays
 //   Per-address lookups (cached for 6 h)
 //     GreyNoise community  is this address mass-scanning the internet?
@@ -16,7 +16,7 @@
 const net = require('net');
 const { Reputation } = require('./reputation');
 const { isInternal } = require('../engine/analysis');
-const { isCdnOrg } = require('./shared');
+const { isCdnOrg, reservedRange } = require('./shared');
 
 const LIST_TTL = 6 * 3600000;
 const LIST_RETRY = 10 * 60000;
@@ -62,9 +62,9 @@ function parseSpamhaus(text) {
 }
 
 const LISTS = [
-  { id: 'spamhaus', name: 'Spamhaus DROP', url: 'https://www.spamhaus.org/drop/drop_v4.json', score: 100, parse: parseSpamhaus, note: 'Hijacked and criminal netblocks published by Spamhaus' },
-  { id: 'firehol', name: 'FireHOL level 1', url: 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset', score: 90, parse: parseNetset, note: 'Aggregated cybercrime and attack source netblocks' },
-  { id: 'tor', name: 'Tor exit list', url: 'https://check.torproject.org/torbulkexitlist', fallbackUrl: 'https://raw.githubusercontent.com/SecOps-Institute/Tor-IP-Addresses/master/tor-exit-nodes.lst', score: 50, parse: parseNetset, note: 'Current Tor exit relay addresses' }
+  { id: 'spamhaus', name: 'Spamhaus DROP', url: 'https://www.spamhaus.org/drop/drop_v4.json', score: 100, rangeScore: 100, parse: parseSpamhaus, note: 'Hijacked and criminal netblocks published by Spamhaus' },
+  { id: 'firehol', name: 'FireHOL blocklist', url: 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset', score: 85, rangeScore: 55, parse: parseNetset, note: 'Active attack and brute-force source addresses from the last 48 hours' },
+  { id: 'tor', name: 'Tor exit list', url: 'https://check.torproject.org/torbulkexitlist', fallbackUrl: 'https://raw.githubusercontent.com/SecOps-Institute/Tor-IP-Addresses/master/tor-exit-nodes.lst', score: 50, rangeScore: 50, parse: parseNetset, note: 'Current Tor exit relay addresses' }
 ];
 
 class ThreatIntel {
@@ -179,15 +179,19 @@ class ThreatIntel {
       try { const v = await fn(); ok.push(name); return v; } catch (err) { failed.push({ source: name, error: err.name === 'TimeoutError' ? 'timed out' : err.message }); return null; }
     };
     const v4 = net.isIPv4(ip) ? ipv4ToInt(ip) : null;
+    const resv = reservedRange(ip);
     const [listed, gn, sh, geo, abuse, feed] = await Promise.all([
       Promise.all(LISTS.map(async (def) => {
         const rec = await this.loadList(def);
         if (!rec.data) { failed.push({ source: def.name, error: rec.error }); return null; }
         ok.push(def.name);
-        if (rec.data.exact.has(ip)) return { id: def.id, list: def.name, detail: ip, score: def.score };
+        if (rec.data.exact.has(ip)) return { id: def.id, list: def.name, detail: ip, match: 'exact', score: def.score };
         if (v4 != null) {
           const r = rec.data.ranges.find((x) => v4 >= x.start && v4 <= x.end);
-          if (r) return { id: def.id, list: def.name, detail: r.label, score: def.score };
+          if (r) {
+            const rScore = def.rangeScore != null ? def.rangeScore : def.score;
+            return { id: def.id, list: def.name, detail: rScore < def.score ? `${r.label} subnet` : r.label, match: 'subnet', score: rScore };
+          }
         }
         return null;
       })),
@@ -195,7 +199,10 @@ class ThreatIntel {
       run('Shodan InternetDB', () => this.json(`https://internetdb.shodan.io/${encodeURIComponent(ip)}`, { ports: [], hostnames: [], vulns: [], tags: [] })),
       run('ipwho.is', async () => {
         const d = await this.json(`https://ipwho.is/${encodeURIComponent(ip)}`);
-        if (d.success === false) throw new Error(d.message || 'lookup failed');
+        if (d.success === false) {
+          if (resv || /reserved|private|bogon/i.test(String(d.message || ''))) return { country: null, country_code: null, city: null, connection: { org: resv || 'IANA Reserved Range' } };
+          throw new Error(d.message || 'lookup failed');
+        }
         return d;
       }),
       this.abuse ? run('AbuseIPDB', () => this.abuse.check(ip)) : null,
@@ -218,16 +225,18 @@ class ThreatIntel {
     // AbuseIPDB's confidence from one or two reporters is thin; whitelisted addresses do not score.
     if (abuse && abuse.score != null && !abuse.whitelisted) signals.push((abuse.reports || 0) >= 3 ? abuse.score : Math.round(abuse.score * 0.5));
     for (const h of iocs) if (h.score != null) signals.push(h.score);
-    // Known business services (GreyNoise RIOT, AbuseIPDB whitelist) and shared
-    // CDN/cloud edges appear in feeds because a malicious domain resolved to
-    // them. Only a listing that names the address itself overrides that.
-    const cdn = isCdnOrg(location && location.org) || isCdnOrg(abuse && abuse.isp);
-    const known = Boolean((greynoise && (greynoise.riot || greynoise.classification === 'benign')) || (abuse && abuse.whitelisted));
+    // Known business services (GreyNoise RIOT, AbuseIPDB whitelist), IANA
+    // reserved/documentation ranges, and shared CDN/cloud edges appear in feeds
+    // because a malicious domain resolved to them or example logs referenced them.
+    const resvClean = Boolean(resv && !iocs.length && !hits.length);
+    const cdn = !resvClean && (isCdnOrg(location && location.org) || isCdnOrg(abuse && abuse.isp));
+    const known = Boolean(resvClean || (greynoise && (greynoise.riot || greynoise.classification === 'benign')) || (abuse && abuse.whitelisted));
     const conclusive = hits.some((h) => h.id === 'spamhaus') || iocs.some((h) => h.source === 'Feodo Tracker' || h.source === 'SSLBL')
       || (!cdn && !known && iocs.some((h) => h.c2 && h.match === 'exact' && (h.score || 0) >= 75));
     const benign = known || (cdn && !conclusive);
     let score = signals.length ? Math.max(...signals) : ok.length ? 0 : null;
-    if (score != null && !conclusive && known) score = Math.min(score, 20);
+    if (score != null && resvClean) score = 0;
+    else if (score != null && !conclusive && known) score = Math.min(score, 20);
     else if (score != null && !conclusive && cdn) score = Math.min(score, 35);
     const verdict = score == null ? 'unknown' : score >= 75 ? 'malicious' : score >= 40 ? 'suspicious' : benign ? 'benign' : 'clean';
 
@@ -242,7 +251,7 @@ class ThreatIntel {
     if (location && location.org) parts.push(`${location.org}${location.country_code ? `, ${location.country_code}` : ''}`);
 
     const data = {
-      ip, source: ok.join(', '), score, verdict, listed: hits.map(({ score: _s, ...h }) => h), greynoise, shodan, geo: location,
+      ip, source: ok.join(', '), score, verdict, listed: hits.map(({ match: _m, ...h }) => h), greynoise, shodan, geo: location,
       abuseipdb: abuse || null, iocs, c2: Boolean(c2), pending: feed ? feed.pending : [],
       reports: abuse ? abuse.reports : hits.length,
       country: (location && location.country_code) || (abuse && abuse.country) || null,

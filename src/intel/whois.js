@@ -11,6 +11,7 @@
 const net = require('net');
 const { httpGet, errText, TtlCache } = require('./feeds');
 const { registered } = require('./indicator');
+const { reservedRange } = require('./shared');
 
 const DAY = 86400000;
 const v4int = (ip) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
@@ -100,7 +101,16 @@ class Whois {
     const isIp = ind.type === 'ipv4' || ind.type === 'ipv6';
     const value = isIp ? ind.value : registered(ind.host || ind.value);
     const base = await this.rdapBase(isIp ? ind.type : 'dns', value);
-    if (!base) throw new Error(`no RDAP server publishes ${isIp ? 'this range' : `.${value.split('.').pop()}`}`);
+    if (!base) {
+      const resv = isIp ? reservedRange(value) : null;
+      if (resv) {
+        return this.cache.set(key, {
+          query: value, server: 'iana.org', found: true, kind: 'ip', handle: 'IANA-RESERVED', name: 'IANA-RESERVED', type: 'RESERVED',
+          range: null, country: null, org: resv, abuse: null, registered: null, updated: null, remarks: [resv]
+        });
+      }
+      throw new Error(`no RDAP server publishes ${isIp ? 'this range' : `.${value.split('.').pop()}`}`);
+    }
     const url = `${base}${isIp ? 'ip' : 'domain'}/${encodeURIComponent(value)}`;
     const j = await this.getJson(url, { accept: 'application/rdap+json, application/json', notFound: null });
     if (!j) return this.cache.set(key, { query: value, server: new URL(base).host, found: false });

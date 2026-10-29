@@ -7,6 +7,7 @@
 // validation list (whitelisted, false positive), which is honoured here.
 
 const { httpGet, errText, TtlCache } = require('./feeds');
+const { reservedRange } = require('./shared');
 
 const SECTION = { ipv4: 'IPv4', ipv6: 'IPv6', domain: 'domain', url: 'url', md5: 'file', sha1: 'file', sha256: 'file' };
 
@@ -49,11 +50,14 @@ class Otx {
         adversary: x.adversary || null
       }));
       const validation = (d.validation || []).map((v) => ({ source: v.source || null, name: v.name || v.message || v.source || '' }));
+      const resv = (ind.type === 'ipv4' || ind.type === 'ipv6') ? reservedRange(ind.value) : null;
+      if (resv && !validation.length) validation.push({ source: 'iana', name: resv });
+      const whitelisted = Boolean(resv) || (validation.length > 0 && validation.every((v) => !/blacklist|malicious/i.test(`${v.source} ${v.name}`)));
       const out = {
         found: true, pulses: Number(p.count) || 0, recent: pulses, validation,
-        whitelisted: validation.some((v) => /whitelist|false.?positive|akamai|alexa|majestic|umbrella|tranco/i.test(`${v.source} ${v.name}`)),
-        families: [...new Set(pulses.flatMap((x) => x.families))].slice(0, 5),
-        adversaries: [...new Set(pulses.map((x) => x.adversary).filter(Boolean))].slice(0, 3),
+        whitelisted,
+        families: whitelisted ? [] : [...new Set(pulses.flatMap((x) => x.families))].slice(0, 5),
+        adversaries: whitelisted ? [] : [...new Set(pulses.map((x) => x.adversary).filter(Boolean))].slice(0, 3),
         reputation: d.reputation ?? null, country: d.country_name || null, asn: d.asn || null,
         link: this.link(ind)
       };

@@ -512,14 +512,54 @@ test('intel scores: OTX pulses and Hybrid Analysis verdicts', () => {
   assert.ok(vtScore({ found: true, malicious: 2, suspicious: 0 }) < 40, 'two vendors stay below suspicious');
   assert.ok(vtScore({ found: true, malicious: 3, suspicious: 0 }) >= 40, 'three vendors are suspicious');
   assert.ok(vtScore({ found: true, malicious: 6, suspicious: 0 }) >= 75, 'five or more are malicious');
-  const { isSharedHost, isCdnOrg } = require('../src/intel/shared');
+  const { isSharedHost, isCdnOrg, reservedRange } = require('../src/intel/shared');
   assert.ok(isSharedHost('raw.githubusercontent.com') && isSharedHost('github.com') && !isSharedHost('evilgithub.com'));
   assert.ok(isCdnOrg('Cloudflare, Inc.') && !isCdnOrg('Evil Hosting LLC'));
+  assert.match(reservedRange('198.51.100.20'), /RFC 5737/);
+  assert.match(reservedRange('203.0.113.50'), /RFC 5737/);
+  assert.match(reservedRange('2001:db8::1'), /RFC 3849/);
+  assert.strictEqual(reservedRange('8.8.8.8'), null);
   assert.strictEqual(haScore({ found: true, verdict: 'malicious', threat_score: 95 }), 95);
   assert.strictEqual(haScore({ found: true, verdict: 'malicious' }), 80);
   assert.strictEqual(haScore({ found: true, verdict: 'suspicious' }), 50);
   assert.strictEqual(haScore({ found: true, verdict: 'no specific threat' }), 0);
   assert.strictEqual(haScore({ found: false }), null);
+});
+
+test('intel hub: reserved documentation IPs and OTX allowlisted indicators stay benign', async () => {
+  const fetchImpl = async (url) => {
+    let body = null;
+    if (/spamhaus\.org/.test(url)) body = '{"cidr":"1.10.16.0/20","sblid":"SBL1"}\n';
+    else if (/firehol_level2\.netset/.test(url)) body = '45.95.147.236\n45.95.147.0/24\n';
+    else if (/torbulkexitlist|tor-exit-nodes/.test(url)) body = '185.220.101.45\n';
+    else if (/greynoise\.io/.test(url)) body = JSON.stringify({ classification: 'unknown', unseen: true });
+    else if (/internetdb\.shodan\.io/.test(url)) body = JSON.stringify({ ports: [], hostnames: [], vulns: [], tags: [] });
+    else if (/ipwho\.is/.test(url)) body = /198\.51\.100\./.test(url) ? JSON.stringify({ success: false, message: 'Reserved range' }) : JSON.stringify({ success: true, country: 'NL', country_code: 'NL', connection: { org: 'Example ISP' } });
+    else if (/data\.iana\.org\/rdap\/ipv4\.json/.test(url)) body = JSON.stringify({ services: [[['45.0.0.0/8'], ['https://rdap.db.ripe.net/']]] });
+    else if (/rdap\.db\.ripe\.net/.test(url)) body = JSON.stringify({ handle: 'NET-45', name: 'TEST-NET', entities: [] });
+    else if (/stat\.ripe\.net/.test(url)) body = JSON.stringify({ data: { announced: false, asns: [] } });
+    else if (/api\.mnemonic\.no/.test(url)) body = JSON.stringify({ count: 0, data: [] });
+    else if (/otx\.alienvault\.com/.test(url)) body = JSON.stringify({ pulse_info: { count: 5, pulses: [{ id: '1', name: 'Tutorial example', malware_families: ['QakBot'] }] }, validation: [{ source: 'whitelist', name: 'Whitelisted IP' }] });
+    else if (/feodotracker/.test(url)) body = JSON.stringify([{ ip_address: '50.16.16.211', port: 443, status: 'online', malware: 'QakBot' }]);
+    else if (/blackbook|ThreatFox-IOC-IPs/.test(url)) body = /blackbook/.test(url) ? 'Domain,Malware,Date,Source\nstatsrvv.com,Keitaro,2026-10-16,ThreatFox\n' : '1.7.147.211\n';
+    else if (/urlhaus-filter/.test(url)) body = '||evil-malware.example^\n';
+    else if (/botvrij/.test(url)) body = `${md5('95.179.213.0')},ev-1\n`;
+    if (body == null) return { ok: false, status: 404, text: async () => '', json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
+    const buf = Buffer.from(body);
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body), arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) };
+  };
+  const rep = new ThreatIntel({ fetchImpl, offline: false });
+  const hub = createHub({ env: {}, reputation: rep, fetchImpl, offline: false });
+  const docIp = await hub.lookup('198.51.100.20');
+  assert.strictEqual(docIp.verdict, 'benign', `expected benign for 198.51.100.20, got ${docIp.verdict} (${docIp.score})`);
+  assert.strictEqual(docIp.score, 0);
+  assert.strictEqual(docIp.sources_failed.length, 0, `unexpected failures: ${JSON.stringify(docIp.sources_failed)}`);
+  const exactAtk = await rep.check('45.95.147.236');
+  assert.strictEqual(exactAtk.verdict, 'malicious');
+  assert.strictEqual(exactAtk.score, 85);
+  const subnetNeighbor = await rep.check('45.95.147.10');
+  assert.strictEqual(subnetNeighbor.verdict, 'suspicious', 'neighbor IP in /24 subnet is suspicious, not 90/100 malicious');
+  assert.strictEqual(subnetNeighbor.score, 55);
 });
 
 test('workflows: templates resolve and conditions evaluate', () => {
