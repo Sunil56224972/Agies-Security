@@ -8,6 +8,7 @@
 //   --access PATH    nginx / Apache access log -> POST /api/ingest/logs    (log_type http_access)
 //   --auth PATH      sshd / sudo auth log      -> POST /api/ingest/logs    (log_type auth_log)
 //   --syslog PATH    any other text log        -> POST /api/ingest/logs    (log_type system)
+//   --win-events     Windows Event Log         -> POST /api/ingest/logs    (System & Application)
 //   inventory        hostname, OS, listening services and installed packages
 //                    -> POST /api/ingest/assets every --inventory-every minutes
 //
@@ -18,7 +19,7 @@
 //     node aegis-agent.js --eve /var/log/suricata/eve.json --access /var/log/nginx/access.log --auth /var/log/auth.log
 //
 // Other flags: --host-ip IP (address to report, default: first private IPv4), --criticality LEVEL,
-// --owner TEAM, --no-inventory, --inventory-only, --from-start, --dry-run, --verbose.
+// --owner TEAM, --no-inventory, --inventory-only, --once, --from-start, --dry-run, --verbose.
 //
 // Enforcement (run as root / Administrator; the key needs the "feed" scope):
 //   --enforce            pull /api/feeds/blocklist.txt and drop those addresses in the
@@ -43,7 +44,7 @@ const MAX_READ = 4 * 1024 * 1024;
 
 // ---- Arguments -----------------------------------------------------------------
 function parseArgs(argv) {
-  const o = { eve: [], access: [], auth: [], syslog: [], inventory: true, inventoryEvery: 60, state: null, dryRun: false, verbose: false, fromStart: false, inventoryOnly: false, enforce: false, enforceOnly: false, enforceEvery: 60, enforceClear: false };
+  const o = { eve: [], access: [], auth: [], syslog: [], winEvents: false, once: false, inventory: true, inventoryEvery: 60, state: null, dryRun: false, verbose: false, fromStart: false, inventoryOnly: false, enforce: false, enforceOnly: false, enforceEvery: 60, enforceClear: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => { const v = argv[++i]; if (v === undefined) die(`${a} needs a value`); return v; };
@@ -52,6 +53,8 @@ function parseArgs(argv) {
       case '--access': o.access.push(val()); break;
       case '--auth': o.auth.push(val()); break;
       case '--syslog': o.syslog.push(val()); break;
+      case '--win-events': o.winEvents = true; break;
+      case '--once': o.once = true; break;
       case '--url': o.url = val(); break;
       case '--key': o.key = val(); break;
       case '--host-ip': o.hostIp = val(); break;
@@ -243,7 +246,13 @@ function run(cmd, args, timeout = 20000) {
   });
 }
 
-function osRelease() {
+async function osRelease() {
+  if (process.platform === 'win32') {
+    const ps = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '$k = Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" -ErrorAction SilentlyContinue; if ($k) { $name = $k.ProductName; if ([int]$k.CurrentBuildNumber -ge 22000 -and $name -match "Windows 10") { $name = $name -replace "Windows 10", "Windows 11" }; "$name $($k.DisplayVersion) (Build $($k.CurrentBuildNumber))".Trim() }'
+    ]);
+    if (ps.trim()) return ps.trim();
+  }
   try {
     const kv = Object.fromEntries(fs.readFileSync('/etc/os-release', 'utf8').split('\n').map((l) => l.match(/^(\w+)=(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].replace(/^"|"$/g, '')]));
     return kv.PRETTY_NAME || `${kv.NAME || ''} ${kv.VERSION_ID || ''}`.trim();
@@ -268,10 +277,15 @@ async function listeners() {
       add(local.split(':').pop(), proc);
     }
   } else if (process.platform === 'win32') {
-    const ns = await run('netstat', ['-ano', '-p', 'TCP']);
-    for (const line of ns.split('\n')) {
-      const m = line.trim().match(/^TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING/i);
-      if (m && !/^127\./.test(m[1])) add(m[2]);
+    const [ns, tl] = await Promise.all([run('netstat', ['-ano', '-p', 'TCP']), run('tasklist', ['/FO', 'CSV', '/NH'])]);
+    const pidMap = new Map();
+    for (const line of tl.split(/\r?\n/)) {
+      const m = line.match(/^"([^"]+)","(\d+)"/);
+      if (m) pidMap.set(m[2], m[1].replace(/\.exe$/i, ''));
+    }
+    for (const line of ns.split(/\r?\n/)) {
+      const m = line.trim().match(/^TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+      if (m && !/^127\./.test(m[1])) add(m[2], pidMap.get(m[3]));
     }
   } else {
     const ls = await run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN']);
@@ -287,13 +301,21 @@ async function listeners() {
 
 // Versioned names ("openssl 3.0.13") are what CVE matching keys on.
 async function packages() {
+  const interesting = /(openssl|openssh|nginx|apache|httpd|tomcat|log4j|java|jdk|jre|php|python|node|git|mysql|mariadb|postgres|redis|mongo|docker|containerd|kernel|linux-image|sudo|bash|glibc|libc6|curl|exim|postfix|samba|bind9|vsftpd|proftpd|elasticsearch|jenkins|gitlab|grafana|confluence|jira|wordpress|haproxy|squid|xz|polkit|chrome|edge|firefox|vlc|7-zip|winrar|wireshark|putty)/i;
+  if (process.platform === 'win32') {
+    const ps = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-ItemProperty "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*","HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*","HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*" -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -and $_.DisplayVersion } | ForEach-Object { $n = $_.DisplayName.Trim(); $v = $_.DisplayVersion.Trim(); if ($n.EndsWith($v)) { $n } else { "$n $v" } }'
+    ]);
+    const raw = [`nodejs ${process.versions.node}`, ...ps.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)];
+    const uniq = [...new Set(raw)];
+    return [...uniq.filter((p) => interesting.test(p)), ...uniq.filter((p) => !interesting.test(p))].slice(0, 400);
+  }
   if (process.platform !== 'linux') return [];
   let text = await run('dpkg-query', ['-W', '-f=${Package} ${Version}\n']);
   if (!text.trim()) text = await run('rpm', ['-qa', '--qf', '%{NAME} %{VERSION}\n']);
   if (!text.trim()) text = await run('apk', ['info', '-v']);
   const list = text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.replace(/^(\d+:)/, ''));
   // Prefer packages that matter for exposure; the console caps the list at 400.
-  const interesting = /(openssl|openssh|nginx|apache|httpd|tomcat|log4j|java|jdk|jre|php|python3|node|mysql|mariadb|postgres|redis|mongo|docker|containerd|kernel|linux-image|sudo|bash|glibc|libc6|curl|exim|postfix|samba|bind9|vsftpd|proftpd|elasticsearch|jenkins|gitlab|grafana|confluence|jira|wordpress|haproxy|squid|xz|polkit)/i;
   const sorted = [...list.filter((p) => interesting.test(p)), ...list.filter((p) => !interesting.test(p))];
   return sorted.slice(0, 400);
 }
@@ -308,12 +330,12 @@ async function versionOf(proc) {
 }
 
 async function inventory() {
-  const [svc, pkgs] = await Promise.all([listeners(), packages()]);
+  const [svc, pkgs, osRel] = await Promise.all([listeners(), packages(), osRelease()]);
   for (const s of svc) {
     const v = s.service !== 'listening' ? await versionOf(s.service) : null;
     if (v) s.service = `${s.service} ${v}`;
   }
-  const osName = osRelease() || `${os.type()} ${os.release()}`;
+  const osName = osRel || `${os.type()} ${os.release()}`;
   const asset = {
     ip_address: HOST_IP,
     hostname: opts.hostname || os.hostname(),
@@ -467,7 +489,36 @@ async function startEnforcement() {
   if (!firewall[process.platform]) die(`Enforcement is not supported on ${process.platform}`);
   log(`Enforcing ${opts.url}/api/feeds/blocklist.txt into the ${process.platform === 'win32' ? 'Windows Firewall' : process.platform === 'darwin' ? 'pf' : 'iptables'} every ${opts.enforceEvery}s`);
   await enforceOnce();
+  if (opts.once) return null;
   return setInterval(() => { if (!enforceFatal) enforceOnce(); }, opts.enforceEvery * 1000);
+}
+
+async function readWinEvents() {
+  if (process.platform !== 'win32') return [];
+  const cursors = state.winEvents || {};
+  const lines = [];
+  for (const ch of ['System', 'Application']) {
+    const afterId = Number(cursors[ch]) || 0;
+    const maxCount = afterId ? 100 : 25;
+    const script = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-WinEvent -LogName '${ch}' -MaxEvents ${maxCount} -ErrorAction SilentlyContinue | Where-Object { $_.RecordId -gt ${afterId} } | Sort-Object RecordId | ForEach-Object { [PSCustomObject]@{ id = $_.RecordId; ts = $_.TimeCreated.ToUniversalTime().ToString('o'); raw = "[$($_.LogName)/$($_.Id)] $($_.ProviderName): $(($_.Message -replace '\\s+', ' ').Trim())" } | ConvertTo-Json -Compress }`;
+    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], 25000);
+    let maxSeen = afterId;
+    for (const row of out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+      try {
+        const obj = JSON.parse(row);
+        if (obj && obj.raw) {
+          lines.push(JSON.stringify({ timestamp: obj.ts, log_type: 'system', raw_entry: obj.raw }));
+          if (Number(obj.id) > maxSeen) maxSeen = Number(obj.id);
+        }
+      } catch { /* skip malformed line */ }
+    }
+    if (maxSeen > afterId) {
+      cursors[ch] = maxSeen;
+      state.winEvents = cursors;
+      stateDirty = true;
+    }
+  }
+  return lines;
 }
 
 // ---- Main ------------------------------------------------------------------------------------------
@@ -477,11 +528,11 @@ async function main() {
   if (opts.inventoryOnly) { await shipInventory(); return; }
   if (opts.enforceOnly) {
     const t = await startEnforcement();
+    if (opts.once || opts.dryRun) { if (t) clearInterval(t); return; }
     const stop = () => { clearInterval(t); log('Stopping; firewall rules stay in place (use --enforce-clear to remove them)'); process.exit(0); };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
-    const watch = setInterval(() => { if (enforceFatal) process.exit(1); }, 1000);
-    if (opts.dryRun) { clearInterval(t); clearInterval(watch); }
+    setInterval(() => { if (enforceFatal) process.exit(1); }, 1000);
     return;
   }
   if (opts.enforce) await startEnforcement();
@@ -490,16 +541,20 @@ async function main() {
     ...opts.eve.map((f) => new Tail(f, 'eve')), ...opts.access.map((f) => new Tail(f, 'access')),
     ...opts.auth.map((f) => new Tail(f, 'auth')), ...opts.syslog.map((f) => new Tail(f, 'syslog'))
   ];
-  if (!tails.length && !opts.inventory && !opts.enforce) die('Nothing to do: pass --eve, --access, --auth or --syslog, or leave inventory on');
+  if (!tails.length && !opts.winEvents && !opts.inventory && !opts.enforce) die('Nothing to do: pass --eve, --access, --auth, --syslog or --win-events, or leave inventory on');
 
   if (opts.inventory) {
     await shipInventory();
-    setInterval(() => { if (!fatal) shipInventory(); }, opts.inventoryEvery * 60000).unref();
+    if (!opts.once) setInterval(() => { if (!fatal) shipInventory(); }, opts.inventoryEvery * 60000).unref();
   }
-  if (!tails.length) { log('No log files given; sending inventory only'); }
+  if (!tails.length && !opts.winEvents) {
+    log('No log sources given; sending inventory only');
+    if (opts.once) return;
+  }
 
   let busy = false;
   let lastFlush = Date.now();
+  let lastWinPoll = 0;
   const tick = async () => {
     if (busy || stopping) return;
     busy = true;
@@ -509,12 +564,22 @@ async function main() {
         // Suricata writes flows, DNS, TLS and stats to the same file; only alerts go up.
         enqueue(`${t.kind}|${t.file}`, t.kind === 'eve' ? lines.filter((l) => l.includes('"event_type":"alert"')) : lines);
       }
+      if (opts.winEvents && (opts.once || Date.now() - lastWinPoll >= 15000)) {
+        lastWinPoll = Date.now();
+        const winLines = await readWinEvents();
+        if (winLines.length) enqueue('syslog|win-events', winLines);
+      }
       const pending = [...queues.values()].reduce((n, q) => n + q.length, 0);
-      if (pending >= BATCH_LINES || (pending && Date.now() - lastFlush >= FLUSH_MS)) { await flush(); lastFlush = Date.now(); }
+      if (opts.once || pending >= BATCH_LINES || (pending && Date.now() - lastFlush >= FLUSH_MS)) { await flush(); lastFlush = Date.now(); }
       saveState();
     } catch (err) { warn(`Tail loop: ${err.message}`); } finally { busy = false; }
     if (fatal) process.exit(1);
   };
+  if (opts.once) {
+    await tick();
+    log(`Completed single pass: shipped ${totals.alerts} alerts, ${totals.logs} log lines`);
+    return;
+  }
   const timer = setInterval(tick, POLL_MS);
   const report = setInterval(() => log(`Shipped ${totals.alerts} alerts, ${totals.logs} log lines${totals.rejected ? `, ${totals.rejected} rejected` : ''}${totals.dropped ? `, ${totals.dropped} dropped` : ''}`), 10 * 60000);
   report.unref();
