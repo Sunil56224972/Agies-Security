@@ -93,8 +93,7 @@ async function loadAndRunScenario(key) {
   try {
     const data = await api(`/netcoop/scenarios/${key}`, { method: 'POST' });
     $('#nc-raw', ctx.el).value = JSON.stringify(data.telemetry, null, 2);
-    statusEl.textContent = 'Running diagnosis…';
-    await runDiagnosis();
+    statusEl.textContent = 'Scenario loaded — click Run diagnosis';
   } catch (e) {
     statusEl.textContent = '';
     toast('Scenario error', e.message, 'error');
