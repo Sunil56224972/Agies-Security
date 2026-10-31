@@ -473,6 +473,7 @@ const SCORING = {
 };
 
 const PROTOCOL = {
+  version: '1.0.0',
   telemetry_schema: 'netcoop.telemetry/1.0',
   message_schema: MESSAGE_SCHEMA,
   report_schema: REPORT_SCHEMA,

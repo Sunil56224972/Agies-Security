@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetCoop AI — Multi-Agent Network Fault Diagnosis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <script>
+    // Theme initialization before paint to prevent flashing
+    (function() {
+      const saved = localStorage.getItem('netcoop-theme');
+      if (saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="brand">
+        <i data-icon="activity"></i>
+        <span>NetCoop AI</span>
+        <span class="brand__badge">v1.0.0 IIT-BBS</span>
+      </div>
+
+      <div class="topbar__spacer"></div>
+
+      <div class="status-pill">
+        <span class="status-dot"></span>
+        <span id="top-status">6 Agents active · Groq LPU</span>
+      </div>
+
+      <span class="mono small muted" id="utc-clock">--:--:-- UTC</span>
+
+      <button class="icon-btn" id="theme-toggle" title="Toggle dark/light theme" aria-label="Toggle theme">
+        <i data-icon="moon"></i>
+      </button>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <div class="page-head">
+        <div class="page-head__text">
+          <h1 class="page-title"><i data-icon="pulse"></i> NetCoop AI</h1>
+          <p class="page-sub">Multi-agent cooperative network fault diagnosis &amp; root cause localization.</p>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="tabs" role="tablist">
+        <button class="tab is-on" data-tab="studio" role="tab" aria-selected="true">
+          <i data-icon="terminal"></i> Diagnosis Studio
+        </button>
+        <button class="tab" data-tab="bus" role="tab" aria-selected="false">
+          <i data-icon="server"></i> Agent Message Bus
+        </button>
+        <button class="tab" data-tab="protocol" role="tab" aria-selected="false">
+          <i data-icon="file"></i> Interoperability Protocol
+        </button>
+        <button class="tab" data-tab="topology" role="tab" aria-selected="false">
+          <i data-icon="network"></i> Campus Topology &amp; Agents
+        </button>
+      </nav>
+
+      <!-- Tab 1: Diagnosis Studio -->
+      <div id="tab-studio" class="tab-pane stack reveal">
+        <!-- Telemetry Input & Scenarios Grid -->
+        <div class="grid grid-1-1">
+          <section class="panel">
+            <div class="panel__head">
+              <h2 class="panel__title"><i data-icon="terminal"></i> Telemetry input</h2>
+            </div>
+            <div class="panel__body">
+              <textarea id="nc-raw" class="textarea" rows="14" spellcheck="false" placeholder="Paste JSON, NDJSON or CSV telemetry here…"></textarea>
+              <div class="row wrap" style="display:flex;align-items:center;margin-top:10px;gap:8px">
+                <button class="btn btn--primary" id="nc-run"><i data-icon="play"></i> Run diagnosis</button>
+                <button class="btn" id="nc-clear"><i data-icon="x"></i> Clear</button>
+                <span class="small mono" style="color:var(--ink-3);margin-left:auto" id="nc-status"></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel__head">
+              <h2 class="panel__title"><i data-icon="database"></i> Test scenarios</h2>
+              <span class="panel__meta">click to load &amp; run</span>
+            </div>
+            <div id="nc-scenarios" style="overflow-y:auto;max-height:380px;scrollbar-width:thin">
+              <div class="notice" style="margin:14px">Loading scenarios…</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Results Output -->
+        <div id="nc-results"></div>
+      </div>
+
+      <!-- Tab 2: Agent Message Bus -->
+      <div id="tab-bus" class="tab-pane stack reveal" style="display:none">
+        <section class="panel">
+          <div class="panel__head">
+            <h2 class="panel__title"><i data-icon="server"></i> Agent Communication Bus (JSON-RPC v1.0.0)</h2>
+            <span class="panel__meta" id="bus-msg-count">0 messages logged</span>
+            <button class="panel__link" id="bus-clear-btn"><i data-icon="trash"></i> Clear log</button>
+          </div>
+          <div class="panel__body">
+            <p class="muted small" style="margin-top:0;margin-bottom:12px">
+              Agents coordinate via the in-memory MessageBus adhering to the Hackathon Interoperability Standard. Click any row to inspect the full structured JSON-RPC message envelope.
+            </p>
+            <div id="bus-container">
+              <div class="notice">Run a diagnosis to inspect agent messages.</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 3: Interoperability Protocol -->
+      <div id="tab-protocol" class="tab-pane stack reveal" style="display:none">
+        <div id="protocol-container">
+          <div class="notice">Loading protocol specifications…</div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Campus Topology & Agents -->
+      <div id="tab-topology" class="tab-pane stack reveal" style="display:none">
+        <div id="topology-container">
+          <div class="notice">Loading topology…</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Global Modal & Scrim -->
+  <div id="modal-root"></div>
+
+  <!-- Global Toast Notifications -->
+  <div class="toasts" id="toasts"></div>
+
+  <!-- Frontend Logic -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -46,7 +46,8 @@ async function synthesizeWithGroq({ rootCause, confidence, evidence = [], affect
 You analyze telemetry findings from 4 specialized agents (Performance, Infrastructure, Connectivity, and Correlation agents) and produce a high-precision, production-grade root cause synthesis and practical remediation plan.
 Always respond in strictly valid JSON format with keys:
 - "reasoning": string (2-3 sentences explaining the root cause and why it cascades through campus facilities)
-- "actions": array of strings (3 to 5 actionable technical engineering steps or commands to resolve the issue)
+- "actions": array of strings (3 to 5 actionable technical engineering steps to resolve the issue)
+- "cli_commands": array of strings (2 to 4 exact Cisco IOS, Aruba, or Linux terminal commands to verify and fix the issue, e.g. "show interface Gi0/1", "nmcli dev wifi rescan")
 - "prevention": array of strings (2 to 3 long-term monitoring or architectural recommendations)`;
 
   const userPrompt = `Multi-Agent Consensus Findings:
@@ -102,6 +103,7 @@ Always respond in strictly valid JSON format with keys:
       elapsed_ms: elapsed,
       reasoning: parsed.reasoning || null,
       actions: toList(parsed.actions),
+      cli_commands: toList(parsed.cli_commands),
       prevention: toList(parsed.prevention)
     };
 

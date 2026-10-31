@@ -1,0 +1,24 @@
+{
+  "name": "netcoop-ai",
+  "version": "1.0.0",
+  "description": "Multi-Agent Network Fault Diagnosis and Interoperability Web Application for IIT Bhubaneswar Campus Infrastructure.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "multi-agent",
+    "network-fault-diagnosis",
+    "agentic-ai",
+    "groq",
+    "telemetry",
+    "iit-bhubaneswar"
+  ],
+  "author": "Sunil",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0"
+  }
+}
