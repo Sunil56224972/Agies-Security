@@ -268,6 +268,8 @@ function createApp({ store, enforcer, nvd = null, reputation = null, kev = null,
   registerLlm(app, ctx);
   registerIntelKeys(app, ctx);
   registerMcp(app, ctx, cases);
+  const netcoopRoutes = require('./netcoop/routes');
+  app.use('/api/netcoop', netcoopRoutes(ctx));
   investigator.onVerdict = casework.onVerdict;
 
   app.use('/api', (req, res) => bad(res, 'Not found', 404));

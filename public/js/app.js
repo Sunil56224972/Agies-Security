@@ -21,6 +21,7 @@ const ROUTES = {
   detections: { title: 'Detections', load: () => import('./views/detections.js') },
   documents: { title: 'Documents', load: () => import('./views/documents.js') },
   decisions: { title: 'Decisions', load: () => import('./views/decisions.js') },
+  netcoop: { title: 'NetCoop AI', load: () => import('./views/netcoop.js') },
   settings: { title: 'Settings', load: () => import('./views/settings.js') }
 };
 
@@ -195,7 +196,8 @@ const JUMPS = [
   { label: 'Decision accuracy', path: 'decisions', ic: 'scale' },
   { label: 'Backup and restore', path: 'settings?section=backup', ic: 'archive' },
   { label: 'Connect a language model', path: 'settings?section=llm', ic: 'cpu' },
-  { label: 'Settings', path: 'settings', ic: 'sliders' }
+  { label: 'Settings', path: 'settings', ic: 'sliders' },
+  { label: 'NetCoop AI: network fault diagnosis', path: 'netcoop', ic: 'activity' }
 ];
 const ACTIONS = [{ label: 'AI assistant activity (live)', run: openActivity, ic: 'cpu' }];
 

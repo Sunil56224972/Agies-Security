@@ -863,3 +863,27 @@ button.attack__tech:hover { border-color: var(--accent); color: var(--ink); }
 .setup-step.is-done .setup-step__dot { background: var(--ok); border-color: var(--ok); color: #fff; opacity: 1; }
 .setup-step__label { font-weight: 600; }
 .setup-step.is-done .setup-step__label { opacity: .7; }
+
+
+/* ──── NetCoop AI ───────────────────────────────────────────────── */
+.nc-conf { display:flex; align-items:center; gap:var(--sp-1); }
+.nc-conf__track { flex:1; height:8px; background:var(--bg-3); border-radius:4px; overflow:hidden; min-width:80px; }
+.nc-conf__fill { height:100%; border-radius:4px; transition:width .4s ease; }
+.nc-conf__val { font-size:var(--fs-3); font-weight:600; }
+.nc-conf__cat { font-size:11px; }
+.nc-scenario-list { display:grid; gap:var(--sp-2); }
+.nc-scenario-card { padding:var(--sp-2); border:1px solid var(--border); border-radius:var(--rad); transition:border-color .15s, box-shadow .15s; }
+.nc-scenario-card:hover { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-faint, rgba(99,102,241,.12)); }
+.nc-scenario-card__name { font-weight:600; display:flex; align-items:center; gap:var(--sp-1); }
+.nc-scenario-card__desc { margin-top:var(--sp-1); line-height:1.45; }
+.nc-row--crit { background:var(--crit-faint, rgba(239,68,68,.06)); }
+.nc-row--warn { background:var(--warn-faint, rgba(234,179,8,.06)); }
+.nc-actions { padding-left:var(--sp-4); }
+.nc-actions li { margin-bottom:var(--sp-1); line-height:1.5; }
+.nc-issues { list-style:none; padding:0; margin:0; }
+.nc-issues li { display:flex; align-items:center; gap:var(--sp-1); margin-bottom:var(--sp-1); }
+.nc-msg-table td, .nc-msg-table th { padding:var(--sp-1) var(--sp-2); }
+.nc-msg--error td { color:var(--crit); }
+.nc-msg--challenge td { color:var(--warn, #ca8a04); }
+.nc-msgs-wrap { scrollbar-width:thin; }
+.mt-4 { margin-top:var(--sp-1); }
