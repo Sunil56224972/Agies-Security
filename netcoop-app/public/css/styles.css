@@ -161,7 +161,7 @@ body {
 /* Page Header */
 .page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
 .page-title { font-size: 22px; font-weight: 600; line-height: 1.25; margin: 0; display: flex; align-items: center; gap: 10px; }
-.page-title svg { color: var(--accent); }
+.page-title svg { width: 22px; height: 22px; color: var(--accent); flex-shrink: 0; }
 .page-sub { margin: 4px 0 0; color: var(--ink-3); font-size: 13px; }
 
 /* Sub-nav Tabs */
@@ -278,6 +278,7 @@ body {
 .pill--CLOSED { --c: var(--low); }
 
 .tag { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 3px; font: 12px var(--font-mono); background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); }
+.tag svg { width: 12px; height: 12px; flex-shrink: 0; }
 .tag--warn { border-color: var(--med); color: var(--med); background: var(--med-soft); font-weight: 600; }
 
 .breakdown { display: grid; font-size: 12.5px; }

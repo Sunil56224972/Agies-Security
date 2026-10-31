@@ -353,6 +353,9 @@ function paintResults() {
 
   // 3. Groq AI Synthesized Reasoning (if available)
   if (groq && groq.reasoning) {
+    const gActions = groq.actions || groq.corrective_actions || [];
+    const gCommands = groq.cli_commands || groq.cli_remediation_commands || [];
+
     html += `
     <section class="panel mt-12" style="border-color:var(--accent)">
       <div class="panel__head" style="background:var(--accent-soft)">
@@ -364,10 +367,6 @@ function paintResults() {
       <div class="panel__body">
         <p style="margin-top:0;margin-bottom:12px;font-size:13.5px;line-height:1.6">${esc(groq.reasoning)}</p>
 
-        const gActions = groq.actions || groq.corrective_actions || [];
-        const gCommands = groq.cli_commands || groq.cli_remediation_commands || [];
-
-        html += `
         ${gActions.length ? `
           <div style="font-weight:600;font-size:12.5px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.02em;color:var(--ink-3)">
             Engineered Corrective Recommendations
@@ -389,7 +388,7 @@ function paintResults() {
               </div>
             `).join('')}
           </div>
-        ` : ''}`;
+        ` : ''}
       </div>
     </section>`;
   }
@@ -843,7 +842,7 @@ function paintTopology() {
 }
 
 // ─── Initialize Application ───────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
+function boot() {
   hydrateIcons();
   initClock();
   initTheme();
@@ -851,23 +850,36 @@ window.addEventListener('DOMContentLoaded', () => {
   loadScenarios();
 
   // Run diagnosis button
-  $('#nc-run').onclick = () => runDiagnosis();
+  const runBtn = $('#nc-run');
+  if (runBtn) runBtn.onclick = () => runDiagnosis();
 
   // Clear button
-  $('#nc-clear').onclick = () => {
-    $('#nc-raw').value = '';
-    $('#nc-results').innerHTML = '';
-    $('#nc-status').textContent = '';
-    appState.result = null;
-    $$('.nc-sc').forEach(b => b.style.background = '');
-    toast('Cleared', 'Input and results cleared');
-  };
+  const clearBtn = $('#nc-clear');
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      $('#nc-raw').value = '';
+      $('#nc-results').innerHTML = '';
+      $('#nc-status').textContent = '';
+      appState.result = null;
+      $$('.nc-sc').forEach(b => b.style.background = '');
+      toast('Cleared', 'Input and results cleared');
+    };
+  }
 
   // Clear bus button
-  $('#bus-clear-btn').onclick = () => {
-    appState.messages = [];
-    $('#bus-msg-count').textContent = '0 messages logged';
-    paintMessageBus();
-    toast('Message bus cleared');
-  };
-});
+  const clearBusBtn = $('#bus-clear-btn');
+  if (clearBusBtn) {
+    clearBusBtn.onclick = () => {
+      appState.messages = [];
+      $('#bus-msg-count').textContent = '0 messages logged';
+      paintMessageBus();
+      toast('Message bus cleared');
+    };
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
