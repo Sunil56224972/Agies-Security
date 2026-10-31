@@ -261,7 +261,6 @@ function paintResults() {
       </div>
     </section>`;
   }
-  }
 
   // Data quality
   if (dq) {
