@@ -4,7 +4,7 @@
 // Multi-Agent Network Fault Diagnosis and Interoperability System.
 // Grand Finale Hackathon Solution — IIT Bhubaneswar Campus Infrastructure.
 
-require('dotenv').config();
+try { require('dotenv').config(); } catch (_e) {}
 const path = require('path');
 const express = require('express');
 const netcoopRoutes = require('./src/routes');
@@ -55,3 +55,4 @@ if (require.main === module) {
 }
 
 module.exports = app;
+

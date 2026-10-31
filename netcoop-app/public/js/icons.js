@@ -49,3 +49,4 @@ export function hydrateIcons(root = document) {
     el.replaceWith(svg);
   });
 }
+

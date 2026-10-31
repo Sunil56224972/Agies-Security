@@ -5,7 +5,7 @@
 // Provides contextual network reasoning, specific technical remediation,
 // and long-term preventive measures for IIT Bhubaneswar campus network.
 
-require('dotenv').config();
+try { require('dotenv').config(); } catch (_e) {}
 
 const GROQ_KEY = process.env.NETCOOP_GROQ_KEY || process.env.GROQ_API_KEY || '';
 const GROQ_MODEL = process.env.NETCOOP_GROQ_MODEL || 'openai/gpt-oss-120b';
