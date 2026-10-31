@@ -15,7 +15,7 @@
 const { MESSAGE_SCHEMA, REPORT_SCHEMA, METRICS } = require('./schema');
 const A = require('./analysis');
 
-const AGENT_IDS = ['orchestrator', 'performance_agent', 'infrastructure_agent', 'connectivity_agent', 'correlation_agent', 'reporting_agent'];
+const AGENT_IDS = ['orchestrator', 'performance_agent', 'infrastructure_agent', 'connectivity_agent', 'correlation_agent', 'reporting_agent', 'groq_llm_agent'];
 const MESSAGE_TYPES = ['task', 'finding', 'challenge', 'challenge_response', 'result', 'error'];
 const MAX_MESSAGES = 3000;
 
@@ -525,7 +525,8 @@ const ROLES = [
   { id: 'infrastructure_agent', name: 'Infrastructure Health Agent', owns: 'device status, link flaps, CPU, memory, queue drops, interface errors', consumes: ['task'], produces: ['finding', 'result', 'challenge_response'] },
   { id: 'connectivity_agent', name: 'Connectivity Analysis Agent', owns: 'topology, impaired segments, downstream impact', consumes: ['task (finding_refs)'], produces: ['finding', 'result', 'challenge_response'] },
   { id: 'correlation_agent', name: 'Fault Correlation Agent', owns: 'ranking competing causes, challenging disagreements, confidence', consumes: ['task (finding_refs)', 'challenge_response'], produces: ['challenge', 'result'] },
-  { id: 'reporting_agent', name: 'Recommendation and Reporting Agent', owns: 'unified report, evidence, uncertainty, corrective actions', consumes: ['result (diagnosis)'], produces: ['result (report)'] }
+  { id: 'reporting_agent', name: 'Recommendation and Reporting Agent', owns: 'unified report, evidence, uncertainty, corrective actions', consumes: ['result (diagnosis)'], produces: ['result (report)'] },
+  { id: 'groq_llm_agent', name: 'Groq LLM Reasoning Agent', owns: 'contextual root cause synthesis, LPU inference (openai/gpt-oss-120b), technical CLI remediation', consumes: ['result (diagnosis)'], produces: ['result (llm_synthesis)'] }
 ];
 
 module.exports = { MessageBus, createAgents, PROTOCOL, SCORING, ROLES, AGENT_IDS, MESSAGE_TYPES, ownerOf };

@@ -6,6 +6,7 @@
 
 const { normalizeInput, REPORT_SCHEMA } = require('./schema');
 const { MessageBus, createAgents, PROTOCOL, SCORING, ROLES } = require('./agents');
+const { synthesizeWithGroq } = require('./groq');
 const scenarios = require('./scenarios');
 
 let _runSeq = 0;
@@ -29,16 +30,17 @@ async function diagnose(input, opts = {}) {
 
   const norm = normalizeInput(raw);
   if (!norm.ok) {
+    const errText = (norm.errors || []).map(e => typeof e === 'string' ? e : e.message || JSON.stringify(e)).join('; ');
     return {
       report: {
         schema: REPORT_SCHEMA, run_id: runId, timestamp: new Date().toISOString(),
-        status: 'error', error: norm.errors.join('; '),
+        status: 'error', error: errText,
         root_cause: null, confidence: 0, category: 'unknown',
         evidence: [], alternatives: [], scope: { impaired: [], total: 0 },
         recommended_actions: [], data_quality: norm.quality, scoring_method: SCORING
       },
       messages: [], quality: norm.quality, meta: { elapsed_ms: Date.now() - t0, agents: 0, messages: 0 },
-      error: norm.errors.join('; ')
+      error: errText
     };
   }
 
@@ -155,6 +157,32 @@ async function diagnose(input, opts = {}) {
       data_quality: norm.quality,
       scoring_method: SCORING
     };
+  }
+
+  // ── 8. Groq LLM reasoning & technical action synthesis ────────
+  try {
+    const rootCause = report.suspected_root_cause || report.root_cause || 'undetermined';
+    const confidence = report.confidence || 0;
+    const evidence = report.supporting_evidence || report.evidence || [];
+    const affectedDevices = report.affected_devices || (report.scope && report.scope.impaired_devices) || [];
+    const alternatives = report.alternative_cause_details || report.alternative_causes || report.alternatives || [];
+
+    if (rootCause !== 'undetermined' && report.status !== 'error') {
+      const llm = await synthesizeWithGroq({ rootCause, confidence, evidence, affectedDevices, alternatives }, bus);
+      if (llm) {
+        report.llm_synthesis = llm;
+        if (llm.reasoning) report.llm_reasoning = llm.reasoning;
+        if (llm.actions && llm.actions.length) {
+          const baseline = report.recommended_actions || [];
+          report.recommended_actions = [...llm.actions, ...baseline.filter(a => !llm.actions.includes(a))];
+        }
+        if (llm.prevention && llm.prevention.length) {
+          report.preventive_measures = llm.prevention;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[NetCoop] Groq synthesis fallback:', err.message);
   }
 
   // attach agent failures if any
