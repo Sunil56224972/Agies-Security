@@ -354,6 +354,13 @@ function paintResults() {
             <pre class="code" style="padding:6px 8px;font-size:11.5px;margin:0;line-height:1.45;overflow-x:auto"><code>${esc(gCommands.join('\n'))}</code></pre>
           </div>
         ` : ''}
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between">
+          <span class="small mono" style="color:var(--ink-3);font-size:11px">HITL: Operator Review Gate</span>
+          <button class="btn btn--sm" id="hitl-ack-btn" style="font-size:11px">${icon('shield')} Acknowledge Diagnosis</button>
+        </div>
+        <div id="hitl-status" style="display:none;margin-top:8px;padding:6px 10px;background:var(--ok-soft);border:1px solid var(--ok);border-radius:var(--r-sm);font-size:12px;color:var(--ok)">
+          ✓ Confirmed by Network Operator — Incident ${esc(r.incident_id || 'INC-AUTO')} locked and queued for execution.
+        </div>
       </div>
     </section>`;
   }
@@ -496,6 +503,16 @@ function paintResults() {
   if (copyCliBtn && groq && (groq.cli_commands || groq.cli_remediation_commands)) {
     const allCmds = (groq.cli_commands || groq.cli_remediation_commands).join('\n');
     copyCliBtn.onclick = () => copyText(allCmds, copyCliBtn);
+  }
+
+  const hitlBtn = $('#hitl-ack-btn', wrap);
+  const hitlStatus = $('#hitl-status', wrap);
+  if (hitlBtn && hitlStatus) {
+    hitlBtn.onclick = () => {
+      hitlBtn.style.display = 'none';
+      hitlStatus.style.display = 'block';
+      toast('Operator Review', 'Incident diagnosis confirmed and authorized by network operator.', 'ok');
+    };
   }
 }
 

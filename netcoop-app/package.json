@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "description": "Multi-Agent Network Fault Diagnosis and Interoperability Web Application for IIT Bhubaneswar Campus Infrastructure.",
   "main": "server.js",
+  "bin": {
+    "netcoop": "./cli.js"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "cli": "node cli.js",
+    "mcp": "node mcp.js",
     "test": "node test/test.js"
   },
   "keywords": [

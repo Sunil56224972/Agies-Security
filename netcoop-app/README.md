@@ -369,10 +369,30 @@ NETCOOP_GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 ### 3. Launch Application
+
+**Web Dashboard (Interactive UI):**
 ```bash
 npm start
 ```
 Open your browser at: **`http://localhost:4000`**
+
+**CLI Mode (Problem Statement Deliverable #5):**
+```bash
+# Run diagnosis on scenario
+npm run cli -- --scenario link_congestion
+
+# Print pure Section 6 JSON report
+npm run cli -- --scenario weak_wifi --json
+
+# List available scenarios
+npm run cli -- --list
+```
+
+**Model Context Protocol (MCP) Server (Problem Statement §4 Optional Enhancement):**
+```bash
+# Launch standard JSON-RPC 2.0 MCP server over stdio
+npm run mcp
+```
 
 For auto-reloading during development:
 ```bash

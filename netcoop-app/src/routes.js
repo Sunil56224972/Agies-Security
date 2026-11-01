@@ -34,15 +34,17 @@ module.exports = function netcoopRoutes(ctx = {}) {
     res.json({ scenarios: listScenarios() });
   });
 
-  // POST /api/netcoop/scenarios/:key — generate telemetry for a scenario
-  router.post('/scenarios/:key', protect, (req, res) => {
+  // GET or POST /api/netcoop/scenarios/:key — generate telemetry for a scenario
+  const handleScenarioGen = (req, res) => {
     try {
       const data = generateScenario(req.params.key);
       res.json({ scenario: req.params.key, telemetry: data });
     } catch (err) {
       res.status(400).json({ error: err.message });
     }
-  });
+  };
+  router.get('/scenarios/:key', protect, handleScenarioGen);
+  router.post('/scenarios/:key', protect, handleScenarioGen);
 
   return router;
 };

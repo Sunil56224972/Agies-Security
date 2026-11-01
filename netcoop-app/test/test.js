@@ -13,7 +13,7 @@ async function runTests() {
   console.log('======================================================\n');
 
   // 1. Protocol & Schema Verification
-  console.log('[1/5] Verifying Protocol Schema & Metadata...');
+  console.log('[1/6] Verifying Protocol Schema & Metadata...');
   assert.strictEqual(PROTOCOL.version, '1.0.0');
   assert.strictEqual(PROTOCOL.telemetry_schema, 'netcoop.telemetry/1.0');
   assert.strictEqual(PROTOCOL.report_schema, 'netcoop.report/1.0');
@@ -22,7 +22,7 @@ async function runTests() {
   console.log('  ✓ Protocol v1.0.0 and 16 metric definitions verified');
 
   // 2. Telemetry Normalizer Tests
-  console.log('\n[2/5] Testing Telemetry Input Normalization...');
+  console.log('\n[2/6] Testing Telemetry Input Normalization...');
   
   // JSON Object
   const normObj = normalizeInput(JSON.stringify({
@@ -42,13 +42,13 @@ async function runTests() {
   console.log('  ✓ CSV telemetry parsed correctly');
 
   // 3. Scenario Registry
-  console.log('\n[3/5] Testing Scenario Registry...');
+  console.log('\n[3/6] Testing Scenario Registry...');
   const scenarios = listScenarios();
   assert.ok(scenarios.length >= 8, 'Expected 8 built-in test scenarios');
   console.log(`  ✓ Loaded ${scenarios.length} built-in test scenarios`);
 
   // 4. Multi-Agent Cooperative Diagnosis Across All Scenarios
-  console.log('\n[4/5] Running Multi-Agent Diagnosis on all 8 Scenarios...');
+  console.log('\n[4/6] Running Multi-Agent Diagnosis on all 8 Scenarios...');
   for (const sc of scenarios) {
     const raw = generateScenario(sc.key);
     const result = await diagnose(raw);
@@ -74,7 +74,7 @@ async function runTests() {
   }
 
   // 5. Gating & Insufficient Evidence Guardrails
-  console.log('\n[5/5] Testing Guardrails (Must not claim exact root cause with insufficient evidence)...');
+  console.log('\n[5/6] Testing Guardrails (Must not claim exact root cause with insufficient evidence)...');
   const sparseTelemetry = {
     schema: 'netcoop.telemetry/1.0',
     devices: [{ device_id: 'unknown-node' }],
@@ -86,6 +86,22 @@ async function runTests() {
     'Sparse telemetry must be marked insufficient_evidence or inconclusive'
   );
   console.log('  ✓ System correctly reports no false alarms when telemetry is clean/sparse');
+
+  // 6. Section 6 Schema Compliance (Problem Statement Expected Output Format)
+  console.log('\n[6/6] Verifying Exact Section 6 Output Schema Compliance...');
+  const diagRes = await diagnose(generateScenario('link_congestion'));
+  const rep = diagRes.report;
+  assert.ok(typeof rep.incident_id === 'string' && rep.incident_id.startsWith('INC-'), 'incident_id must be INC-xxxx');
+  assert.strictEqual(rep.status, 'diagnosed', 'status must be diagnosed');
+  assert.ok(typeof rep.suspected_root_cause === 'string', 'suspected_root_cause must be string');
+  assert.ok(typeof rep.confidence === 'number' && rep.confidence >= 0 && rep.confidence <= 1, 'confidence must be 0..1 number');
+  assert.ok(Array.isArray(rep.affected_devices) && rep.affected_devices.length > 0, 'affected_devices must be array');
+  assert.ok(Array.isArray(rep.supporting_evidence) && rep.supporting_evidence.length > 0, 'supporting_evidence must be array');
+  assert.ok(Array.isArray(rep.alternative_causes), 'alternative_causes must be array');
+  assert.ok(Array.isArray(rep.recommended_actions) && rep.recommended_actions.length > 0, 'recommended_actions must be array');
+  assert.ok(Array.isArray(rep.evidence_sources) && rep.evidence_sources.length > 0, 'evidence_sources must be array');
+  assert.ok(Array.isArray(rep.limitations) && rep.limitations.length > 0, 'limitations must be array');
+  console.log('  ✓ Report schema precisely satisfies Problem Statement Section 6 specifications');
 
   console.log('\n======================================================');
   console.log('   ALL NETCOOP TESTS PASSED SUCCESSFULLY (100%)');

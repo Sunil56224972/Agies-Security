@@ -425,9 +425,10 @@ class ReportingAgent {
     const sources = [...new Set((dx.evidence || []).map((e) => e.agent))];
     const alternatives = (dx.alternatives || []).map((a) => `${A.HYPOTHESES[a.hypothesis].name} on ${a.device}`);
     const dev = (id) => ds.typeOf(id);
+    const fallbackIncId = 'INC-' + (Math.abs(String(this.bus.runId).split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)) % 9000 + 1000);
     return {
       schema: REPORT_SCHEMA,
-      incident_id: env.incidentId,
+      incident_id: env.incidentId || fallbackIncId,
       status: dx.status,
       suspected_root_cause: root,
       root_cause_category: dx.status === 'diagnosed' ? top.hypothesis : null,
