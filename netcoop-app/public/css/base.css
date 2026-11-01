@@ -1,0 +1,141 @@
+/* Tokens ----------------------------------------------------------------- */
+:root {
+  --font-ui: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --surface-3: #eceef1;
+  --ink: #15181d;
+  --ink-2: #4b525c;
+  --ink-3: #7a818c;
+  --line: #e1e4e8;
+  --line-strong: #cdd2d8;
+  --accent: #2d5bd1;
+  --accent-2: #2350c2;
+  --accent-soft: #edf2fd;
+  --accent-ink: #ffffff;
+  --focus: rgba(45, 91, 209, 0.28);
+
+  /* Severity is one warm ramp (red > vermilion > amber) ending in slate, so
+     stacked charts read as intensity rather than unrelated hues. */
+  --crit: #b42318;   --crit-soft: #fdf1f0;
+  --high: #d1531f;   --high-soft: #fdf3ee;
+  --med:  #d39b2a;   --med-soft:  #fcf7ec;
+  --low:  #98a2b3;   --low-soft:  #f2f4f7;
+  --ok:   #1d7a52;   --ok-soft:   #edf6f1;
+  /* Chart and bar fills: one red hue, lightness encodes severity. */
+  --sev-1: #991b1b;   --sev-2: #d0584e;   --sev-3: #eba8a1;   --sev-4: #cdd3db;
+  --badge-bg: #ffffff;
+  --badge-line: #d5d9df;
+
+  /* The rail stays dark in both themes. */
+  --rail-bg: #15181d;
+  --rail-ink: #9aa3ae;
+  --rail-ink-strong: #f1f3f5;
+  --rail-line: #252a31;
+  --rail-hover: #1e2228;
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-2: 0 8px 24px -8px rgba(16, 24, 40, 0.18);
+  --shadow-3: 0 24px 64px -16px rgba(16, 24, 40, 0.32);
+
+  --r-sm: 4px; --r: 6px; --r-lg: 6px;
+  --rail: 220px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #0f1114;
+  --surface: #16191d;
+  --surface-2: #1b1f24;
+  --surface-3: #242930;
+  --ink: #e6e8eb;
+  --ink-2: #a5adb7;
+  --ink-3: #6f7782;
+  --line: #262b32;
+  --line-strong: #353b44;
+  --accent: #6f95f2;
+  --accent-2: #87a7f5;
+  --accent-soft: rgba(111, 149, 242, 0.12);
+  --accent-ink: #0d1220;
+  --focus: rgba(111, 149, 242, 0.35);
+  --crit: #e5675d;   --crit-soft: rgba(229, 103, 93, 0.10);
+  --high: #e8855a;   --high-soft: rgba(232, 133, 90, 0.10);
+  --med:  #ddb056;   --med-soft:  rgba(221, 176, 86, 0.10);
+  --low:  #7d8796;   --low-soft:  rgba(125, 135, 150, 0.12);
+  --ok:   #4bab7d;   --ok-soft:   rgba(75, 171, 125, 0.10);
+  --sev-1: #f0726a;   --sev-2: #b4544d;   --sev-3: #77403c;   --sev-4: #4a525d;
+  --badge-bg: #1b1f24;
+  --badge-line: #333942;
+  --rail-bg: #0b0d10;
+  --rail-line: #1c2026;
+  --rail-hover: #15181c;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 10px 28px -10px rgba(0, 0, 0, 0.7);
+  --shadow-3: 0 28px 72px -16px rgba(0, 0, 0, 0.85);
+  color-scheme: dark;
+}
+
+/* Base ------------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font: 13.5px/1.5 var(--font-ui);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+.theme-anim, .theme-anim * { transition: background-color .2s, border-color .2s, color .2s !important; }
+::selection { background: var(--accent); color: var(--accent-ink); }
+a { color: inherit; text-decoration: none; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+b, strong { font-weight: 600; }
+code, pre, .mono { font-family: var(--font-mono); font-size: 12.5px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+[hidden] { display: none !important; }
+svg { width: 16px; height: 16px; flex: none; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
+
+/* Utilities -------------------------------------------------------------- */
+.ip { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); }
+.muted { color: var(--ink-3); }
+.small { font-size: 12px; }
+.nowrap { white-space: nowrap; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow { flex: 1; min-width: 0; }
+.row { display: flex; align-items: center; gap: 8px; }
+.wrap { flex-wrap: wrap; }
+.mt-8 { margin-top: 8px; } .mt-12 { margin-top: 12px; } .mt-16 { margin-top: 16px; }
+
+/* Keyframes -------------------------------------------------------------- */
+@keyframes view-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes view-out { to { opacity: 0; } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes tl-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes grow-x { from { transform: scaleX(0); } }
+@keyframes grow-y { from { transform: scaleY(0); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .3; } }
+@keyframes ring { 0% { box-shadow: 0 0 0 0 var(--focus); } 70%, 100% { box-shadow: 0 0 0 5px transparent; } }
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } }
+@keyframes drawer-out { to { transform: translateX(24px); opacity: 0; } }
+@keyframes modal-in { from { opacity: 0; transform: translate(-50%, 6px); } }
+@keyframes modal-out { to { opacity: 0; transform: translate(-50%, 4px); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes toast-out { to { opacity: 0; } }
+@keyframes shimmer { to { transform: translateX(100%); } }
+@keyframes packet { from { opacity: 0; transform: scale(.3); } }
+@keyframes flash { from { background: var(--accent-soft); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; transition-duration: .01ms !important; }
+}

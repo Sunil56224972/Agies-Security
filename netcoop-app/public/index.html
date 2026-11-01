@@ -1,15 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NetCoop AI — Multi-Agent Network Fault Diagnosis</title>
+  <meta name="description" content="Multi-agent cooperative network fault diagnosis and root cause localization.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/views.css">
   <script>
-    // Theme initialization before paint to prevent flashing
     (function() {
       const saved = localStorage.getItem('netcoop-theme');
       if (saved) {
@@ -21,34 +24,40 @@
   </script>
 </head>
 <body>
-  <div class="app-shell">
-    <!-- Topbar -->
+  <div class="shell" style="min-height:100vh;display:flex;flex-direction:column">
+    <!-- Handcrafted Aegis Topbar -->
     <header class="topbar">
-      <div class="brand">
-        <i data-icon="activity"></i>
-        <span>NetCoop AI</span>
-        <span class="brand__badge">v1.0.0 IIT-BBS</span>
+      <div class="crumbs">
+        <span>Aegis</span>
+        <span>/</span>
+        <b>NetCoop AI</b>
       </div>
 
       <div class="topbar__spacer"></div>
 
       <div class="status-pill">
         <span class="status-dot"></span>
-        <span id="top-status">6 Agents active · Groq LPU</span>
+        <span id="top-status">AI idle</span>
       </div>
 
-      <span class="mono small muted" id="utc-clock">--:--:-- UTC</span>
+      <span class="clock" id="utc-clock">--:--:-- UTC</span>
 
-      <button class="icon-btn" id="theme-toggle" title="Toggle dark/light theme" aria-label="Toggle theme">
+      <button class="search-trigger" id="search-trigger" aria-label="Search">
+        <i data-icon="search"></i>
+        <span>Search</span>
+        <span class="kbd">/</span>
+      </button>
+
+      <button class="icon-btn theme-btn" id="theme-toggle" aria-label="Toggle theme">
         <i data-icon="moon"></i>
       </button>
     </header>
 
-    <!-- Main Content Area -->
-    <main class="main-content">
+    <!-- Main View Content Area -->
+    <main class="view" style="padding-top:16px">
       <div class="page-head">
         <div class="page-head__text">
-          <h1 class="page-title"><i data-icon="pulse"></i> NetCoop AI</h1>
+          <h1 class="page-title">NetCoop AI</h1>
           <p class="page-sub">Multi-agent cooperative network fault diagnosis &amp; root cause localization.</p>
         </div>
       </div>
@@ -75,7 +84,7 @@
         <div class="grid grid-1-1">
           <section class="panel">
             <div class="panel__head">
-              <h2 class="panel__title"><i data-icon="terminal"></i> Telemetry input</h2>
+              <h2 class="panel__title">Telemetry input</h2>
             </div>
             <div class="panel__body">
               <textarea id="nc-raw" class="textarea" rows="14" spellcheck="false" placeholder="Paste JSON, NDJSON or CSV telemetry here…"></textarea>
@@ -89,16 +98,16 @@
 
           <section class="panel">
             <div class="panel__head">
-              <h2 class="panel__title"><i data-icon="database"></i> Test scenarios</h2>
+              <h2 class="panel__title">Test scenarios</h2>
               <span class="panel__meta">click to load &amp; run</span>
             </div>
             <div id="nc-scenarios" style="overflow-y:auto;max-height:380px;scrollbar-width:thin">
-              <div class="notice" style="margin:14px">Loading scenarios…</div>
+              <div class="skeleton" style="height:200px;margin:14px"></div>
             </div>
           </section>
         </div>
 
-        <!-- Results Output -->
+        <!-- Results Output (Aegis Handcrafted) -->
         <div id="nc-results"></div>
       </div>
 
@@ -106,9 +115,9 @@
       <div id="tab-bus" class="tab-pane stack reveal" style="display:none">
         <section class="panel">
           <div class="panel__head">
-            <h2 class="panel__title"><i data-icon="server"></i> Agent Communication Bus (JSON-RPC v1.0.0)</h2>
+            <h2 class="panel__title">Agent Communication Bus (JSON-RPC v1.0.0)</h2>
             <span class="panel__meta" id="bus-msg-count">0 messages logged</span>
-            <button class="panel__link" id="bus-clear-btn"><i data-icon="trash"></i> Clear log</button>
+            <button class="panel__link" id="bus-clear-btn">Clear log</button>
           </div>
           <div class="panel__body">
             <p class="muted small" style="margin-top:0;margin-bottom:12px">
@@ -147,4 +156,3 @@
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
-

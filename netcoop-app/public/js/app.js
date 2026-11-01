@@ -262,7 +262,7 @@ async function runDiagnosis() {
   }
 }
 
-// ─── Paint Results ────────────────────────────────────────────────────────
+// ─── Paint Results (Authentic Handcrafted Aegis Structure) ───────────────
 function paintResults() {
   const { result } = appState;
   if (!result) return;
@@ -283,230 +283,120 @@ function paintResults() {
   const ranking = r.ranking || [];
   const dq = r.data_quality || q;
 
-  const [outcomeClass, outcomeText, colorTone] = OUTCOME[r.status] || OUTCOME.inconclusive;
-  const confBand = confidence >= 80 ? 'High' : confidence >= 50 ? 'Medium' : 'Low';
-  const fillTone = confidence >= 80 ? 'ok' : confidence >= 50 ? 'med' : 'high';
+  const [outcomeClass, outcomeText] = OUTCOME[r.status] || OUTCOME.inconclusive;
 
   let html = '';
 
-  // 1. KPI Strip
+  // ── Verdict ────────────────────────────────────────────────────────────
   html += `
-  <div class="kpis grid grid-kpi mt-12">
-    <div class="kpi">
-      <div class="kpi__label">Diagnosis Verdict</div>
-      <div class="kpi__value" style="font-size:16px;margin-top:6px;color:var(--${colorTone})">${esc(outcomeText)}</div>
-      <div class="kpi__foot">${esc(r.status || 'evaluated')}</div>
+  <div class="verdict verdict--${esc(outcomeClass)}">
+    <div class="verdict__top">
+      <span class="verdict__label">${esc(outcomeText)}</span>
+      <span class="verdict__conf">confidence ${confidence}%</span>
+      <span class="verdict__id">${meta.elapsed_ms || '-'} ms · ${meta.messages || msgs.length} messages</span>
     </div>
-    <div class="kpi">
-      <div class="kpi__label">Confidence Score</div>
-      <div class="kpi__value">${confidence}% <small>${confBand}</small></div>
-      <div class="kpi__foot">coverage-weighted</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi__label">Affected Scope</div>
-      <div class="kpi__value">${impaired.length} <small>of ${meta.devices || 7}</small></div>
-      <div class="kpi__foot">impaired network assets</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi__label">Agent Messages</div>
-      <div class="kpi__value">${meta.messages || msgs.length} <small>in ${meta.elapsed_ms || 18}ms</small></div>
-      <div class="kpi__foot">6 collaborating agents</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi__label">Groq LPU Engine</div>
-      <div class="kpi__value" style="font-size:15px;margin-top:6px"><span style="color:var(--ok)">●</span> Active</div>
-      <div class="kpi__foot">openai/gpt-oss-120b</div>
+    <p class="verdict__summary">${esc(rootCause)}</p>
+    <div class="facts">
+      <div><span>Devices</span>${meta.devices || '-'}</div>
+      <div><span>Affected</span>${impaired.length} of ${meta.devices || '-'}</div>
+      <div><span>Agents</span>${meta.agents || 6}</div>
+      <div><span>Samples</span><span class="mono">${num(meta.samples)}</span></div>
     </div>
   </div>`;
 
-  // 2. Exact Verdict Banner (Matching Screenshot 1)
-  html += `
-  <div class="verdict verdict--${esc(outcomeClass)} mt-12" style="border-left: 4px solid var(--high)">
-    <div class="verdict__top" style="display:flex;align-items:center;justify-content:space-between">
-      <div style="display:flex;align-items:center;gap:8px;color:var(--high);font-weight:700;font-size:13px;letter-spacing:0.04em">
-        <i data-icon="activity"></i>
-        <span>${esc(outcomeText)}</span>
-      </div>
-      <div class="verdict__id" style="font-family:var(--font-mono);font-size:12px;color:var(--ink-3)">
-        ${meta.messages || msgs.length} messages &nbsp;·&nbsp; ${meta.elapsed_ms || '-'} ms
-      </div>
-    </div>
+  // ── Evidence + side panels ────────────────────────────────────────────
+  html += `<div class="grid grid-2-1">`;
 
-    <p class="verdict__summary" style="font-size:17px;font-weight:700;margin:10px 0 0;line-height:1.4">
-      ${esc(rootCause)}
-    </p>
-
-    <!-- Progress bar + affected badge -->
-    <div class="verdict-bar">
-      <div class="verdict-bar__track">
-        <div class="verdict-bar__fill verdict-bar__fill--${fillTone}" style="width: ${confidence}%"></div>
-      </div>
-      <div class="verdict-bar__stat">
-        <span>${confidence}%</span> ${confBand}
-      </div>
-      <div class="verdict-bar__stat" style="margin-left:auto;color:var(--ink-2)">
-        <i data-icon="layers"></i>
-        <b>${impaired.length}</b> <span>/ ${meta.devices || 7} devices affected</span>
-      </div>
-    </div>
-  </div>`;
-
-  // 3. Groq AI Synthesized Reasoning (if available)
-  if (groq && groq.reasoning) {
-    const gActions = groq.actions || groq.corrective_actions || [];
-    const gCommands = groq.cli_commands || groq.cli_remediation_commands || [];
-
-    html += `
-    <section class="panel mt-12" style="border-color:var(--accent)">
-      <div class="panel__head" style="background:var(--accent-soft)">
-        <h2 class="panel__title" style="color:var(--accent)">
-          <i data-icon="zap"></i> Groq LPU Expert Network Engineering Analysis (gpt-oss-120b)
-        </h2>
-        <span class="panel__meta" style="color:var(--accent);font-family:var(--font-mono)">${groq.model || 'Groq LPU'} · Verified</span>
-      </div>
-      <div class="panel__body">
-        <p style="margin-top:0;margin-bottom:12px;font-size:13.5px;line-height:1.6">${esc(groq.reasoning)}</p>
-
-        ${gActions.length ? `
-          <div style="font-weight:600;font-size:12.5px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.02em;color:var(--ink-3)">
-            Engineered Corrective Recommendations
-          </div>
-          <ul style="margin:0 0 12px 18px;padding:0;font-size:13px;line-height:1.6">
-            ${gActions.map(a => `<li>${esc(a)}</li>`).join('')}
-          </ul>
-        ` : ''}
-
-        ${gCommands.length ? `
-          <div style="font-weight:600;font-size:12.5px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.02em;color:var(--ink-3)">
-            Diagnostic &amp; Remediation CLI Commands
-          </div>
-          <div style="display:grid;gap:8px">
-            ${gCommands.map((cmd, idx) => `
-              <div class="cmd-box">
-                <button class="btn btn--sm cmd-box__copy" id="cmd-copy-${idx}">${icon('copy')} Copy</button>
-                <code>${esc(cmd)}</code>
-              </div>
-            `).join('')}
-          </div>
-        ` : ''}
-      </div>
-    </section>`;
-  }
-
-  // 4. Evidence + Side Panels Grid
-  html += `<div class="grid grid-2-1 mt-12">`;
-
-  // Left column: Supporting Evidence Table
+  // Left column — evidence table
   html += `<section class="panel">`;
   if (evidence.length) {
     html += `
-      <div class="panel__head">
-        <h2 class="panel__title"><i data-icon="shield"></i> Supporting evidence</h2>
-        <span class="panel__meta">${evidence.length} indicators verified</span>
-      </div>
+      <div class="panel__head"><h2 class="panel__title">Supporting evidence</h2><span class="panel__meta">${evidence.length} indicators</span></div>
       <div class="table-wrap"><table class="table">
-        <thead>
-          <tr>
-            <th>Device</th>
-            <th>Metric</th>
-            <th class="num">Value</th>
-            <th>Level</th>
-            <th class="hide-sm">Interpretation</th>
-          </tr>
-        </thead>
+        <thead><tr><th>Device</th><th>Metric</th><th class="num">Value</th><th>Level</th><th class="hide-sm">Interpretation</th></tr></thead>
         <tbody class="rows-in">${evidence.map((e, i) => `
           <tr style="--i:${i}">
-            <td class="mono"><b>${esc(e.device_id || '-')}</b></td>
+            <td class="mono">${esc(e.device_id || '-')}</td>
             <td>${esc(label(e.metric || ''))}</td>
             <td class="num">${e.value != null ? e.value : '-'}${e.unit ? ' ' + esc(e.unit) : ''}</td>
-            <td>${pill(e.level === 'critical' ? 'CONFIRMED' : e.level === 'elevated' ? 'INVESTIGATING' : 'CONTAINED', e.level || 'normal')}</td>
+            <td>${pill(e.level === 'critical' ? 'CONFIRMED' : e.level === 'elevated' ? 'INVESTIGATING' : 'CLOSED', e.level || 'normal')}</td>
             <td class="hide-sm small" style="color:var(--ink-2)">${esc(e.interpretation || '-')}</td>
           </tr>`).join('')}
         </tbody>
       </table></div>`;
   } else {
     html += `
-      <div class="panel__head"><h2 class="panel__title"><i data-icon="shield"></i> Supporting evidence</h2></div>
-      <div class="panel__body"><p class="muted">No anomalous indicators detected in telemetry stream.</p></div>`;
+      <div class="panel__head"><h2 class="panel__title">Supporting evidence</h2></div>
+      <div class="panel__body"><p class="muted">The diagnosis found no anomalous indicators.</p></div>`;
   }
   html += `</section>`;
 
-  // Right column: Recommended Actions, Affected Scope, Data Quality
+  // Right column — actions + affected + data quality
   html += `<div class="stack">`;
 
-  // Standard recommended actions
   if (actions.length) {
-    html += `
-    <section class="panel">
-      <div class="panel__head"><h2 class="panel__title"><i data-icon="sliders"></i> Recommended actions</h2></div>
-      <div class="panel__body">
-        <ol style="padding-left:18px;margin:0">
-          ${actions.map((a) => `<li style="margin-bottom:8px;line-height:1.5;font-size:13px">${esc(typeof a === 'string' ? a : (a.action || a.description || JSON.stringify(a)))}</li>`).join('')}
-        </ol>
-      </div>
-    </section>`;
-  }
-
-  // Affected Devices
-  if (impaired.length) {
+    const gCommands = (groq && (groq.cli_commands || groq.cli_remediation_commands)) || [];
     html += `
     <section class="panel">
       <div class="panel__head">
-        <h2 class="panel__title"><i data-icon="network"></i> Affected devices</h2>
-        <span class="panel__meta">${impaired.length} of ${meta.devices || 7}</span>
+        <h2 class="panel__title">Recommended actions</h2>
+        ${groq ? `<span class="panel__meta" style="color:var(--accent)">Groq AI Verified</span>` : ''}
       </div>
       <div class="panel__body">
-        <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${impaired.map((d) => `<span class="tag tag--warn"><i data-icon="alert"></i> ${esc(d)}</span>`).join('')}
-        </div>
-      </div>
-    </section>`;
-  }
-
-  // Data Quality Audit
-  if (dq) {
-    const issues = dq.issues || [];
-    html += `
-    <section class="panel">
-      <div class="panel__head">
-        <h2 class="panel__title"><i data-icon="check"></i> Telemetry Data Quality</h2>
-        <span class="panel__meta">${pill(dq.grade === 'clean' ? 'CONTAINED' : dq.grade === 'repaired' ? 'INVESTIGATING' : 'CONFIRMED', dq.grade || 'verified')}</span>
-      </div>
-      <div class="panel__body">
-        <div class="breakdown">
-          <div><span>Missing Values</span><b>${dq.missing_values || 0}</b></div>
-          <div><span>Out of Range</span><b>${dq.out_of_range || 0}</b></div>
-          <div><span>Sanitized Metrics</span><b>${dq.repaired || 0}</b></div>
-        </div>
-        ${issues.length ? `
-          <div style="margin-top:10px;font-size:12px;color:var(--ink-2)">
-            ${issues.map(i => `<div style="padding:4px 0">• ${esc(typeof i === 'string' ? i : i.message)}</div>`).join('')}
+        ${groq && groq.reasoning ? `<p class="small" style="color:var(--ink-2);margin:0 0 10px;line-height:1.5">${esc(groq.reasoning)}</p>` : ''}
+        <ol style="padding-left:18px;margin:0">${actions.map((a) => `<li style="margin-bottom:6px;line-height:1.5;font-size:13px">${esc(typeof a === 'string' ? a : (a.action || a.description || JSON.stringify(a)))}</li>`).join('')}</ol>
+        ${gCommands.length ? `
+          <div style="margin-top:10px;padding:8px 10px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span class="mono small" style="color:var(--ink-3);font-size:11px;text-transform:uppercase">Remediation CLI Commands</span>
+              <button class="panel__link" id="cmd-copy-all" style="font-size:11px">${icon('copy')} Copy all</button>
+            </div>
+            <pre class="code" style="padding:6px 8px;font-size:11.5px;margin:0;line-height:1.45;overflow-x:auto"><code>${esc(gCommands.join('\n'))}</code></pre>
           </div>
         ` : ''}
       </div>
     </section>`;
   }
 
-  html += `</div>`; // end right stack
-  html += `</div>`; // end grid-2-1
+  if (impaired.length) {
+    html += `
+    <section class="panel">
+      <div class="panel__head"><h2 class="panel__title">Affected devices</h2><span class="panel__meta">${impaired.length} of ${meta.devices || '-'}</span></div>
+      <div class="panel__body">
+        <div style="display:flex;flex-wrap:wrap;gap:5px">${impaired.map((d) => `<span class="tag">${esc(d)}</span>`).join('')}</div>
+      </div>
+    </section>`;
+  }
 
-  // 5. Ranking & Alternative Hypotheses
+  if (dq) {
+    const issues = dq.issues || [];
+    html += `
+    <section class="panel">
+      <div class="panel__head"><h2 class="panel__title">Data quality</h2><span class="panel__meta">${pill(dq.grade === 'clean' ? 'CONTAINED' : dq.grade === 'repaired' ? 'INVESTIGATING' : 'CONFIRMED', dq.grade || 'unknown')}</span></div>
+      ${issues.length ? `<div class="panel__body"><div class="breakdown">${issues.map((i) => `<div><span>${esc(typeof i === 'string' ? i : (i.message || JSON.stringify(i)))}</span></div>`).join('')}</div></div>` : ''}
+    </section>`;
+  }
+
+  html += `</div>`; // end .stack
+  html += `</div>`; // end .grid-2-1
+
+  // ── Ranking + alternatives ────────────────────────────────────────────
   if (ranking.length || alternatives.length) {
-    html += `<div class="grid grid-1-1 mt-12">`;
+    html += `<div class="grid grid-1-1">`;
 
     if (ranking.length) {
       html += `
       <section class="panel">
-        <div class="panel__head"><h2 class="panel__title"><i data-icon="chart"></i> Cause ranking</h2></div>
+        <div class="panel__head"><h2 class="panel__title">Cause ranking</h2></div>
         <div class="table-wrap"><table class="table">
           <thead><tr><th>Cause</th><th>Device</th><th class="num">Score</th><th class="num">Coverage</th><th>Gated</th></tr></thead>
           <tbody class="rows-in">${ranking.map((rk, i) => `
             <tr style="--i:${i}">
-              <td><b>${esc(label(rk.cause || ''))}</b></td>
+              <td>${esc(label(rk.cause || ''))}</td>
               <td class="mono">${esc(rk.device_id || '')}</td>
               <td class="num">${rk.score != null ? Math.round(rk.score * 100) + '%' : '-'}</td>
               <td class="num">${rk.coverage != null ? Math.round(rk.coverage * 100) + '%' : '-'}</td>
-              <td>${rk.capped ? pill('INVESTIGATING', 'gated') : pill('CONTAINED', 'no')}</td>
+              <td>${rk.capped ? pill('INVESTIGATING', 'gated') : pill('CLOSED', 'no')}</td>
             </tr>`).join('')}
           </tbody>
         </table></div>
@@ -516,12 +406,12 @@ function paintResults() {
     if (alternatives.length) {
       html += `
       <section class="panel">
-        <div class="panel__head"><h2 class="panel__title"><i data-icon="info"></i> Alternative causes &amp; uncertainty</h2></div>
+        <div class="panel__head"><h2 class="panel__title">Alternative causes</h2></div>
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>Hypothesis</th><th>Device</th><th class="num">Confidence</th></tr></thead>
+          <thead><tr><th>Cause</th><th>Device</th><th class="num">Score</th></tr></thead>
           <tbody class="rows-in">${alternatives.map((a, i) => {
             const name = typeof a === 'string' ? a : (a.cause || a.hypothesis || '');
-            const dev = typeof a === 'object' ? (a.device_id || '-') : '-';
+            const dev = typeof a === 'object' ? (a.device_id || '') : '';
             const score = typeof a === 'object' && a.score != null ? Math.round(a.score * 100) : null;
             return `<tr style="--i:${i}"><td>${esc(label(name))}</td><td class="mono">${esc(dev)}</td><td class="num">${score != null ? score + '%' : '-'}</td></tr>`;
           }).join('')}
@@ -530,63 +420,82 @@ function paintResults() {
       </section>`;
     }
 
-    html += `</div>`;
+    html += `</div>`; // end .grid-1-1
   }
 
-  // 6. Limitations & Guardrails
+  // ── Limitations ───────────────────────────────────────────────────────
   if (limitations.length) {
     html += `
-    <section class="panel mt-12">
-      <div class="panel__head"><h2 class="panel__title"><i data-icon="alert"></i> Known limitations &amp; guardrails</h2></div>
-      <div class="panel__body">
-        <div class="breakdown">
-          ${limitations.map((l) => `<div><span>${esc(l)}</span></div>`).join('')}
-        </div>
+    <section class="panel">
+      <div class="panel__head"><h2 class="panel__title">Limitations</h2></div>
+      <div class="panel__body"><div class="breakdown">${limitations.map((l) => `<div><span>${esc(l)}</span></div>`).join('')}</div></div>
+    </section>`;
+  }
+
+  // ── Agent communication log ───────────────────────────────────────────
+  if (msgs.length) {
+    html += `
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">Agent communication log</h2>
+        <span class="panel__meta">${msgs.length} messages</span>
+        <button class="panel__link" id="nc-toggle-msgs">Show</button>
+      </div>
+      <div id="nc-msgs-body" style="display:none">
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>#</th><th>From</th><th>To</th><th>Type</th><th class="hide-sm">Summary</th></tr></thead>
+          <tbody class="rows-in">${msgs.map((m, i) => `
+            <tr style="--i:${i}">
+              <td class="mono small">${i + 1}</td>
+              <td class="small">${pill('CONTAINED', agentLabel(m.from))}</td>
+              <td class="small">${pill('INVESTIGATING', agentLabel(m.to))}</td>
+              <td class="small">${pill(m.type === 'error' ? 'CONFIRMED' : m.type === 'challenge' ? 'INVESTIGATING' : 'CONTAINED', m.type)}</td>
+              <td class="small hide-sm" style="color:var(--ink-2)">${esc(m.summary || '-')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>
       </div>
     </section>`;
   }
 
-  // 7. Full Structured JSON Report
+  // ── Full JSON ─────────────────────────────────────────────────────────
   html += `
-  <section class="panel mt-12">
+  <section class="panel">
     <div class="panel__head">
-      <h2 class="panel__title"><i data-icon="code"></i> Full JSON diagnostic report</h2>
-      <button class="panel__link" id="nc-copy-json">${icon('copy')} Copy JSON</button>
-      <button class="panel__link" id="nc-toggle-json" style="margin-left:12px">Show</button>
+      <h2 class="panel__title">Full JSON report</h2>
+      <button class="panel__link" id="nc-copy-json">Copy</button>
+      <button class="panel__link" id="nc-toggle-json">Show</button>
     </div>
     <div id="nc-json-body" style="display:none">
       <pre class="code" style="max-height:500px;overflow:auto;padding:14px;font-size:12px;margin:0">${esc(JSON.stringify(result, null, 2))}</pre>
     </div>
   </section>`;
 
-  // Mount to DOM
-  const resultsEl = $('#nc-results');
-  resultsEl.innerHTML = `<div class="stack reveal">${html}</div>`;
-  hydrateIcons(resultsEl);
+  // ── Mount ──────────────────────────────────────────────────────────────
+  const wrap = $('#nc-results');
+  wrap.innerHTML = `<div class="stack reveal">${html}</div>`;
+  hydrateIcons(wrap);
 
-  // Wire buttons
-  const toggleBtn = $('#nc-toggle-json');
-  const jsonBody = $('#nc-json-body');
-  if (toggleBtn && jsonBody) {
-    toggleBtn.onclick = () => {
-      const open = jsonBody.style.display !== 'none';
-      jsonBody.style.display = open ? 'none' : '';
-      toggleBtn.textContent = open ? 'Show' : 'Hide';
+  // Toggle handlers
+  const bindToggle = (btnId, bodyId) => {
+    const btn = $(`#${btnId}`);
+    const body = $(`#${bodyId}`);
+    if (btn && body) btn.onclick = () => {
+      const open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : '';
+      btn.textContent = open ? 'Show' : 'Hide';
     };
-  }
+  };
+  bindToggle('nc-toggle-msgs', 'nc-msgs-body');
+  bindToggle('nc-toggle-json', 'nc-json-body');
 
   const copyBtn = $('#nc-copy-json');
-  if (copyBtn) {
-    copyBtn.onclick = () => copyText(JSON.stringify(result, null, 2), copyBtn);
-  }
+  if (copyBtn) copyBtn.onclick = () => copyText(JSON.stringify(result, null, 2), copyBtn);
 
-  // Wire CLI command copy buttons
-  const cmds = (groq && (groq.cli_commands || groq.cli_remediation_commands)) || [];
-  if (cmds.length) {
-    cmds.forEach((cmd, idx) => {
-      const btn = $(`#cmd-copy-${idx}`);
-      if (btn) btn.onclick = () => copyText(cmd, btn);
-    });
+  const copyCliBtn = $('#cmd-copy-all');
+  if (copyCliBtn && groq && (groq.cli_commands || groq.cli_remediation_commands)) {
+    const allCmds = (groq.cli_commands || groq.cli_remediation_commands).join('\n');
+    copyCliBtn.onclick = () => copyText(allCmds, copyCliBtn);
   }
 }
 
